@@ -19,6 +19,15 @@ parent/
 `../kandev/apps/packages/plugin-sdk`. Both paths change once the SDK ships as a
 versioned module.
 
+CI checks the SDK out at a **pinned tag**, `v0.95.1` — the oldest Kandev this
+plugin supports (`min_kandev_version` in `manifest.yaml`) — rather than at
+`main`. Check out the same tag locally (`git -C ../kandev checkout v0.95.1`) so
+your build matches CI. An unpinned SDK breaks the build whenever upstream moves
+a dependency, which is how the Go jobs went red without a change here. To move
+the pin, change `ref:` in every `kdlbs/kandev` checkout under
+`.github/workflows/`, then run `go mod tidy` against that checkout and commit
+the `go.mod` and `go.sum` it produces.
+
 ```sh
 npm install
 make claude-md     # local-only CLAUDE.md pointing at AGENTS.md (gitignored)

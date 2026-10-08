@@ -81,6 +81,12 @@ the approval against a digest of the whole capability list, not per capability.
   published package ships a pre-built bundle with no `node_modules`, so none of
   it reached an operator; `npm audit` stays gated at `high` for that reason.
 
+- CI, the security workflow and the release build now check out the Kandev SDK
+  at the pinned tag `v0.95.1`, the oldest supported Kandev, instead of `main`.
+  An unpinned SDK let an upstream dependency bump fail every Go job with
+  "updates to go.mod needed" and no change here. `go.mod` and `go.sum` are
+  tidied against that tag.
+
 ### Documentation
 
 - Splits the README, which had grown to 482 lines, into a functionality-focused
