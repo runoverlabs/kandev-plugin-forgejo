@@ -74,11 +74,12 @@ the approval against a digest of the whole capability list, not per capability.
 - Bumps `google.golang.org/grpc` to v1.83.2 for GO-2026-6443, a server panic
   reachable from `pluginsdk.Serve` via missing authority or Host headers. Found
   by the new pipeline on its first run.
-- Bumps `vitest` to 3.2.7, clearing a critical advisory in its UI server. Two
-  moderate advisories remain in `@vitest/mocker`, fixable only by a major bump
-  that breaks an existing test; `npm audit` is gated at `high` because every npm
-  dependency here is a devDependency and the published package ships a pre-built
-  bundle with no `node_modules`.
+- Bumps `vitest` to 4.1.11, clearing the open Dependabot alerts in `vitest`,
+  `@vitest/mocker` and `tinypool` (two critical, one of them a remote code
+  execution gadget), and refreshes `source-map-js`. `npm audit` is clean. This
+  also moves `vite` to 8. Every npm dependency here is a devDependency and the
+  published package ships a pre-built bundle with no `node_modules`, so none of
+  it reached an operator; `npm audit` stays gated at `high` for that reason.
 
 ### Documentation
 
