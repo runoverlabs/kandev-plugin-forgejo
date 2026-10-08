@@ -111,12 +111,23 @@ func TestManifestDeclaresEveryRoutedAction(t *testing.T) {
 		ActionConnectionGet:                           "workspace",
 		ActionConnectionTest:                          "workspace",
 		ActionConnectionSetEnabled:                    "workspace",
+		// Issue watches are workspace-scoped without exception. A task-scoped
+		// watch action would hand the handler a task id in place of the
+		// workspace it must filter by, which is how the native providers
+		// leaked other workspaces' watch configs (#3681).
+		ActionWatchesList:    "workspace",
+		ActionWatchesOptions: "workspace",
+		ActionWatchesCreate:  "workspace",
+		ActionWatchesUpdate:  "workspace",
+		ActionWatchesDelete:  "workspace",
+		ActionWatchesRun:     "workspace",
+		ActionWatchesReset:   "workspace",
 	} {
 		scope, ok := declared[key]
 		require.True(t, ok, "manifest does not declare routed action %q", key)
 		require.Equal(t, wantScope, scope, "action %q has the wrong scope", key)
 	}
-	require.Len(t, parsed.Actions, 11, "an undeclared or stale action entry drifted from the routed set")
+	require.Len(t, parsed.Actions, 18, "an undeclared or stale action entry drifted from the routed set")
 }
 
 // The source-control contracts first shipped in v0.88.0 and agent tools in
@@ -177,13 +188,30 @@ func TestManifestAgentToolsStayWithinBudget(t *testing.T) {
 }
 
 // Least privilege: the plugin must not claim capabilities it never exercises.
+//
+// Each entry here is load-bearing, and the list is asserted exactly so that
+// adding one is a deliberate act rather than a diff nobody reads:
+//
+//	tasks              attached-repository resolver, task->workspace lookup,
+//	                   and the issue-watch inflight count
+//	repositories       attached-repository resolver
+//	workspaces         the watch poller enumerates workspaces to find due watches
+//	workflows          the watch form's workflow and step pickers
+//	agent_profiles     the watch form's agent picker
+//	executor_profiles  the watch form's executor picker
+//	api_write:tasks    a watch turning an issue into a card
+//
+// agent_invoke and auth remain unclaimed. auth is the highest-privilege
+// capability in the manifest and nothing here needs to mint a session.
 func TestManifestClaimsOnlyUsedCapabilities(t *testing.T) {
 	t.Parallel()
 	parsed := loadManifest(t)
-	require.ElementsMatch(t, []string{"tasks", "repositories"}, parsed.Capabilities.APIRead,
-		"api_read backs only the attached-repository resolver and task->workspace lookup")
-	require.Empty(t, parsed.Capabilities.APIWrite, "Kandev owns every entity mutation; this plugin writes none")
-	require.True(t, parsed.Capabilities.State, "associations are stored in Host state")
+	require.ElementsMatch(t, []string{
+		"tasks", "repositories", "workspaces", "workflows", "agent_profiles", "executor_profiles",
+	}, parsed.Capabilities.APIRead)
+	require.Equal(t, []string{"tasks"}, parsed.Capabilities.APIWrite,
+		"issue watches create tasks; nothing else here mutates a kandev entity")
+	require.True(t, parsed.Capabilities.State, "associations and watch records are stored in Host state")
 }
 
 // The packaged binaries must exist for every platform the manifest promises.

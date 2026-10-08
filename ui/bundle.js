@@ -596,6 +596,513 @@ function createConnectionPanel(host) {
   };
 }
 
+// ui/src/watches-panel.ts
+var NONE = "__none__";
+function emptyDraft(options) {
+  const workflow = options.workflows?.[0];
+  const step = workflow?.steps?.find((entry) => entry.is_start_step) ?? workflow?.steps?.[0];
+  return {
+    id: "",
+    name: "",
+    repos: "",
+    labels: "",
+    state: "open",
+    query: "",
+    workflowId: workflow?.id ?? "",
+    workflowStepId: step?.id ?? "",
+    agentProfileId: "",
+    executorProfileId: "",
+    prompt: "",
+    pollIntervalSeconds: String(options.default_interval ?? 300),
+    maxInflightTasks: String(options.default_max_inflight ?? 5),
+    dedupScope: "watch",
+    startAgent: false
+  };
+}
+function toDraft(watch, options) {
+  return {
+    ...emptyDraft(options),
+    id: watch.id,
+    name: watch.name ?? "",
+    repos: (watch.repos ?? []).map((repo) => `${repo.owner}/${repo.name}`).join(", "),
+    labels: (watch.labels ?? []).join(", "),
+    state: watch.state || "open",
+    query: watch.query ?? "",
+    workflowId: watch.workflow_id ?? "",
+    workflowStepId: watch.workflow_step_id ?? "",
+    agentProfileId: watch.agent_profile_id ?? "",
+    executorProfileId: watch.executor_profile_id ?? "",
+    prompt: watch.prompt ?? "",
+    pollIntervalSeconds: String(watch.poll_interval_seconds ?? options.default_interval ?? 300),
+    maxInflightTasks: String(watch.max_inflight_tasks ?? options.default_max_inflight ?? 5),
+    dedupScope: watch.dedup_scope || "watch",
+    startAgent: watch.start_agent === true
+  };
+}
+function splitList(value) {
+  return value.split(/[\n,]/).map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+}
+function draftToBody(draft) {
+  return {
+    ...draft.id ? { id: draft.id } : {},
+    name: draft.name.trim(),
+    repos: splitList(draft.repos),
+    labels: splitList(draft.labels),
+    state: draft.state,
+    query: draft.query.trim(),
+    workflow_id: draft.workflowId,
+    workflow_step_id: draft.workflowStepId,
+    agent_profile_id: draft.agentProfileId,
+    executor_profile_id: draft.executorProfileId,
+    prompt: draft.prompt,
+    start_agent: draft.startAgent,
+    poll_interval_seconds: Number(draft.pollIntervalSeconds) || 0,
+    max_inflight_tasks: Number(draft.maxInflightTasks) || 0,
+    dedup_scope: draft.dedupScope
+  };
+}
+function operatorMessage2(cause) {
+  if (typeof console !== "undefined") {
+    console.error("[kandev-plugin-forgejo] watch request failed", cause);
+  }
+  const raw = cause instanceof Error ? cause.message : String(cause ?? "");
+  const marker = "kandev-plugin-forgejo: ";
+  const index = raw.indexOf(marker);
+  if (index >= 0) {
+    const message = raw.slice(index + marker.length).trim();
+    if (message) return message.charAt(0).toUpperCase() + message.slice(1);
+  }
+  const watchMarker = "watches: ";
+  const watchIndex = raw.indexOf(watchMarker);
+  if (watchIndex >= 0) {
+    const message = raw.slice(watchIndex + watchMarker.length).trim();
+    if (message) return message.charAt(0).toUpperCase() + message.slice(1);
+  }
+  return "Couldn't reach the Forgejo plugin. Check the Kandev server logs for details.";
+}
+function summarize(result) {
+  const parts = [`${result.created ?? 0} created`];
+  if (result.duplicates) parts.push(`${result.duplicates} already tracked`);
+  if (result.throttled) parts.push(`${result.throttled} held back by the task limit`);
+  return `${result.matched ?? 0} matched \u2014 ${parts.join(", ")}.`;
+}
+function formatWhen(value) {
+  if (!value) return "never";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+}
+function createWatchesPanel(host) {
+  return function ForgejoWatchesPanel(props = {}) {
+    const [watches, setWatches] = host.React.useState([]);
+    const [options, setOptions] = host.React.useState({});
+    const [draft, setDraft] = host.React.useState(null);
+    const [loading, setLoading] = host.React.useState(false);
+    const [busy, setBusy] = host.React.useState(null);
+    const [error, setError] = host.React.useState(null);
+    const [notice, setNotice] = host.React.useState(null);
+    const [activeWorkspaceId, setActiveWorkspaceId] = host.React.useState(
+      () => host.context.getActiveWorkspaceId()
+    );
+    host.React.useEffect(() => host.context.subscribeActiveWorkspace(setActiveWorkspaceId), []);
+    const workspaceId = (props.workspaceId ?? activeWorkspaceId ?? "").trim();
+    const call = host.React.useCallback(
+      async (key, body, signal) => host.api.invokeAction(
+        key,
+        { workspaceId, ...body ? { body } : {} },
+        signal ? { signal } : void 0
+      ),
+      [workspaceId]
+    );
+    const load = host.React.useCallback(
+      async (signal) => {
+        if (!workspaceId) {
+          setWatches([]);
+          return;
+        }
+        setLoading(true);
+        setError(null);
+        try {
+          const [list, config] = await Promise.all([
+            call("watches.list", void 0, signal),
+            call("watches.options", void 0, signal)
+          ]);
+          if (signal.aborted) return;
+          setWatches(list?.watches ?? []);
+          setOptions(config ?? {});
+        } catch (cause) {
+          if (!signal.aborted) setError(operatorMessage2(cause));
+        } finally {
+          if (!signal.aborted) setLoading(false);
+        }
+      },
+      [workspaceId, call]
+    );
+    host.React.useEffect(() => {
+      const controller = new AbortController();
+      void load(controller.signal);
+      return () => controller.abort();
+    }, [load]);
+    const refresh = host.React.useCallback(() => {
+      const controller = new AbortController();
+      void load(controller.signal);
+    }, [load]);
+    const act = host.React.useCallback(
+      async (id, run) => {
+        setBusy(id);
+        setError(null);
+        setNotice(null);
+        try {
+          const message = await run();
+          if (message) setNotice(message);
+          refresh();
+        } catch (cause) {
+          setError(operatorMessage2(cause));
+        } finally {
+          setBusy(null);
+        }
+      },
+      [refresh]
+    );
+    const save = host.React.useCallback(
+      (current) => act(current.id || "new", async () => {
+        await call(current.id ? "watches.update" : "watches.create", draftToBody(current));
+        setDraft(null);
+        return current.id ? "Watch updated." : "Watch created.";
+      }),
+      [act, call]
+    );
+    const runNow = host.React.useCallback(
+      (watch) => act(watch.id, async () => {
+        const response = await call("watches.run", { id: watch.id });
+        return summarize(response?.result ?? {});
+      }),
+      [act, call]
+    );
+    const toggle = host.React.useCallback(
+      (watch, enabled) => act(watch.id, async () => {
+        await call("watches.update", { id: watch.id, enabled });
+        return null;
+      }),
+      [act, call]
+    );
+    const remove = host.React.useCallback(
+      (watch) => act(watch.id, async () => {
+        await call("watches.delete", { id: watch.id });
+        return "Watch deleted.";
+      }),
+      [act, call]
+    );
+    const reset = host.React.useCallback(
+      (watch) => act(watch.id, async () => {
+        const response = await call("watches.reset", { id: watch.id });
+        return `Forgot ${response?.forgotten ?? 0} tracked issue(s); the next run will file them again.`;
+      }),
+      [act, call]
+    );
+    if (!workspaceId) {
+      return host.jsx(
+        "p",
+        { className: "forgejo-watches__empty" },
+        "Open a workspace to manage Forgejo issue watches."
+      );
+    }
+    const field = (label, control, hint) => host.jsx(
+      "div",
+      { className: "forgejo-watch-field" },
+      host.jsx(host.ui.Label, null, label),
+      control,
+      hint ? host.jsx("p", { className: "forgejo-watch-field__hint" }, hint) : null
+    );
+    const select = (value, onChange, items, placeholder, allowNone = false) => host.jsx(
+      host.ui.Select,
+      { value: value || (allowNone ? NONE : ""), onValueChange: (next) => onChange(next === NONE ? "" : next) },
+      host.jsx(host.ui.SelectTrigger, null, host.jsx(host.ui.SelectValue, { placeholder })),
+      host.jsx(
+        host.ui.SelectContent,
+        null,
+        allowNone ? host.jsx(host.ui.SelectItem, { value: NONE }, "None") : null,
+        ...items.map((item) => host.jsx(host.ui.SelectItem, { key: item.id, value: item.id }, item.name))
+      )
+    );
+    const renderForm = (current) => {
+      const workflows = options.workflows ?? [];
+      const steps = workflows.find((entry) => entry.id === current.workflowId)?.steps ?? [];
+      const update = (patch) => setDraft({ ...current, ...patch });
+      return host.jsx(
+        "div",
+        { className: "forgejo-watch-form" },
+        host.jsx("h4", null, current.id ? "Edit watch" : "New watch"),
+        field(
+          "Name",
+          host.jsx(host.ui.Input, {
+            value: current.name,
+            placeholder: "Bug reports",
+            onChange: (event) => update({ name: event.target.value })
+          })
+        ),
+        field(
+          "Repositories",
+          host.jsx(host.ui.Input, {
+            value: current.repos,
+            placeholder: "owner/name, owner/other",
+            onChange: (event) => update({ repos: event.target.value })
+          }),
+          "One or more owner/name pairs, separated by commas."
+        ),
+        field(
+          "Labels",
+          host.jsx(host.ui.Input, {
+            value: current.labels,
+            placeholder: "bug, needs-triage",
+            onChange: (event) => update({ labels: event.target.value })
+          }),
+          "An issue must carry every label listed here. Leave empty to match any."
+        ),
+        field(
+          "Issue state",
+          select(
+            current.state,
+            (next) => update({ state: next }),
+            [
+              { id: "open", name: "Open" },
+              { id: "closed", name: "Closed" },
+              { id: "all", name: "All" }
+            ],
+            "Open"
+          )
+        ),
+        field(
+          "Search",
+          host.jsx(host.ui.Input, {
+            value: current.query,
+            placeholder: "crash",
+            onChange: (event) => update({ query: event.target.value })
+          }),
+          "Optional free text matched against the title and body. Served by the instance's issue indexer, so a brand-new issue may take a moment to match \u2014 and nothing matches if indexing is turned off."
+        ),
+        field(
+          "Workflow",
+          select(
+            current.workflowId,
+            (next) => {
+              const workflow = workflows.find((entry) => entry.id === next);
+              const step = workflow?.steps?.find((entry) => entry.is_start_step) ?? workflow?.steps?.[0];
+              update({ workflowId: next, workflowStepId: step?.id ?? "" });
+            },
+            workflows.map((entry) => ({ id: entry.id, name: entry.name })),
+            "Choose a workflow"
+          )
+        ),
+        field(
+          "Column",
+          select(
+            current.workflowStepId,
+            (next) => update({ workflowStepId: next }),
+            steps.map((entry) => ({ id: entry.id, name: entry.name })),
+            "Choose a column"
+          ),
+          "Where a card lands when an issue matches."
+        ),
+        field(
+          "Agent profile",
+          select(
+            current.agentProfileId,
+            (next) => update({ agentProfileId: next }),
+            options.agent_profiles ?? [],
+            "Workspace default",
+            true
+          )
+        ),
+        field(
+          "Executor profile",
+          select(
+            current.executorProfileId,
+            (next) => update({ executorProfileId: next }),
+            options.executor_profiles ?? [],
+            "Workspace default",
+            true
+          )
+        ),
+        field(
+          "Prompt",
+          host.jsx(host.ui.Textarea, {
+            value: current.prompt,
+            rows: 3,
+            placeholder: "Investigate this issue and propose a fix.",
+            onChange: (event) => update({ prompt: event.target.value })
+          }),
+          "Sent to the agent when the task starts."
+        ),
+        field(
+          "Poll interval (seconds)",
+          host.jsx(host.ui.Input, {
+            type: "number",
+            min: options.min_interval ?? 30,
+            value: current.pollIntervalSeconds,
+            onChange: (event) => update({ pollIntervalSeconds: event.target.value })
+          }),
+          `At least ${options.min_interval ?? 30} seconds.`
+        ),
+        field(
+          "Open task limit",
+          host.jsx(host.ui.Input, {
+            type: "number",
+            min: 1,
+            value: current.maxInflightTasks,
+            onChange: (event) => update({ maxInflightTasks: event.target.value })
+          }),
+          "How many of this watch's tasks may be open at once. Matched issues above the limit wait for a later run."
+        ),
+        field(
+          "Duplicate handling",
+          select(
+            current.dedupScope,
+            (next) => update({ dedupScope: next }),
+            [
+              { id: "watch", name: "One task per watch" },
+              { id: "workspace", name: "One task per issue" }
+            ],
+            "One task per watch"
+          ),
+          "\u201COne task per issue\u201D stops a second watch filing the same issue again."
+        ),
+        host.jsx(
+          "label",
+          { className: "forgejo-watch-form__toggle" },
+          host.jsx(host.ui.Switch, {
+            checked: current.startAgent,
+            "aria-label": "Start an agent as soon as the task is created",
+            onCheckedChange: (next) => update({ startAgent: next })
+          }),
+          host.jsx("span", null, "Start an agent immediately")
+        ),
+        current.startAgent && !current.agentProfileId ? host.jsx(
+          "p",
+          { className: "forgejo-watch-form__hint", role: "note" },
+          "Choose an agent profile: an unattended watch should not depend on whichever profile the workspace defaults to."
+        ) : null,
+        host.jsx(
+          "div",
+          { className: "forgejo-watch-form__actions" },
+          host.jsx(
+            host.ui.Button,
+            {
+              type: "button",
+              size: "sm",
+              disabled: busy !== null,
+              onClick: () => void save(current)
+            },
+            current.id ? "Save watch" : "Create watch"
+          ),
+          host.jsx(
+            host.ui.Button,
+            { type: "button", variant: "ghost", size: "sm", onClick: () => setDraft(null) },
+            "Cancel"
+          )
+        )
+      );
+    };
+    const renderRow = (watch) => {
+      const repos = (watch.repos ?? []).map((repo) => `${repo.owner}/${repo.name}`).join(", ");
+      const labels = (watch.labels ?? []).join(", ");
+      return host.jsx(
+        "div",
+        { className: "forgejo-watch", key: watch.id, "data-enabled": watch.enabled !== false },
+        host.jsx(
+          "div",
+          { className: "forgejo-watch__head" },
+          host.jsx("strong", null, watch.name || "Untitled watch"),
+          host.jsx(host.ui.Switch, {
+            checked: watch.enabled !== false,
+            disabled: busy === watch.id,
+            "aria-label": `Enable the ${watch.name || "untitled"} watch`,
+            onCheckedChange: (next) => void toggle(watch, next)
+          })
+        ),
+        host.jsx("p", { className: "forgejo-watch__query" }, repos + (labels ? ` \u2014 ${labels}` : "")),
+        host.jsx(
+          "p",
+          { className: "forgejo-watch__meta" },
+          `Last checked ${formatWhen(watch.last_polled_at)}`
+        ),
+        watch.last_error ? host.jsx("p", { className: "forgejo-watch__error", role: "alert" }, watch.last_error) : null,
+        host.jsx(
+          "div",
+          { className: "forgejo-watch__actions" },
+          host.jsx(
+            host.ui.Button,
+            {
+              type: "button",
+              variant: "secondary",
+              size: "sm",
+              disabled: busy === watch.id || watch.enabled === false,
+              onClick: () => void runNow(watch)
+            },
+            busy === watch.id ? "Working\u2026" : "Run now"
+          ),
+          host.jsx(
+            host.ui.Button,
+            {
+              type: "button",
+              variant: "ghost",
+              size: "sm",
+              disabled: busy === watch.id,
+              onClick: () => setDraft(toDraft(watch, options))
+            },
+            "Edit"
+          ),
+          host.jsx(
+            host.ui.Button,
+            {
+              type: "button",
+              variant: "ghost",
+              size: "sm",
+              disabled: busy === watch.id,
+              onClick: () => void reset(watch)
+            },
+            "Forget history"
+          ),
+          host.jsx(
+            host.ui.Button,
+            {
+              type: "button",
+              variant: "ghost",
+              size: "sm",
+              disabled: busy === watch.id,
+              onClick: () => void remove(watch)
+            },
+            "Delete"
+          )
+        )
+      );
+    };
+    return host.jsx(
+      "div",
+      { className: "forgejo-watches" },
+      host.jsx(
+        "p",
+        { className: "forgejo-watches__intro" },
+        "Turn Forgejo issues into tasks. Each watch polls the repositories you name and files a card for every new issue that matches."
+      ),
+      error ? host.jsx("p", { className: "forgejo-watches__error", role: "alert" }, error) : null,
+      notice ? host.jsx("p", { className: "forgejo-watches__notice", role: "status" }, notice) : null,
+      loading && watches.length === 0 ? host.jsx("p", { className: "forgejo-watches__empty" }, "Loading watches\u2026") : null,
+      !loading && watches.length === 0 ? host.jsx("p", { className: "forgejo-watches__empty" }, "No watches yet.") : null,
+      ...watches.map(renderRow),
+      draft ? renderForm(draft) : host.jsx(
+        host.ui.Button,
+        {
+          type: "button",
+          variant: "secondary",
+          size: "sm",
+          onClick: () => setDraft(emptyDraft(options))
+        },
+        "Add watch"
+      )
+    );
+  };
+}
+
 // ui/src/detail.ts
 function toChangeRequestDetail(review) {
   const status = review.taskStatus;
@@ -678,12 +1185,22 @@ window.registerKandevPlugin(PLUGIN_ID, {
       toChangeRequestDetail
     });
     if (typeof registry.registerIntegrationSettings === "function") {
+      const ConnectionPanel = createConnectionPanel(host);
+      const WatchesPanel = createWatchesPanel(host);
+      const SettingsPanel = (props = {}) => host.jsx(
+        "div",
+        { className: "forgejo-settings" },
+        host.jsx(ConnectionPanel, props),
+        host.jsx("hr", { className: "forgejo-settings__rule" }),
+        host.jsx("h3", { className: "forgejo-settings__heading" }, "Issue watches"),
+        host.jsx(WatchesPanel, props)
+      );
       registry.registerIntegrationSettings({
         id: PROVIDER_ID,
         label: "Forgejo",
-        description: "Connect a Forgejo or Gitea instance for repositories, pull requests, and reviews.",
+        description: "Connect a Forgejo or Gitea instance for repositories, pull requests, reviews, and issue watches.",
         icon,
-        Component: createConnectionPanel(host)
+        Component: SettingsPanel
       });
     }
   },

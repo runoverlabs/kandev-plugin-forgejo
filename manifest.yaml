@@ -4,7 +4,7 @@
 # catalog entry. Keep all four in sync when renaming.
 id: "kandev-plugin-forgejo"
 api_version: 1
-version: "0.2.0"
+version: "0.3.0-rc.1"
 display_name: "Forgejo"
 description: "Connect a self-hosted Forgejo or Gitea instance to native Kandev repository, pull-request, task-link, and review workflows."
 author: "naerymdan"
@@ -28,11 +28,25 @@ runtime:
     darwin-arm64: "server/plugin-darwin-arm64"
     windows-amd64: "server/plugin-windows-amd64.exe"
 
-# Least privilege: `tasks`/`repositories` back the attached-repository resolver
+# Least privilege. `tasks`/`repositories` back the attached-repository resolver
 # used by verified PR creation; `state` backs the task<->pull-request
-# association store. No api_write — Kandev owns every entity mutation here.
+# association store and the issue-watch configuration and dedup ledger.
+#
+# `workspaces`, `workflows`, `agent_profiles` and `executor_profiles` exist for
+# issue watches only: the poller enumerates workspaces to find due watches, and
+# the configuration form cannot let an operator choose where a created task
+# lands without reading the workflows, steps and profiles by name.
+#
+# `api_write: tasks` is the capability that lets a watch put a card on the
+# board. It is the one real privilege escalation in this manifest — capability
+# grants are permission gates, not a sandbox — and it is scoped to task
+# creation because Kandev owns every other entity mutation here. Kandev stamps
+# `source = "plugin:kandev-plugin-forgejo"` on the rows this plugin creates and
+# the plugin cannot set that itself, so a task from a watch is permanently
+# attributable.
 capabilities:
-  api_read: ["tasks", "repositories"]
+  api_read: ["tasks", "repositories", "workspaces", "workflows", "agent_profiles", "executor_profiles"]
+  api_write: ["tasks"]
   state: true
   secrets: true
 
@@ -70,6 +84,33 @@ actions:
     scope: "task"
     max_body_bytes: 4096
   - key: "change_requests.associations"
+    scope: "workspace"
+    max_body_bytes: 1024
+
+  # Issue watches. Every one is workspace-scoped: PR #3681 fixed a real leak
+  # where native providers returned every workspace's watch configs, exposing
+  # filters, repository/agent/profile ids and spawn prompts. Kandev verifies
+  # the workspace before the handler runs and the handler never reads one from
+  # the body, so that class of bug cannot start here.
+  - key: "watches.list"
+    scope: "workspace"
+    max_body_bytes: 1024
+  - key: "watches.options"
+    scope: "workspace"
+    max_body_bytes: 1024
+  - key: "watches.create"
+    scope: "workspace"
+    max_body_bytes: 16384
+  - key: "watches.update"
+    scope: "workspace"
+    max_body_bytes: 16384
+  - key: "watches.delete"
+    scope: "workspace"
+    max_body_bytes: 1024
+  - key: "watches.run"
+    scope: "workspace"
+    max_body_bytes: 1024
+  - key: "watches.reset"
     scope: "workspace"
     max_body_bytes: 1024
 

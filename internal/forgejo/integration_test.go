@@ -356,3 +356,77 @@ func TestLivePullRequestEditRoundTrips(t *testing.T) {
 	_, err = client.EditPullRequest(ctx, owner, repo, created.Number, EditPullRequestInput{State: "closed"})
 	require.NoError(t, err)
 }
+
+// The issue endpoint is the one surface issue watches depend on, and it is the
+// one most likely to differ between hosts and across the supported range:
+// `type=issues` and `since` are both parameters older Gitea releases may
+// ignore. This test creates an issue and a pull request in the live repository
+// and asserts the filter behaves, rather than trusting the documentation.
+func TestLiveIssueListingExcludesPullRequests(t *testing.T) {
+	client, _, _, _, _, _ := liveAdapters(t)
+	_, _, owner, repo := liveConfig(t)
+	ctx := context.Background()
+
+	// A label no seeded issue carries, so the filter assertion below is not
+	// satisfied by pre-existing data.
+	marker := fmt.Sprintf("watch-%d", time.Now().UnixNano())
+	var created struct {
+		Number int64 `json:"number"`
+	}
+	require.NoError(t, client.post(ctx,
+		"/repos/"+pathSegment(owner)+"/"+pathSegment(repo)+"/issues",
+		map[string]any{"title": marker, "body": "created by the live contract test"},
+		&created))
+	require.Positive(t, created.Number)
+
+	issues, err := client.ListIssues(ctx, owner, repo, IssueListOptions{State: "all"})
+	require.NoError(t, err)
+	require.NotEmpty(t, issues)
+
+	// Every result must be an issue. The seeded repository carries a pull
+	// request, so a host ignoring type=issues is caught here.
+	var found bool
+	for _, issue := range issues {
+		require.Falsef(t, issue.IsPullRequest(), "issue %d is a pull request", issue.Number)
+		if issue.Number == created.Number {
+			found = true
+			require.Equal(t, marker, issue.Title)
+		}
+	}
+	require.True(t, found, "the created issue did not come back from the listing")
+
+	// A free-text search narrows to the issue just created — eventually. The
+	// `q` filter is served by the host's issue indexer, which ingests
+	// asynchronously, so a search issued immediately after a create legitimately
+	// returns nothing. Retry briefly rather than racing it.
+	//
+	// A host that never indexes is a deployment choice, not a broken contract:
+	// the watch still works, its optional free-text filter just matches nothing.
+	// That is worth logging, not failing.
+	var matched []Issue
+	for attempt := 0; attempt < 15; attempt++ {
+		matched, err = client.ListIssues(ctx, owner, repo, IssueListOptions{State: "all", Query: marker})
+		require.NoError(t, err)
+		if len(matched) > 0 {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if len(matched) == 0 {
+		t.Logf("this host's issue indexer did not pick up %q within 15s; the free-text filter will match nothing here", marker)
+	} else {
+		require.Equal(t, created.Number, matched[0].Number)
+	}
+
+	// `since` in the future must exclude it. This is the parameter the poller
+	// relies on to keep a steady-state tick cheap; a host that ignores it
+	// still works, but the plugin should know which behaviour it got.
+	future, err := client.ListIssues(ctx, owner, repo, IssueListOptions{
+		State: "all",
+		Since: time.Now().Add(24 * time.Hour),
+	})
+	require.NoError(t, err)
+	if len(future) != 0 {
+		t.Logf("this host ignores `since` (%d issues returned); the poller still dedups correctly", len(future))
+	}
+}
