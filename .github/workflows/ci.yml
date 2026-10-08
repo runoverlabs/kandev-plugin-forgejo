@@ -20,7 +20,7 @@ jobs:
           path: kandev-plugin-forgejo
 
       # The SDK is not a standalone module yet, so the build needs a sibling
-      # kandev checkout (see README, "Development").
+      # kandev checkout (see docs/development.md).
       - name: Check out kandev SDK
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

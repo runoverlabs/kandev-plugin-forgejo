@@ -1,5 +1,94 @@
 # Changelog
 
+## 0.3.0-rc.1
+
+Release candidate for 0.3.0. Install it on a real instance and let it run
+before the final tag — see `docs/testing-on-kandev.md`. Kandev returns **409**
+for a version that is already installed, which is why this candidate carries
+its own version rather than being a rebuild of `0.3.0`.
+
+
+Issue watches. A watch polls Forgejo repositories on an interval and files each
+new matching issue as a Kanban task.
+
+- Kandev's native issue watches are compiled in per provider with no extension
+  point, so this is a plugin-owned poll loop: the plugin process runs its own
+  timer and creates tasks through the Host's `api_write:tasks` RPC. Everything
+  stays in one repo and one release cycle.
+- The manifest gains `api_write: ["tasks"]` and `api_read` on `workspaces`,
+  `workflows`, `agent_profiles` and `executor_profiles`. Task creation is the
+  plugin's only entity mutation; the reads let the configuration form offer real
+  columns and profiles by name instead of asking for raw ids.
+- The watch model reproduces the fourteen columns Kandev's six native providers
+  share, plus `max_inflight_tasks`, `repository_id` and `base_branch` — which
+  every native provider except GitHub carries, and whose absence there is an
+  accident of history rather than a design decision.
+- Deduplication is a ledger in plugin state keyed by repository and issue
+  number, written after the task is created. Reserving the key first would
+  avoid a duplicate on a crash between create and record, but would permanently
+  suppress the issue if creation then failed; a duplicate card is visible and
+  fixable, a silently skipped issue is neither.
+- Duplicate handling is a choice rather than an assumption. The default matches
+  the native providers, whose join tables are `UNIQUE(issue_watch_id, repo,
+  number)` — two watches over the same issue each file a card. "One task per
+  issue" scopes the ledger to the workspace instead.
+- The open task limit counts this watch's tasks that Kandev has neither
+  completed nor archived, via one page-walk rather than a `GetTask` per issue
+  ever handled. It throttles rather than capping: finishing a task frees a slot.
+- Polls are incremental. A watch passes its previous poll time as `since`,
+  rewound by one interval — clock skew between the plugin and the instance is
+  real, and re-reading a small overlap costs one deduplicated comparison while
+  missing an issue costs a card that never appears.
+- Pull requests are excluded. The repository issue endpoint returns both in one
+  shape; `type=issues` asks the server to filter, and every result is checked
+  again because older Gitea releases ignore the parameter.
+- The free-text filter uses `q`, not `keyword` — the per-repository issue
+  endpoint silently ignores the latter, so the wrong spelling filters nothing
+  rather than erroring. `q` is served by the host's issue indexer, which ingests
+  asynchronously and can be disabled; labels and state are evaluated directly
+  and have neither caveat. Verified against live Gitea 1.27.
+- `start_agent` defaults off, and a watch that turns it on must name an agent
+  profile: an unattended watch should not depend on whichever profile the
+  workspace happens to default to. Kandev treats the launch as best-effort, so a
+  failure to start does not fail task creation.
+- Every watch action is workspace-scoped, and the workspace comes from the
+  verified action context rather than the request body. Upstream #3681 fixed a
+  leak where native providers returned every workspace's watch configs, exposing
+  filters, repository and profile ids, and spawn prompts.
+- Both enable switches genuinely stop work: a workspace with the integration
+  turned off is skipped by the poller, and a paused watch refuses a manual run.
+
+**Upgrading:** this release changes the plugin's declared capabilities, so
+Kandev requires the capability set to be re-approved. Until it is, the existing
+repository, review and pull-request features are denied as well — Kandev checks
+the approval against a digest of the whole capability list, not per capability.
+
+### Security
+
+- Adds `.github/workflows/security.yml`: secret detection with `gitleaks` over
+  the working tree **and the full history**, `govulncheck` for Go, `npm audit`
+  for the UI toolchain, and CodeQL with the `security-extended` queries for both
+  languages. It runs on push, on pull requests, and weekly — a dependency
+  becomes vulnerable when an advisory is published, not when someone pushes.
+- `make security` runs the same checks locally, minus CodeQL.
+- Bumps `google.golang.org/grpc` to v1.83.2 for GO-2026-6443, a server panic
+  reachable from `pluginsdk.Serve` via missing authority or Host headers. Found
+  by the new pipeline on its first run.
+- Bumps `vitest` to 3.2.7, clearing a critical advisory in its UI server. Two
+  moderate advisories remain in `@vitest/mocker`, fixable only by a major bump
+  that breaks an existing test; `npm audit` is gated at `high` because every npm
+  dependency here is a devDependency and the published package ships a pre-built
+  bundle with no `node_modules`.
+
+### Documentation
+
+- Splits the README, which had grown to 482 lines, into a functionality-focused
+  README plus `docs/`: issue watches, agent tools, configuration and operations,
+  security, development and approach, and testing on a real Kandev.
+- Adds `docs/testing-on-kandev.md`, the pre-release verification stage neither
+  the unit suite nor the live contract suite can cover: every Host RPC is faked
+  in one and absent from the other.
+
 ## 0.2.1
 
 - Task sessions can clone and push over HTTPS. Kandev asks the owning plugin

@@ -29,5 +29,5 @@ require (
 
 // The Kandev SDK (pkg/pluginsdk) is not published as a standalone module yet,
 // so this repo is developed against a sibling checkout of the Kandev monorepo.
-// See README.md "Developing against the SDK".
+// See docs/development.md, "Getting set up".
 replace github.com/kandev/kandev => ../kandev/apps/backend

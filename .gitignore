@@ -2,3 +2,8 @@ bin/
 .build/
 node_modules/
 *.tar.gz
+
+# Local-only agent pointer. AGENTS.md is the committed source of truth; this
+# file just points Claude Code at it, so it stays on each machine rather than
+# in the repo.
+CLAUDE.md
