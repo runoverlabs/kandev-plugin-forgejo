@@ -135,14 +135,7 @@ func TestWatchActionsRoundTrip(t *testing.T) {
 	t.Parallel()
 	runtime, _ := newWatchRuntime(t)
 
-	created, err := watchAction(t, runtime, ActionWatchesCreate, "ws-1", map[string]any{
-		"name":             "Bugs",
-		"workflow_id":      "wf-1",
-		"workflow_step_id": "step-inbox",
-		"repos":            []string{"acme/app"},
-		"labels":           []string{"bug"},
-		"prompt":           "Investigate.",
-	})
+	created, err := watchAction(t, runtime, ActionWatchesCreate, "ws-1", fullWatchBody())
 	require.NoError(t, err)
 	watch := created["watch"].(map[string]any)
 	id := watch["id"].(string)
@@ -155,7 +148,9 @@ func TestWatchActionsRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, listed["watches"], 1)
 
-	// An update carries only the fields the form changed; the rest survive.
+	// The pause toggle sends only `{id, enabled}`. Every other field must come
+	// through untouched: this once erased the prompt, profiles, repository,
+	// query and labels of any watch that was paused or resumed.
 	updated, err := watchAction(t, runtime, ActionWatchesUpdate, "ws-1", map[string]any{
 		"id":      id,
 		"enabled": false,
@@ -163,8 +158,12 @@ func TestWatchActionsRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	changed := updated["watch"].(map[string]any)
 	require.Equal(t, false, changed["enabled"])
-	require.Equal(t, "Bugs", changed["name"], "an omitted name keeps its stored value")
-	require.Equal(t, "wf-1", changed["workflow_id"])
+	for key, want := range watch {
+		if key == "enabled" || key == "updated_at" {
+			continue
+		}
+		require.Equal(t, want, changed[key], "a partial update must leave %q alone", key)
+	}
 
 	deleted, err := watchAction(t, runtime, ActionWatchesDelete, "ws-1", map[string]any{"id": id})
 	require.NoError(t, err)
@@ -173,6 +172,58 @@ func TestWatchActionsRoundTrip(t *testing.T) {
 	empty, err := watchAction(t, runtime, ActionWatchesList, "ws-1", nil)
 	require.NoError(t, err)
 	require.Empty(t, empty["watches"])
+}
+
+// fullWatchBody sets every field a watch can carry, so a test can tell a field
+// that survived from one that was never there.
+func fullWatchBody() map[string]any {
+	return map[string]any{
+		"name":                  "Bugs",
+		"workflow_id":           "wf-1",
+		"workflow_step_id":      "step-inbox",
+		"agent_profile_id":      "agent-1",
+		"executor_profile_id":   "exec-1",
+		"prompt":                "Investigate.",
+		"start_agent":           true,
+		"repository_id":         "repo-1",
+		"base_branch":           "main",
+		"repos":                 []string{"acme/app"},
+		"labels":                []string{"bug"},
+		"query":                 "crash",
+		"poll_interval_seconds": 600,
+		"max_inflight_tasks":    3,
+	}
+}
+
+// An operator must still be able to clear a field on purpose: an explicit empty
+// value is taken as written, while an absent field is not.
+func TestWatchUpdateClearsAFieldOnlyWhenItIsSentExplicitly(t *testing.T) {
+	t.Parallel()
+	runtime, _ := newWatchRuntime(t)
+	created, err := watchAction(t, runtime, ActionWatchesCreate, "ws-1", fullWatchBody())
+	require.NoError(t, err)
+	before := created["watch"].(map[string]any)
+
+	updated, err := watchAction(t, runtime, ActionWatchesUpdate, "ws-1", map[string]any{
+		"id":            before["id"],
+		"prompt":        "",
+		"repository_id": "",
+		"labels":        []string{},
+		"start_agent":   false,
+	})
+	require.NoError(t, err)
+	after := updated["watch"].(map[string]any)
+
+	require.Equal(t, "", after["prompt"])
+	require.Equal(t, "", after["repository_id"])
+	require.Empty(t, after["labels"])
+	require.Equal(t, false, after["start_agent"])
+	// Fields the body did not mention are still as they were.
+	require.Equal(t, before["agent_profile_id"], after["agent_profile_id"])
+	require.Equal(t, before["executor_profile_id"], after["executor_profile_id"])
+	require.Equal(t, before["base_branch"], after["base_branch"])
+	require.Equal(t, before["query"], after["query"])
+	require.Equal(t, before["repos"], after["repos"])
 }
 
 // The workspace comes from the verified context, never the body. Without it
