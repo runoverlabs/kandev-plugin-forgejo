@@ -178,6 +178,22 @@ jobs:
           curl -sf -X POST -H "$auth" -H 'Content-Type: application/json' \
             -d '{"head":"feature/kandev-demo","base":"main","title":"Seed pull request"}' \
             http://localhost:3000/api/v1/repos/kandev/demo/pulls > /dev/null
+          # Two more accounts for the multi-user cases: `reviewer` can write
+          # (review, request, merge) and `readonly` can only read. Neither is
+          # an admin, so they see what an ordinary token sees.
+          for pair in "reviewer:write" "readonly:read"; do
+            user="${pair%%:*}"; permission="${pair##*:}"
+            docker exec -u git -e ADMIN_PASSWORD="$ADMIN_PASSWORD" instance "$BINARY" admin user create \
+              --username "$user" --password "$ADMIN_PASSWORD" \
+              --email "$user@example.com" --must-change-password=false
+            user_token="$(docker exec -u git instance "$BINARY" admin user generate-access-token \
+              --username "$user" --token-name ci --scopes 'all' --raw | tr -d '\r\n')"
+            echo "::add-mask::$user_token"
+            echo "${user}_token=$user_token" >> "$GITHUB_OUTPUT"
+            curl -sf -X PUT -H "$auth" -H 'Content-Type: application/json' \
+              -d "{\"permission\":\"$permission\"}" \
+              "http://localhost:3000/api/v1/repos/kandev/demo/collaborators/$user" > /dev/null
+          done
           echo "token=$token" >> "$GITHUB_OUTPUT"
 
       - name: Live contract tests
@@ -188,5 +204,8 @@ jobs:
           KANDEV_FORGEJO_OWNER: kandev
           KANDEV_FORGEJO_REPO: demo
           KANDEV_FORGEJO_HEAD_BRANCH: feature/kandev-create
+          KANDEV_FORGEJO_REVIEWER: reviewer
+          KANDEV_FORGEJO_REVIEWER_TOKEN: ${{ steps.seed.outputs.reviewer_token }}
+          KANDEV_FORGEJO_READONLY_TOKEN: ${{ steps.seed.outputs.readonly_token }}
           KANDEV_FORGEJO_EXPECT_FLAVOR: ${{ matrix.flavor }}
         run: go test ./internal/forgejo -run TestLive -v -count=1

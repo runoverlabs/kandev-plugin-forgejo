@@ -72,6 +72,10 @@ func classifyWrite(status int, body string) Reason {
 	switch {
 	case has("already merged", "has been merged"):
 		return ReasonAlreadyMerged
+	case has("not allowed to merge", "not allowed to"):
+		// Gitea and Forgejo answer a merge by a user without permission with
+		// 405, not 403 (probed with a read-only collaborator on all four).
+		return ReasonForbidden
 	case has("up to date"):
 		// Gitea and Forgejo 7 answer 500 for a no-op branch update.
 		return ReasonUpToDate
@@ -93,7 +97,9 @@ func classifyWrite(status int, body string) Reason {
 			return ReasonConflict
 		}
 	case http.StatusForbidden:
-		if has("protect", "approv", "required", "status check") {
+		// "write permission is required" (Gitea 1.27) is a permission failure
+		// even though it contains "required".
+		if !has("permission") && has("protect", "approv", "required", "status check") {
 			return ReasonBlockedByProtection
 		}
 		return ReasonForbidden

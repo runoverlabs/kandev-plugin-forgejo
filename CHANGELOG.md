@@ -4,6 +4,11 @@
 
 Working towards 0.4.
 
+- A merge by a user without merge permission is now reported as a permission
+  problem. Gitea and Forgejo answer it with 405, which was read as "not
+  mergeable", and Gitea 1.27's `write permission is required` was read as branch
+  protection.
+
 - New read action `change_requests.details`: everything the review panel needs
   for one linked pull request in a single bounded response (merge styles the
   repository allows, why a merge is blocked, reviews, requested reviewers,
