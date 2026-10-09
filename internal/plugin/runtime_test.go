@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"kandev-plugin-forgejo/internal/forgejo"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -526,4 +527,12 @@ func TestSetEnabledValidatesInput(t *testing.T) {
 		Body:      []byte(`{"enabled":true}`),
 	})
 	require.ErrorContains(t, err, "requires a verified workspace")
+}
+
+func TestSafeMessageDoesNotCallWriteForbiddenABadToken(t *testing.T) {
+	t.Parallel()
+	forbidden := safeMessage(&forgejo.WriteError{Status: 403, Reason: forgejo.ReasonForbidden})
+	require.NotContains(t, forbidden, "rejected the access token")
+	require.Contains(t, forbidden, "permission")
+	require.Contains(t, safeMessage(&forgejo.WriteError{Status: 409, Reason: forgejo.ReasonConflict}), "conflicts")
 }
