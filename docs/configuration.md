@@ -87,6 +87,11 @@ Action bodies:
 | `repositories.branches` | `{"repository":{…full descriptor…}}` — a flat identity is rejected |
 | `change_requests.get` / `.associations` | none |
 | `change_requests.details` | `{"number"}`, optional when the task links one pull request (also needs `taskId`). Read-only. Returns the pull request, merge styles and blockers, reviews, requested reviewers and comments, with `null` for anything the instance does not report. 404 when the task does not link that number, 409 when it links several and none is named |
+| `change_requests.merge` | `{"number","head_sha","style","delete_branch","when_checks_succeed","cancel_scheduled"}`. `head_sha` is required (the commit the caller last saw); a different head is refused with 409. `style` must be one the repository allows, and defaults to the repository's own default |
+| `change_requests.review` | `{"number","event","body","head_sha","comments":[{"path","line","body"}]}`. `event` is `approve`, `request_changes` or `comment`; at most 50 inline comments |
+| `change_requests.request_reviewers` | `{"number","add":[],"remove":[]}`, logins only, at most 20 |
+| `change_requests.update_branch` | `{"number","style"}`, `merge` (default) or `rebase`. Already up to date is success |
+| `change_requests.comment` | `{"number","body"}` |
 | `change_requests.create` | `{"title","description","destination","draft"}` (also needs `taskId`, `sessionId`, `repositoryId`) |
 | `change_requests.link` | `{"reference":"owner/repo#1"}` (also needs `taskId`) |
 | `change_requests.unlink` | `{"connection_scope","repository_id","number"}` (also needs `taskId`) |

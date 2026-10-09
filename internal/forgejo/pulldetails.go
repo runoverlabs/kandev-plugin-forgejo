@@ -144,7 +144,7 @@ func (a *PullActions) Details(ctx context.Context, workspaceID, taskID string, n
 
 	mergeable := a.settledMergeable(pull)
 	merge := sourcecontrol.MergeStatus{Styles: []string{}, Blockers: []string{}, Mergeable: mergeable}
-	if id, err := strconv.ParseInt(target.identity.RepositoryID, 10, 64); err == nil {
+	if id, err := parseRepositoryID(target.identity.RepositoryID); err == nil {
 		if repo, err := client.RepoByID(ctx, id); err == nil {
 			merge.Styles = nonNil(repo.MergeStyles())
 			merge.DefaultStyle = repo.DefaultMergeStyle
@@ -321,4 +321,8 @@ func clipText(text string) string {
 		return text
 	}
 	return string(runes[:maxDetailTextRunes]) + truncatedMarker
+}
+
+func parseRepositoryID(value string) (int64, error) {
+	return strconv.ParseInt(strings.TrimSpace(value), 10, 64)
 }

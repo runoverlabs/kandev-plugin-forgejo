@@ -4,6 +4,13 @@
 
 Working towards 0.4.
 
+- Five write actions on a linked pull request: `change_requests.merge`,
+  `.review`, `.request_reviewers`, `.update_branch` and `.comment`. Each acts only
+  on a pull request the task has linked, merge requires the head SHA the caller
+  last saw, reviews and comments end with "Posted via Kandev.", and each write
+  logs one audit line (action, actor, task, number, outcome). Nothing calls them
+  yet; the review panel buttons and the agent tool ops follow. No new capability.
+
 - A merge by a user without merge permission is now reported as a permission
   problem. Gitea and Forgejo answer it with 405, which was read as "not
   mergeable", and Gitea 1.27's `write permission is required` was read as branch

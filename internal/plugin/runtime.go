@@ -125,7 +125,9 @@ func (r *Runtime) HandleAction(ctx context.Context, request *pluginsdk.PluginAct
 		return r.connectionStatus(ctx, request.Context.WorkspaceID, true)
 	case ActionConnectionSetEnabled:
 		return r.setEnabled(ctx, request)
-	case sourcecontrol.ActionChangeRequestsDetails:
+	case sourcecontrol.ActionChangeRequestsDetails, sourcecontrol.ActionChangeRequestsMerge,
+		sourcecontrol.ActionChangeRequestsReview, sourcecontrol.ActionChangeRequestsRequestReviewers,
+		sourcecontrol.ActionChangeRequestsUpdateBranch, sourcecontrol.ActionChangeRequestsComment:
 		return r.handlePullAction(ctx, request)
 	case ActionWatchesList, ActionWatchesOptions, ActionWatchesCreate, ActionWatchesUpdate,
 		ActionWatchesDelete, ActionWatchesRun, ActionWatchesReset:

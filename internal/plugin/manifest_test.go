@@ -100,18 +100,25 @@ func TestManifestDeclaresEveryRoutedAction(t *testing.T) {
 	}
 
 	for key, wantScope := range map[string]string{
-		sourcecontrol.ActionRepositoriesList:          "workspace",
-		sourcecontrol.ActionRepositoriesInspect:       "workspace",
-		sourcecontrol.ActionRepositoriesBranches:      "workspace",
-		sourcecontrol.ActionChangeRequestsCreate:      "task",
-		sourcecontrol.ActionChangeRequestsGet:         "task",
-		sourcecontrol.ActionChangeRequestsDetails:     "task",
-		sourcecontrol.ActionChangeRequestsLink:        "task",
-		sourcecontrol.ActionChangeRequestsUnlink:      "task",
-		sourcecontrol.ActionChangeRequestAssociations: "workspace",
-		ActionConnectionGet:                           "workspace",
-		ActionConnectionTest:                          "workspace",
-		ActionConnectionSetEnabled:                    "workspace",
+		sourcecontrol.ActionRepositoriesList:      "workspace",
+		sourcecontrol.ActionRepositoriesInspect:   "workspace",
+		sourcecontrol.ActionRepositoriesBranches:  "workspace",
+		sourcecontrol.ActionChangeRequestsCreate:  "task",
+		sourcecontrol.ActionChangeRequestsGet:     "task",
+		sourcecontrol.ActionChangeRequestsDetails: "task",
+		// The five writes. Task-scoped so the host hands the handler a verified
+		// task, which is what the linked-pull-request rule resolves against.
+		sourcecontrol.ActionChangeRequestsMerge:            "task",
+		sourcecontrol.ActionChangeRequestsReview:           "task",
+		sourcecontrol.ActionChangeRequestsRequestReviewers: "task",
+		sourcecontrol.ActionChangeRequestsUpdateBranch:     "task",
+		sourcecontrol.ActionChangeRequestsComment:          "task",
+		sourcecontrol.ActionChangeRequestsLink:             "task",
+		sourcecontrol.ActionChangeRequestsUnlink:           "task",
+		sourcecontrol.ActionChangeRequestAssociations:      "workspace",
+		ActionConnectionGet:                                "workspace",
+		ActionConnectionTest:                               "workspace",
+		ActionConnectionSetEnabled:                         "workspace",
 		// Issue watches are workspace-scoped without exception. A task-scoped
 		// watch action would hand the handler a task id in place of the
 		// workspace it must filter by, which is how the native providers
@@ -128,7 +135,7 @@ func TestManifestDeclaresEveryRoutedAction(t *testing.T) {
 		require.True(t, ok, "manifest does not declare routed action %q", key)
 		require.Equal(t, wantScope, scope, "action %q has the wrong scope", key)
 	}
-	require.Len(t, parsed.Actions, 19, "an undeclared or stale action entry drifted from the routed set")
+	require.Len(t, parsed.Actions, 24, "an undeclared or stale action entry drifted from the routed set")
 }
 
 // The source-control contracts first shipped in v0.88.0 and agent tools in

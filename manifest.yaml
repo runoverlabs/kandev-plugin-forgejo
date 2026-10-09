@@ -84,6 +84,25 @@ actions:
   - key: "change_requests.details"
     scope: "task"
     max_body_bytes: 1024
+  # Writes on a pull request the verified task has linked. Each acts as the
+  # operator's shared Forgejo account, carries the head SHA the caller last saw
+  # (merge requires it), and has its own key so the Kandev action audit shows
+  # which write happened. Bodies are bounded to what the action can use.
+  - key: "change_requests.merge"
+    scope: "task"
+    max_body_bytes: 4096
+  - key: "change_requests.review"
+    scope: "task"
+    max_body_bytes: 65536
+  - key: "change_requests.request_reviewers"
+    scope: "task"
+    max_body_bytes: 2048
+  - key: "change_requests.update_branch"
+    scope: "task"
+    max_body_bytes: 1024
+  - key: "change_requests.comment"
+    scope: "task"
+    max_body_bytes: 16384
   - key: "change_requests.link"
     scope: "task"
     max_body_bytes: 16384
