@@ -1,12 +1,6 @@
 # Changelog
 
-## 0.3.0-rc.1
-
-Release candidate for 0.3.0. Install it on a real instance and let it run
-before the final tag — see `docs/testing-on-kandev.md`. Kandev returns **409**
-for a version that is already installed, which is why this candidate carries
-its own version rather than being a rebuild of `0.3.0`.
-
+## 0.3.0
 
 Issue watches. A watch polls Forgejo repositories on an interval and files each
 new matching issue as a Kanban task.
