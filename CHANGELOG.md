@@ -9,7 +9,9 @@ Working towards 0.4.
   repository allows, why a merge is blocked, reviews, requested reviewers,
   comments). It only answers for a pull request the task has linked, and parts
   the token cannot see come back empty rather than failing the read. Nothing
-  calls it yet; the panel and the write actions follow.
+  calls it yet; the panel and the write actions follow. A `mergeable: false` newer
+  than 30 seconds is reported as unknown: Gitea briefly reads false on a healthy
+  pull request, and a wrong "has conflicts" would block a clean merge.
 
 - Groundwork for PR actions (client layer only, no user-visible change yet):
   writes now classify failures into fixed reasons (not mergeable, conflict, out
