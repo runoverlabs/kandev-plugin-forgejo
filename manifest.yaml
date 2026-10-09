@@ -4,7 +4,7 @@
 # catalog entry. Keep all four in sync when renaming.
 id: "kandev-plugin-forgejo"
 api_version: 1
-version: "0.3.0"
+version: "0.3.1"
 display_name: "Forgejo"
 description: "Connect a self-hosted Forgejo or Gitea instance to native Kandev repository, pull-request, task-link, and review workflows."
 author: "naerymdan"

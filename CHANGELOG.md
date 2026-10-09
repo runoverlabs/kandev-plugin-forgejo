@@ -20,6 +20,33 @@ Working towards 0.4.
   transparent mark for dark backgrounds and `assets/logo-dotmatrix-light.svg` a
   variant for white ones.
 
+## 0.3.1
+
+Fixes three defects in 0.3.0. No capability changes, so Kandev does not ask for
+re-approval.
+
+- **Pausing or resuming an issue watch no longer erases it.** The pause toggle
+  sends only the new enabled state, but the update path overwrote the agent and
+  executor profiles, prompt, repository, base branch, query, labels and the
+  start-agent setting with empty values. An update now changes only the fields it
+  carries, and a field can still be cleared by sending it empty on purpose.
+  **A watch that was paused or resumed on 0.3.0 has already lost those settings
+  and they cannot be recovered; open it and set them again.**
+- **The review panel could not render.** The adapter handed Kandev's detail view
+  a different shape from the one it renders, and the view throws on the first
+  field it expects and does not find (the author, the reviewer list). The adapter
+  now supplies every field. What the review snapshot does not carry is shown as
+  a neutral placeholder rather than invented: the author reads "unknown", the
+  branches are blank, the line counts are 0, and the reviewer and comment lists
+  are empty. Loading the real values needs a detail request the panel does not
+  make yet. State, draft, checks, review state and pending reviewers are real.
+- **Issue watches could miss issues on older instances.** The watch walks a
+  repository's issues a page at a time and stopped at the first page that looked
+  short. A server that ignores the issue-only filter (older Gitea) mixes pull
+  requests into the page, so a full page of mostly pull requests looked short and
+  every issue after it was dropped. The walk now judges a page by the rows the
+  server sent.
+
 ## 0.3.0
 
 Issue watches. A watch polls Forgejo repositories on an interval and files each

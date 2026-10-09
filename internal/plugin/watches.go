@@ -40,21 +40,28 @@ const (
 
 // watchRequest is the shared body shape. Every field is optional at the
 // transport level and checked per action, so one decode serves all of them.
+//
+// The clearable fields are pointers, and so are Labels and Repos by being nil
+// when absent: an operator must be able to clear a prompt or detach a
+// repository by sending an empty value, and a partial update such as the
+// pause toggle's `{id, enabled}` must leave everything else alone. A plain
+// string cannot tell those two apart, which is how pausing a watch once erased
+// its prompt, profiles, repository, query and labels.
 type watchRequest struct {
 	ID                  string             `json:"id"`
 	Name                string             `json:"name"`
 	WorkflowID          string             `json:"workflow_id"`
 	WorkflowStepID      string             `json:"workflow_step_id"`
-	AgentProfileID      string             `json:"agent_profile_id"`
-	ExecutorProfileID   string             `json:"executor_profile_id"`
-	Prompt              string             `json:"prompt"`
-	StartAgent          bool               `json:"start_agent"`
-	RepositoryID        string             `json:"repository_id"`
-	BaseBranch          string             `json:"base_branch"`
+	AgentProfileID      *string            `json:"agent_profile_id"`
+	ExecutorProfileID   *string            `json:"executor_profile_id"`
+	Prompt              *string            `json:"prompt"`
+	StartAgent          *bool              `json:"start_agent"`
+	RepositoryID        *string            `json:"repository_id"`
+	BaseBranch          *string            `json:"base_branch"`
 	Repos               []string           `json:"repos"`
 	Labels              []string           `json:"labels"`
 	State               string             `json:"state"`
-	Query               string             `json:"query"`
+	Query               *string            `json:"query"`
 	Enabled             *bool              `json:"enabled"`
 	PollIntervalSeconds int                `json:"poll_interval_seconds"`
 	MaxInflightTasks    int                `json:"max_inflight_tasks"`
@@ -282,16 +289,18 @@ func watchFromRequest(workspaceID string, base watches.Watch, body watchRequest)
 	assignString(&watch.WorkflowStepID, body.WorkflowStepID)
 	assignString(&watch.State, body.State)
 
-	// These four are clearable: an operator removing a prompt or detaching a
-	// repository must be able to, so an empty string is taken as written.
-	watch.AgentProfileID = body.AgentProfileID
-	watch.ExecutorProfileID = body.ExecutorProfileID
-	watch.Prompt = body.Prompt
-	watch.RepositoryID = body.RepositoryID
-	watch.BaseBranch = body.BaseBranch
-	watch.Query = body.Query
-	watch.Labels = body.Labels
-	watch.StartAgent = body.StartAgent
+	// These are clearable, so an empty value is taken as written, but only when
+	// the body carries the field at all. An absent field keeps the stored value.
+	assignPtr(&watch.AgentProfileID, body.AgentProfileID)
+	assignPtr(&watch.ExecutorProfileID, body.ExecutorProfileID)
+	assignPtr(&watch.Prompt, body.Prompt)
+	assignPtr(&watch.RepositoryID, body.RepositoryID)
+	assignPtr(&watch.BaseBranch, body.BaseBranch)
+	assignPtr(&watch.Query, body.Query)
+	assignPtr(&watch.StartAgent, body.StartAgent)
+	if body.Labels != nil {
+		watch.Labels = body.Labels
+	}
 
 	if body.Enabled != nil {
 		watch.Enabled = *body.Enabled
@@ -321,6 +330,14 @@ func watchFromRequest(workspaceID string, base watches.Watch, body watchRequest)
 		watch.Repos = repos
 	}
 	return watch, nil
+}
+
+// assignPtr writes *value onto target when the body carried the field, empty
+// or not. A nil pointer means the field was absent, and the stored value stays.
+func assignPtr[T any](target *T, value *T) {
+	if value != nil {
+		*target = *value
+	}
 }
 
 // assignString writes value onto target when value is non-empty, so an omitted

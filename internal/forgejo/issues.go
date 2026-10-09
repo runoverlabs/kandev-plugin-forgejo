@@ -94,6 +94,16 @@ const maxIssuePageLimit = 50
 // because a watch polling on an interval should not pull a repository's whole
 // issue list across the network to discard most of it locally.
 func (c *Client) ListIssues(ctx context.Context, owner, name string, options IssueListOptions) ([]Issue, error) {
+	issues, _, err := c.listIssuesPage(ctx, owner, name, options)
+	return issues, err
+}
+
+// listIssuesPage is ListIssues that also reports how many rows the server
+// returned before pull requests were filtered out. A paginating caller needs
+// that raw count: the filtered length is not an end-of-results signal, because
+// a server that ignores type=issues can fill a page with pull requests and make
+// a full page look short.
+func (c *Client) listIssuesPage(ctx context.Context, owner, name string, options IssueListOptions) (issues []Issue, raw int, err error) {
 	page := options.Page
 	if page < 1 {
 		page = 1
@@ -128,17 +138,17 @@ func (c *Client) ListIssues(ctx context.Context, owner, name string, options Iss
 	var results []Issue
 	path := "/repos/" + pathSegment(owner) + "/" + pathSegment(name) + "/issues"
 	if err := c.get(ctx, path, values, &results); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	issues := make([]Issue, 0, len(results))
+	issues = make([]Issue, 0, len(results))
 	for _, issue := range results {
 		if issue.IsPullRequest() {
 			continue
 		}
 		issues = append(issues, issue)
 	}
-	return issues, nil
+	return issues, len(results), nil
 }
 
 // joinLabels renders the label filter the issue endpoint expects: a
