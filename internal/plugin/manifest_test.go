@@ -135,7 +135,7 @@ func TestManifestDeclaresEveryRoutedAction(t *testing.T) {
 		require.True(t, ok, "manifest does not declare routed action %q", key)
 		require.Equal(t, wantScope, scope, "action %q has the wrong scope", key)
 	}
-	require.Len(t, parsed.Actions, 24, "an undeclared or stale action entry drifted from the routed set")
+	require.Len(t, parsed.Actions, 25, "an undeclared or stale action entry drifted from the routed set")
 }
 
 // The source-control contracts first shipped in v0.88.0 and agent tools in

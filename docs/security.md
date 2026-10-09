@@ -59,6 +59,12 @@ Forgejo account is the same whichever Kandev user clicked.
 - **Fixed failure messages.** A failed write maps to a fixed reason; the
   instance's response body is read only to classify it and is never forwarded. A
   403 on a write is reported as a permission problem, not as a bad token.
+- **Agents cannot merge unless an operator allows it.** The `pr` tool's merge op
+  is behind a per-workspace switch that is off by default and fails closed. With
+  it on, an agent still cannot merge a pull request with failing or running
+  checks, conflicts, missing approvals or requested changes, whatever the
+  repository's own protection says. Review, comment, reviewer requests and
+  branch updates are not behind the switch.
 - **Token scope.** Writes need `write:repository`; comments, labels and
   assignees may also need `write:issue` on some versions.
 

@@ -4,6 +4,16 @@
 
 Working towards 0.4.
 
+- The `pr` agent tool gains `merge`, `review`, `request_review`, `update` and
+  `comment`, acting on the task's one linked pull request (several linked: it
+  refuses). `get` now reports the head `sha`, which `merge` requires. Agents
+  cannot merge until an operator switches it on for the workspace (new toggle in
+  the connection panel, action `connection.set_agent_merge`); with it on, merge
+  still refuses conflicts, missing approvals and failing or running checks. The
+  tool is now annotated `destructive_hint: true` and `idempotent_hint: false`,
+  which was previously understated. The definition grows from 591 to 999 bytes,
+  inside the existing ceilings.
+
 - Five write actions on a linked pull request: `change_requests.merge`,
   `.review`, `.request_reviewers`, `.update_branch` and `.comment`. Each acts only
   on a pull request the task has linked, merge requires the head SHA the caller

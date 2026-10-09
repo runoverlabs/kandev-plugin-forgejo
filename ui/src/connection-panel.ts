@@ -2,6 +2,7 @@ import type { Component, PluginHostApi } from "@kandev/plugin-sdk";
 
 type ConnectionStatus = {
   enabled?: unknown;
+  agent_merge?: unknown;
   configured?: unknown;
   connected?: unknown;
   instance_url?: unknown;
@@ -93,6 +94,27 @@ export function createConnectionPanel(host: PluginHostApi): Component<{ workspac
       [workspaceId, publishEnabled],
     );
 
+    const setAgentMerge = host.React.useCallback(
+      async (next: boolean) => {
+        if (!workspaceId) return;
+        setStatus((current: ConnectionStatus | null) => ({ ...(current ?? {}), agent_merge: next }));
+        const controller = new AbortController();
+        try {
+          await host.api.invokeAction(
+            "connection.set_agent_merge",
+            { workspaceId, body: { enabled: next } },
+            { signal: controller.signal },
+          );
+        } catch (cause) {
+          // Same rule as the enable switch: never show a permission the backend
+          // did not store, least of all this one.
+          setStatus((current: ConnectionStatus | null) => ({ ...(current ?? {}), agent_merge: !next }));
+          setError(operatorMessage(cause));
+        }
+      },
+      [workspaceId],
+    );
+
     const load = host.React.useCallback(
       async (probe: boolean, signal: AbortSignal) => {
         // Every action in the manifest is scope: "workspace". Calling one
@@ -135,6 +157,8 @@ export function createConnectionPanel(host: PluginHostApi): Component<{ workspac
     const configured = status?.configured === true;
     const connected = status?.connected === true;
     const enabled = status?.enabled !== false;
+    // Off unless the backend says it is on: the opposite default to `enabled`.
+    const agentMerge = status?.agent_merge === true;
 
     let detail: string;
     if (!workspaceId) {
@@ -180,6 +204,23 @@ export function createConnectionPanel(host: PluginHostApi): Component<{ workspac
           onCheckedChange: (next: boolean) => void setEnabled(next),
         }),
         host.jsx("span", null, enabled ? "Enabled for this workspace" : "Disabled for this workspace"),
+      ),
+      host.jsx(
+        "label",
+        { className: "forgejo-connection__toggle" },
+        host.jsx(host.ui.Switch, {
+          checked: agentMerge,
+          disabled: !workspaceId || !enabled,
+          "aria-label": "Let agents merge pull requests in this workspace",
+          onCheckedChange: (next: boolean) => void setAgentMerge(next),
+        }),
+        host.jsx(
+          "span",
+          null,
+          agentMerge
+            ? "Agents may merge pull requests when checks pass"
+            : "Agents may not merge pull requests (review and comment stay on)",
+        ),
       ),
       host.jsx(
         host.ui.Button,

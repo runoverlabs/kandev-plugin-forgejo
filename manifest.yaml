@@ -62,6 +62,9 @@ actions:
   - key: "connection.set_enabled"
     scope: "workspace"
     max_body_bytes: 1024
+  - key: "connection.set_agent_merge"
+    scope: "workspace"
+    max_body_bytes: 1024
   - key: "repositories.list"
     scope: "workspace"
     max_body_bytes: 16384
@@ -169,34 +172,50 @@ agent_tools:
       open_world_hint: true
 
   - name: "pr"
-    description: "This task's Forgejo/Gitea pull request: get, open, or ready (clears the WIP: prefix). open is idempotent."
+    description: "This task's Forgejo/Gitea PR: get, open, ready (clears WIP:), merge (needs sha; operator-enabled), review, request_review, update, comment."
     surfaces: ["kanban-task"]
     input_schema:
       type: object
       properties:
         op:
           type: string
-          enum: ["get", "open", "ready"]
+          enum: ["get", "open", "ready", "merge", "review", "request_review", "update", "comment"]
         head:
           type: string
-          description: "Branch with the changes; required for open."
+          description: "Branch to open from."
         base:
           type: string
-          description: "Target branch; defaults to the repo default."
+          description: "Target branch."
         title:
           type: string
           description: "Required for open."
         body:
           type: string
+          description: "Description, review or comment text."
         draft:
+          type: boolean
+        sha:
+          type: string
+          description: "Head commit from get; merge needs it."
+        event:
+          type: string
+          enum: ["approve", "request_changes", "comment"]
+        style:
+          type: string
+          description: "Merge style; merge|rebase for update."
+        reviewers:
+          type: array
+          items:
+            type: string
+        delete_branch:
           type: boolean
         repo:
           type: string
       required: ["op"]
     annotations:
       read_only_hint: false
-      destructive_hint: false
-      idempotent_hint: true
+      destructive_hint: true
+      idempotent_hint: false
       open_world_hint: true
 
 repository_providers: ["forgejo"]
