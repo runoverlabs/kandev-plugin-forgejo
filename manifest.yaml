@@ -44,6 +44,12 @@ runtime:
 # `source = "plugin:kandev-plugin-forgejo"` on the rows this plugin creates and
 # the plugin cannot set that itself, so a task from a watch is permanently
 # attributable.
+#
+# Review watches add no capability. They also use `api_write: tasks` to end the
+# life of a task whose pull request has finished: `Tasks().Update` to mark it
+# complete, and, where the host allows it (`host.v2.write:tasks`, which Kandev
+# 0.97.0 approves together with `api_write`), the exact archive command. A plugin
+# cannot delete tasks.
 capabilities:
   api_read: ["tasks", "repositories", "workspaces", "workflows", "agent_profiles", "executor_profiles"]
   api_write: ["tasks"]
@@ -145,6 +151,9 @@ actions:
     scope: "workspace"
     max_body_bytes: 1024
   - key: "watches.reset"
+    scope: "workspace"
+    max_body_bytes: 1024
+  - key: "watches.cleanup"
     scope: "workspace"
     max_body_bytes: 1024
 

@@ -28,6 +28,7 @@ provider and have no extension point a plugin can register against.
 | Composer `#` references | Search pull requests from the composer; access is re-checked live at submit time. |
 | [Agent tools (MCP)](docs/agent-tools.md) | Two tools on task sessions — read CI for a ref (optionally with each failing job's log) and get/open/ready the task's pull request. |
 | [Issue watches](docs/issue-watches.md) | Poll repositories for matching issues and file each new one as a Kanban task, with the column, profiles and prompt you choose. |
+| [Review watches](docs/review-watches.md) | File a task for every pull request that asks for your review, with an interpolated prompt and a checkout of the branch; fork pull requests never start an agent on their own; finished pull requests can have their task archived. |
 | Git credentials | HTTPS clone and push credentials for task sessions, via Kandev's Git credential broker. The configured token is issued only for `owner/repo` paths on the configured instance, only to complete task/session/repository scopes, and never while the workspace integration is switched off. Without this, Kandev cannot start a task on a Forgejo repository. |
 
 ## Requirements
@@ -145,6 +146,7 @@ the shared surface ever diverges, that matrix fails first.
 | Document | What is in it |
 | --- | --- |
 | [Issue watches](docs/issue-watches.md) | Turning Forgejo issues into Kanban tasks: every setting, what the feature guarantees, and the capabilities it needs. |
+| [Review watches](docs/review-watches.md) | Filing a task per pull request awaiting your review: scope, drafts, fork handling, and cleanup by archiving or, where the host cannot, completing the task. |
 | [Agent tools](docs/agent-tools.md) | The two MCP tools on task sessions, what CI data each host version can actually serve, and what the pair costs in prompt tokens. |
 | [Configuration and operations](docs/configuration.md) | Connection scope, the per-workspace enable switch, headless install and action bodies over HTTP, and the unsigned badge. |
 | [Security](docs/security.md) | Credential handling, the capability surface, and what the security pipeline checks. |

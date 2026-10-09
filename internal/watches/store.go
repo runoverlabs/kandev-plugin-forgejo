@@ -27,6 +27,10 @@ import (
 // has no such limit.
 const (
 	watchKeyPrefix = "watch."
+	// reviewWatchKeyPrefix holds review watches. It is deliberately not under
+	// "watch.": a 0.3.x binary lists "watch." and would otherwise read a review
+	// watch as an issue watch and poll it with filters that mean nothing there.
+	reviewWatchKeyPrefix = "rwatch."
 	// watchTaskKeyPrefix records "this watch already made a task for this
 	// issue" (DedupScopeWatch).
 	watchTaskKeyPrefix = "wt."
@@ -123,7 +127,7 @@ func (s *Store) List(ctx context.Context, workspaceID string) ([]Watch, error) {
 	}
 	found := make([]Watch, 0, len(entries))
 	for _, entry := range entries {
-		if !strings.HasPrefix(entry.Key, watchKeyPrefix) {
+		if !strings.HasPrefix(entry.Key, watchKeyPrefix) && !strings.HasPrefix(entry.Key, reviewWatchKeyPrefix) {
 			continue
 		}
 		watch, ok := decodeWatch(entry.Value)
@@ -150,9 +154,16 @@ func (s *Store) Get(ctx context.Context, workspaceID, id string) (Watch, error) 
 	if err != nil {
 		return Watch{}, err
 	}
-	value, found, err := host.GetState(ctx, stateScope, workspaceID, watchKey(id))
-	if err != nil {
-		return Watch{}, fmt.Errorf("watches: read watch: %w", err)
+	var value map[string]any
+	found := false
+	for _, key := range []string{watchKey(id), reviewWatchKey(id)} {
+		value, found, err = host.GetState(ctx, stateScope, workspaceID, key)
+		if err != nil {
+			return Watch{}, fmt.Errorf("watches: read watch: %w", err)
+		}
+		if found {
+			break
+		}
 	}
 	if !found {
 		return Watch{}, ErrNotFound
@@ -189,7 +200,7 @@ func (s *Store) Put(ctx context.Context, watch Watch) (Watch, error) {
 	if err != nil {
 		return Watch{}, err
 	}
-	if err := host.SetState(ctx, stateScope, watch.WorkspaceID, watchKey(watch.ID), value); err != nil {
+	if err := host.SetState(ctx, stateScope, watch.WorkspaceID, storedKey(watch), value); err != nil {
 		return Watch{}, fmt.Errorf("watches: store watch: %w", err)
 	}
 	return watch, nil
@@ -216,8 +227,10 @@ func (s *Store) Delete(ctx context.Context, workspaceID, id string) error {
 			return fmt.Errorf("watches: remove watch record: %w", err)
 		}
 	}
-	if err := host.DeleteState(ctx, stateScope, workspaceID, watchKey(id)); err != nil {
-		return fmt.Errorf("watches: remove watch: %w", err)
+	for _, key := range []string{watchKey(id), reviewWatchKey(id)} {
+		if err := host.DeleteState(ctx, stateScope, workspaceID, key); err != nil {
+			return fmt.Errorf("watches: remove watch: %w", err)
+		}
 	}
 	return nil
 }
@@ -367,6 +380,17 @@ func (s *Store) MarkError(ctx context.Context, watch Watch, message string) erro
 
 // watchKey is the state key holding one watch's configuration.
 func watchKey(id string) string { return watchKeyPrefix + sanitize(id) }
+
+// reviewWatchKey is the state key holding one review watch's configuration.
+func reviewWatchKey(id string) string { return reviewWatchKeyPrefix + sanitize(id) }
+
+// storedKey is the key a watch is written under, by kind.
+func storedKey(watch Watch) string {
+	if watch.IsReview() {
+		return reviewWatchKey(watch.ID)
+	}
+	return watchKey(watch.ID)
+}
 
 // dedupKey is the ledger key for one issue under a watch's dedup scope.
 func dedupKey(watch Watch, repo RepoRef, number int64) string {

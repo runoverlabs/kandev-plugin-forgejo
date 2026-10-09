@@ -36,6 +36,33 @@ host, and what the pipeline checks on every change.
   `source = "plugin:kandev-plugin-forgejo"` on rows this plugin creates and the
   plugin cannot set that field itself.
 
+## Review watches
+
+- **Fork pull requests never start an agent on their own.** A fork's head is
+  content its author controls, and a task that checks it out and starts an agent
+  runs it with the operator's executor environment. GitHub's watches mark such a
+  task so the host refuses an automatic start; **a plugin cannot set that marker**
+  (the host's top-level `fork_pr_requires_manual_start` is outside the plugin's
+  namespaced metadata), so this protection is weaker. The plugin instead never
+  sets the start flag, never attaches the fork's branch for checkout, and places
+  the task in a column that does not start an agent on entry, or leaves the pull
+  request out. It re-checks that column every run. Starting the task by hand
+  remains possible, and is the operator's decision. A head repository that is
+  missing or unnamed counts as a fork.
+- **Branch names are checked before any checkout.** A head branch that could be
+  read as an option or a path trick gets a task with no checkout.
+- **Pull request text is data.** Titles, authors and branch names are substituted
+  into the prompt as text and never evaluated.
+- **Cleanup never deletes.** The plugin cannot delete tasks, and does not try.
+  It archives with the host's exact archive command, which needs the
+  `host.v2.write:tasks` approval (part of approving `api_write: tasks` on Kandev
+  0.97.0), and otherwise completes the task. It acts only on task ids in its own ledger, never on
+  another task in the workspace.
+- **Cleanup is opt-in and bounded.** A watch cleans up only when set to, makes no
+  instance request for a task that is already archived or complete, checks at
+  most 40 pull requests per pass, and stops the whole pass at the first rate
+  limit or refused token.
+
 ## Write authority
 
 The review panel can merge, review, request reviewers, update the branch and

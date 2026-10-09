@@ -24,7 +24,7 @@ CI checks the SDK out at **pinned tags**, never at `main`:
 | Target | Tag | Used for |
 |---|---|---|
 | Standard | `v0.97.0` | Local development, the live contract jobs, the security workflow, and the release build — the newest Kandev this plugin is verified on |
-| Minimum | `v0.95.1` | A second `test` leg: the oldest Kandev the manifest claims (`min_kandev_version`) |
+| Minimum | `v0.95.1` | A second `test` leg: the oldest Kandev the manifest claims (`min_kandev_version`). Built with `-tags kandev_min`: that SDK has no exact archive command, so `internal/watches/archive_min.go` replaces `archive_exact.go` and cleanup only completes tasks |
 
 Build locally against the standard target (`git -C ../kandev checkout v0.97.0`)
 so your build matches CI. The minimum leg is the guard that matters: building
@@ -116,6 +116,23 @@ containers (Gitea 1.20.6 and 1.27.3, Forgejo 7.0.16 and 16.0.5) on 2026-10-09.
 | `GET .../branches/{b}` for a read-only collaborator | 200 on all four |
 | Files, commits, `.diff` | 200 on all; files carry per-file counts |
 
+Review watches, probed the same way on 2026-10-09 (`TestLiveReviewRequestedSearch` pins them in CI):
+
+| Fact | Result |
+|---|---|
+| `GET /repos/issues/search?type=pulls&state=open&review_requested=true` as the requested user | Same on all four: empty before the request, the pull request after it, empty again after an approval |
+| The same search as the pull request's author | Same: empty (the author is never asked) |
+| Search results' shape | Carry `number`, `title`, `html_url`, `updated_at`, `user.login`, `repository.full_name`. **No `draft`, no `requested_reviewers`**, so a detail request per new pull request is unavoidable |
+| `limit=100` on the search | Accepted on all (the plugin asks for 50 and follows the raw page length) |
+| Requesting a review bumps the PR's `updated_at` | Yes on all four (about 3 s later in the probe), though the watch does not rely on `since` |
+| `draft` on a PR detail | **Absent on Gitea 1.20 and Forgejo 7**; present on Gitea 1.27 and Forgejo 16. The plugin also treats a `WIP:` or `[WIP]` title prefix as a draft, which is the only signal on the two that omit the field |
+| `requested_reviewers_teams` on a PR detail | Present on Gitea 1.27 and Forgejo 16 only |
+| `requested_reviewers` on a PR detail | Lists the direct request on all four |
+| A closed or merged PR | `state` is `closed`; `merged` tells them apart, on all four |
+
+Still unverified for review watches: a team request, AGit-flow head identity
+(handled by failing closed), and the response when the token lacks `read:issue`.
+
 Not yet verified: token-scope matrix (`write:repository` without `write:issue`)
 and protected-branch merges. The CI `live` job seeds a write-access `reviewer`
 and a read-only `readonly` user; `TestLivePullRequestActions`,
@@ -129,7 +146,7 @@ each run.
 | `manifest.yaml` | The declarative host contract: actions, provider ownership, reference source, capabilities, config schema. |
 | `internal/sourcecontrol/` | The provider-neutral source-control recipe — the Kandev boundary. Adapted from `kandev-plugin-template`. |
 | `internal/forgejo/` | Concrete Forgejo/Gitea adapters: REST client, repositories, pull requests, reviews, references, associations, and the Actions/CI resolution chain. |
-| `internal/watches/` | The provider-neutral issue-watch half: the watch model, the dedup ledger, and the poll loop. Reaches Forgejo only through the `IssueSource` port. |
+| `internal/watches/` | The provider-neutral watch half: the watch model (issue and review kinds), the dedup ledger, the poll loop, review placement and fork rules, and cleanup. Reaches Forgejo only through the `IssueSource` and `ReviewSource` ports. |
 | `internal/plugin/` | Wires the adapters into the extension, owns the connection and watch actions, and serves the agent tools. |
 | `ui/src/` | The browser half: the recipe registration plus the Forgejo icon, reference parsing, detail adapter, connection panel, and the issue-watch panel. |
 | `server/` | The `pluginsdk.Serve` entry point Kandev spawns. |

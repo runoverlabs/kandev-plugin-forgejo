@@ -233,3 +233,63 @@ func TestStoreRequiresAHost(t *testing.T) {
 	_, err := store.List(context.Background(), "ws-1")
 	require.ErrorIs(t, err, ErrNoHost)
 }
+
+func TestReviewWatchesLiveUnderTheirOwnPrefix(t *testing.T) {
+	t.Parallel()
+	host := newFakeHost("ws-1")
+	store := newTestStore(host)
+	review, err := store.Put(context.Background(), sampleReviewWatch("ws-1"))
+	require.NoError(t, err)
+	issueWatch := sampleWatch("ws-1", "acme/app")
+	issueWatch.ID = "w-issue"
+	_, err = store.Put(context.Background(), issueWatch)
+	require.NoError(t, err)
+
+	// A 0.3.x binary lists "watch." only. It must see the issue watch and
+	// nothing of the review watch, whose filters mean nothing to it.
+	var legacy []string
+	for _, key := range host.stateKeys("ws-1") {
+		if strings.HasPrefix(key, watchKeyPrefix) {
+			legacy = append(legacy, key)
+		}
+	}
+	require.Equal(t, []string{"watch.w-issue"}, legacy)
+	require.Contains(t, host.stateKeys("ws-1"), "rwatch."+review.ID)
+
+	all, err := store.List(context.Background(), "ws-1")
+	require.NoError(t, err)
+	require.Len(t, all, 2)
+
+	got, err := store.Get(context.Background(), "ws-1", review.ID)
+	require.NoError(t, err)
+	require.Equal(t, KindReview, got.Kind)
+
+	require.NoError(t, store.Delete(context.Background(), "ws-1", review.ID))
+	_, err = store.Get(context.Background(), "ws-1", review.ID)
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = store.Get(context.Background(), "ws-1", "w-issue")
+	require.NoError(t, err)
+}
+
+func TestIssueWatchRecordsAreByteIdenticalToZeroPointThree(t *testing.T) {
+	t.Parallel()
+	encoded, err := encodeWatch(func() Watch {
+		w := sampleWatch("ws-1", "acme/app")
+		w.Normalize()
+		return w
+	}())
+	require.NoError(t, err)
+	for _, added := range []string{"kind", "review_scope", "include_drafts", "cleanup_policy", "fork_workflow_step_id", "last_cleanup_note"} {
+		require.NotContains(t, encoded, added, "an issue watch's stored shape must not change")
+	}
+}
+
+func TestReviewKeyPrefixStaysInTheHostVocabulary(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{reviewWatchKey("0123abcd"), reviewWatchKey("a b/c")} {
+		require.Regexp(t, `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`, key)
+	}
+	for _, existing := range []string{"integration_enabled", "connection_status", "task:abc:repo:1", "agent_merge_enabled", "audit:00000000000000000001"} {
+		require.False(t, strings.HasPrefix(existing, reviewWatchKeyPrefix))
+	}
+}

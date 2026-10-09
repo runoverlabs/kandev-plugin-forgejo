@@ -23,6 +23,11 @@ type fakeHost struct {
 	tasks      []pluginsdk.Task
 	created    []pluginsdk.CreateTaskInput
 
+	steps     map[string][]pluginsdk.WorkflowStep
+	updated   []pluginsdk.UpdateTaskInput
+	stepsErr  error
+	updateErr error
+
 	nextTaskID int
 	createErr  error
 	listErr    error
@@ -280,4 +285,129 @@ func sampleWatch(workspaceID string, repos ...string) Watch {
 		Labels:         []string{"bug"},
 		Enabled:        true,
 	}
+}
+
+// Review-watch support: workflow steps, task update and read, the exact
+// archive command, and a scripted ReviewSource.
+
+func (h *fakeHost) Workflows() pluginsdk.WorkflowReader { return fakeWorkflows{host: h} }
+
+type fakeWorkflows struct {
+	pluginsdk.WorkflowReader
+	host *fakeHost
+}
+
+func (w fakeWorkflows) ListSteps(_ context.Context, workflowID string) ([]pluginsdk.WorkflowStep, error) {
+	w.host.mu.Lock()
+	defer w.host.mu.Unlock()
+	if w.host.stepsErr != nil {
+		return nil, w.host.stepsErr
+	}
+	return w.host.steps[workflowID], nil
+}
+
+func (t fakeTasks) Get(_ context.Context, id string) (*pluginsdk.Task, error) {
+	t.host.mu.Lock()
+	defer t.host.mu.Unlock()
+	for i := range t.host.tasks {
+		if t.host.tasks[i].ID == id {
+			task := t.host.tasks[i]
+			return &task, nil
+		}
+	}
+	return nil, errors.New("no such task")
+}
+
+func (t fakeTasks) Update(_ context.Context, in pluginsdk.UpdateTaskInput) (*pluginsdk.Task, error) {
+	t.host.mu.Lock()
+	defer t.host.mu.Unlock()
+	if t.host.updateErr != nil {
+		return nil, t.host.updateErr
+	}
+	for i := range t.host.tasks {
+		if t.host.tasks[i].ID == in.ID {
+			if in.State != nil {
+				t.host.tasks[i].State = *in.State
+			}
+			t.host.updated = append(t.host.updated, in)
+			task := t.host.tasks[i]
+			return &task, nil
+		}
+	}
+	return nil, errors.New("no such task")
+}
+
+// fakeReviews is a scripted ReviewSource.
+type fakeReviews struct {
+	mu        sync.Mutex
+	requests  []PullRequest
+	details   map[string]PullDetail
+	states    map[string]PullState
+	errs      map[string]error
+	searchErr error
+	query     ReviewQuery
+	detailed  []string
+	checked   []string
+}
+
+func newFakeReviews() *fakeReviews {
+	return &fakeReviews{details: map[string]PullDetail{}, states: map[string]PullState{}, errs: map[string]error{}}
+}
+
+func prKey(repo RepoRef, number int64) string {
+	return repo.FullName() + "#" + strconv.FormatInt(number, 10)
+}
+
+// add scripts one pull request: the search hit and its detail.
+func (f *fakeReviews) add(repo string, number int64, detail PullDetail) {
+	ref, _ := ParseRepoRef(repo)
+	f.requests = append(f.requests, PullRequest{Repo: ref, Number: number, Title: detail.Title, URL: detail.URL, Author: detail.Author})
+	f.details[prKey(ref, number)] = detail
+	f.states[prKey(ref, number)] = PullOpen
+}
+
+func (f *fakeReviews) SearchReviewRequests(_ context.Context, q ReviewQuery) ([]PullRequest, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.query = q
+	return f.requests, f.searchErr
+}
+
+func (f *fakeReviews) PullDetail(_ context.Context, repo RepoRef, number int64, _ ReviewScope) (PullDetail, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := prKey(repo, number)
+	f.detailed = append(f.detailed, key)
+	if err := f.errs[key]; err != nil {
+		return PullDetail{}, err
+	}
+	return f.details[key], nil
+}
+
+func (f *fakeReviews) PullState(_ context.Context, repo RepoRef, number int64) (PullState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := prKey(repo, number)
+	f.checked = append(f.checked, key)
+	if err := f.errs[key]; err != nil {
+		return "", err
+	}
+	return f.states[key], nil
+}
+
+// openPR is a same-repository, non-draft pull request detail.
+func openPR(title string) PullDetail {
+	return PullDetail{
+		Title: title, URL: "https://git.example/acme/web/pulls/1", Author: "alice",
+		HeadBranch: "feature/x", BaseBranch: "main", Open: true, RequestedFromMe: true,
+	}
+}
+
+func sampleReviewWatch(workspaceID string) Watch {
+	watch := sampleWatch(workspaceID)
+	watch.Kind = KindReview
+	watch.Repos = nil
+	watch.Labels = nil
+	watch.RepositoryID = "repo-1"
+	return watch
 }

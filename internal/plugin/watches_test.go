@@ -3,6 +3,8 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -92,6 +94,7 @@ func (fakeWorkflows) ListSteps(_ context.Context, workflowID string) ([]pluginsd
 	return []pluginsdk.WorkflowStep{
 		{ID: "step-inbox", WorkflowID: workflowID, Name: "Inbox", Position: 0, IsStartStep: true},
 		{ID: "step-doing", WorkflowID: workflowID, Name: "Doing", Position: 1},
+		{ID: "step-auto", WorkflowID: workflowID, Name: "Run", Position: 2, OnEnterActionTypes: []string{"auto_start_agent"}},
 	}, nil
 }
 
@@ -128,8 +131,21 @@ func watchAction(t *testing.T, runtime *Runtime, key, workspaceID string, body a
 	if err != nil {
 		return nil, err
 	}
-	return decodeBody(t, response), nil
+	decoded := decodeBody(t, response)
+	if response.Status >= http.StatusBadRequest {
+		// An operator-actionable refusal travels as a status and a message, not
+		// as a Go error the host would mask; surface it as an error here.
+		return nil, &refusedError{status: response.Status, message: fmt.Sprint(decoded["error"])}
+	}
+	return decoded, nil
 }
+
+type refusedError struct {
+	status  int
+	message string
+}
+
+func (e *refusedError) Error() string { return e.message }
 
 func TestWatchActionsRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -336,7 +352,7 @@ func TestWatchOptionsServesTheConfigurationForm(t *testing.T) {
 	workflow := workflows[0].(map[string]any)
 	require.Equal(t, "Autopilot", workflow["name"])
 	steps := workflow["steps"].([]any)
-	require.Len(t, steps, 2)
+	require.Len(t, steps, 3)
 	require.Equal(t, "Inbox", steps[0].(map[string]any)["name"])
 
 	profiles := options["agent_profiles"].([]any)
@@ -378,4 +394,211 @@ func TestWatchActionKeysAreDistinct(t *testing.T) {
 		seen[key] = struct{}{}
 		require.True(t, strings.HasPrefix(key, "watches.") || strings.HasPrefix(key, "connection."))
 	}
+}
+
+func reviewBody(extra map[string]any) map[string]any {
+	body := map[string]any{
+		"kind": "review", "name": "Reviews", "workflow_id": "wf-1", "workflow_step_id": "step-inbox",
+	}
+	for key, value := range extra {
+		body[key] = value
+	}
+	return body
+}
+
+func createdWatch(t *testing.T, runtime *Runtime, body map[string]any) map[string]any {
+	t.Helper()
+	created, err := watchAction(t, runtime, ActionWatchesCreate, "ws-1", body)
+	require.NoError(t, err)
+	return created["watch"].(map[string]any)
+}
+
+func TestCreateReviewWatchStoresItsFieldsAndDefaults(t *testing.T) {
+	t.Parallel()
+	runtime, host := newWatchRuntime(t)
+	watch := createdWatch(t, runtime, reviewBody(map[string]any{
+		"review_scope": "user", "include_drafts": true, "cleanup_policy": "when_closed",
+		"fork_workflow_step_id": "step-doing", "prompt": "Review {{pr.number}}",
+	}))
+	require.Equal(t, "review", watch["kind"])
+	require.Equal(t, "user", watch["review_scope"])
+	require.Equal(t, true, watch["include_drafts"])
+	require.Equal(t, "when_closed", watch["cleanup_policy"])
+	require.Equal(t, "step-doing", watch["fork_workflow_step_id"])
+
+	defaults := createdWatch(t, runtime, reviewBody(nil))
+	require.Equal(t, "user_and_teams", defaults["review_scope"])
+	require.Equal(t, "never", defaults["cleanup_policy"])
+	require.EqualValues(t, 300, defaults["poll_interval_seconds"])
+
+	keys := []string{}
+	for key := range host.state["workspace/ws-1"] {
+		keys = append(keys, key)
+	}
+	for _, key := range keys {
+		require.True(t, strings.HasPrefix(key, "rwatch."), "review watches are stored under rwatch., got %s", key)
+	}
+}
+
+func TestPausingAReviewWatchKeepsEveryField(t *testing.T) {
+	t.Parallel()
+	runtime, _ := newWatchRuntime(t)
+	original := createdWatch(t, runtime, reviewBody(map[string]any{
+		"review_scope": "user", "include_drafts": true, "cleanup_policy": "when_closed",
+		"fork_workflow_step_id": "step-doing", "prompt": "Review it", "agent_profile_id": "agent-1",
+		"repos": []string{"acme/web"}, "labels": []string{"ui"}, "query": "export",
+	}))
+	updated, err := watchAction(t, runtime, ActionWatchesUpdate, "ws-1", map[string]any{"id": original["id"], "enabled": false})
+	require.NoError(t, err)
+	paused := updated["watch"].(map[string]any)
+	require.Equal(t, false, paused["enabled"])
+	for _, key := range []string{"kind", "review_scope", "include_drafts", "cleanup_policy", "fork_workflow_step_id",
+		"prompt", "agent_profile_id", "repos", "labels", "query"} {
+		require.Equal(t, original[key], paused[key], "pausing erased %s", key)
+	}
+}
+
+func TestReviewWatchFieldsCanBeClearedExplicitly(t *testing.T) {
+	t.Parallel()
+	runtime, _ := newWatchRuntime(t)
+	original := createdWatch(t, runtime, reviewBody(map[string]any{
+		"include_drafts": true, "fork_workflow_step_id": "step-doing",
+	}))
+	updated, err := watchAction(t, runtime, ActionWatchesUpdate, "ws-1", map[string]any{
+		"id": original["id"], "include_drafts": false, "fork_workflow_step_id": "",
+	})
+	require.NoError(t, err)
+	cleared := updated["watch"].(map[string]any)
+	require.NotContains(t, cleared, "include_drafts")
+	require.NotContains(t, cleared, "fork_workflow_step_id")
+}
+
+func TestAWatchKindCannotBeChanged(t *testing.T) {
+	t.Parallel()
+	runtime, _ := newWatchRuntime(t)
+	review := createdWatch(t, runtime, reviewBody(nil))
+	_, err := watchAction(t, runtime, ActionWatchesUpdate, "ws-1", map[string]any{"id": review["id"], "kind": "issue"})
+	require.Error(t, err)
+	_, err = watchAction(t, runtime, ActionWatchesUpdate, "ws-1", map[string]any{"id": review["id"], "kind": "review"})
+	require.NoError(t, err, "restating the kind is harmless")
+
+	issue := createdWatch(t, runtime, map[string]any{
+		"name": "Bugs", "workflow_id": "wf-1", "workflow_step_id": "step-inbox", "repos": []string{"acme/app"},
+	})
+	_, err = watchAction(t, runtime, ActionWatchesUpdate, "ws-1", map[string]any{"id": issue["id"], "kind": "review"})
+	require.Error(t, err)
+}
+
+func TestListWatchesFiltersByKind(t *testing.T) {
+	t.Parallel()
+	runtime, _ := newWatchRuntime(t)
+	createdWatch(t, runtime, reviewBody(nil))
+	createdWatch(t, runtime, map[string]any{
+		"name": "Bugs", "workflow_id": "wf-1", "workflow_step_id": "step-inbox", "repos": []string{"acme/app"},
+	})
+	names := func(body any) []string {
+		listed, err := watchAction(t, runtime, ActionWatchesList, "ws-1", body)
+		require.NoError(t, err)
+		var out []string
+		for _, item := range listed["watches"].([]any) {
+			out = append(out, item.(map[string]any)["name"].(string))
+		}
+		return out
+	}
+	require.ElementsMatch(t, []string{"Bugs", "Reviews"}, names(nil), "no filter returns everything")
+	require.Equal(t, []string{"Reviews"}, names(map[string]any{"kind": "review"}))
+	require.Equal(t, []string{"Bugs"}, names(map[string]any{"kind": "issue"}))
+}
+
+func TestForkStepThatStartsAgentsIsRefusedAtSaveTime(t *testing.T) {
+	t.Parallel()
+	runtime, _ := newWatchRuntime(t)
+	_, err := watchAction(t, runtime, ActionWatchesCreate, "ws-1", reviewBody(map[string]any{"fork_workflow_step_id": "step-auto"}))
+	require.ErrorContains(t, err, "starts an agent")
+	_, err = watchAction(t, runtime, ActionWatchesCreate, "ws-1", reviewBody(map[string]any{"fork_workflow_step_id": "step-gone"}))
+	require.ErrorContains(t, err, "not in the watch's workflow")
+
+	safe := createdWatch(t, runtime, reviewBody(map[string]any{"fork_workflow_step_id": "step-doing"}))
+	// Editing the watch later is checked too, not only creation.
+	_, err = watchAction(t, runtime, ActionWatchesUpdate, "ws-1", map[string]any{"id": safe["id"], "fork_workflow_step_id": "step-auto"})
+	require.ErrorContains(t, err, "starts an agent")
+}
+
+func TestReviewWatchesNeedNoRepository(t *testing.T) {
+	t.Parallel()
+	runtime, _ := newWatchRuntime(t)
+	createdWatch(t, runtime, reviewBody(nil))
+	_, err := watchAction(t, runtime, ActionWatchesCreate, "ws-1", map[string]any{
+		"name": "Bugs", "workflow_id": "wf-1", "workflow_step_id": "step-inbox",
+	})
+	require.Error(t, err, "an issue watch still needs a repository")
+}
+
+func TestWatchOptionsDescribeReviewWatches(t *testing.T) {
+	t.Parallel()
+	runtime, _ := newWatchRuntime(t)
+	options, err := watchAction(t, runtime, ActionWatchesOptions, "ws-1", nil)
+	require.NoError(t, err)
+	require.EqualValues(t, 60, options["min_review_interval"])
+	require.Contains(t, options["default_review_prompt"], "{{pr.number}}")
+	require.Equal(t, false, options["archive_granted"], "a host without the v2 contract grants nothing")
+	steps := options["workflows"].([]any)[0].(map[string]any)["steps"].([]any)
+	autos := map[string]bool{}
+	for _, step := range steps {
+		item := step.(map[string]any)
+		autos[item["id"].(string)] = item["auto_starts_agent"].(bool)
+	}
+	require.Equal(t, map[string]bool{"step-inbox": false, "step-doing": false, "step-auto": true}, autos)
+}
+
+func TestCleanupActionRefusesAWatchWithoutAPolicy(t *testing.T) {
+	t.Parallel()
+	runtime, _ := newWatchRuntime(t)
+	review := createdWatch(t, runtime, reviewBody(nil))
+	_, err := watchAction(t, runtime, ActionWatchesCleanup, "ws-1", map[string]any{"id": review["id"]})
+	require.Error(t, err)
+	_, err = watchAction(t, runtime, ActionWatchesCleanup, "ws-1", map[string]any{"id": "missing"})
+	require.Error(t, err)
+}
+
+// The host replaces any Go error with "plugin action unavailable", so an
+// operator-actionable failure must travel as a status and its own message.
+func TestWatchRefusalsCarryAStatusAndAMessage(t *testing.T) {
+	t.Parallel()
+	runtime, _ := newWatchRuntime(t)
+	review := createdWatch(t, runtime, reviewBody(nil))
+
+	statusOf := func(err error) (int, string) {
+		var refused *refusedError
+		require.ErrorAs(t, err, &refused)
+		require.NotContains(t, refused.message, "plugin action unavailable")
+		return refused.status, refused.message
+	}
+	_, err := watchAction(t, runtime, ActionWatchesCreate, "ws-1", map[string]any{"name": "x"})
+	status, message := statusOf(err)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Contains(t, message, "a workflow is required")
+
+	_, err = watchAction(t, runtime, ActionWatchesCreate, "ws-1", reviewBody(map[string]any{"fork_workflow_step_id": "step-auto"}))
+	status, message = statusOf(err)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Contains(t, message, "starts an agent")
+
+	_, err = watchAction(t, runtime, ActionWatchesUpdate, "ws-1", map[string]any{"id": review["id"], "kind": "issue"})
+	status, _ = statusOf(err)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+
+	_, err = watchAction(t, runtime, ActionWatchesDelete, "ws-1", map[string]any{"id": "missing"})
+	status, message = statusOf(err)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Contains(t, message, "no such watch")
+
+	_, err = watchAction(t, runtime, ActionWatchesCleanup, "ws-1", map[string]any{"id": review["id"]})
+	status, _ = statusOf(err)
+	require.Equal(t, http.StatusConflict, status)
+
+	_, err = watchAction(t, runtime, ActionWatchesCreate, "ws-1", reviewBody(map[string]any{"repos": []string{"not-a-repo"}}))
+	status, message = statusOf(err)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Contains(t, message, "owner/name")
 }

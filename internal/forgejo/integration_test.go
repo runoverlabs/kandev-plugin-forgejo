@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"kandev-plugin-forgejo/internal/sourcecontrol"
+	"kandev-plugin-forgejo/internal/watches"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"github.com/stretchr/testify/require"
@@ -668,4 +669,93 @@ func TestLiveWriteActions(t *testing.T) {
 
 	_, err = actions.Merge(ctx, "ws-1", "task-1", sourcecontrol.MergeRequest{Number: pull.Number, HeadSHA: details.HeadSHA})
 	requireReason(t, err, ReasonAlreadyMerged)
+}
+
+// TestLiveReviewRequestedSearch pins the provider facts review watches rest
+// on, as the second user: the instance's review-requested search returns a
+// pull request once that user is asked, never the author's own, and drops it
+// when the user answers; a pull request detail carries what a task needs; and
+// the title prefix marks a draft on instances with no draft field.
+func TestLiveReviewRequestedSearch(t *testing.T) {
+	reviewer := liveUserClient(t, "KANDEV_FORGEJO_REVIEWER_TOKEN")
+	reviewerLogin := strings.TrimSpace(os.Getenv("KANDEV_FORGEJO_REVIEWER"))
+	if reviewerLogin == "" {
+		t.Skip("set KANDEV_FORGEJO_REVIEWER to the second user's login")
+	}
+	admin, _, _, _, _, _ := liveAdapters(t)
+	baseURL, token, _, _ := liveConfig(t)
+	ctx := context.Background()
+	pull, owner, repo := livePull(t, admin)
+	ref := watches.RepoRef{Owner: owner, Name: repo}
+
+	sourceFor := func(token string) *ReviewSource {
+		host := newFakeHost(map[string]any{"base_url": baseURL, "api_token": token})
+		return NewReviewSource(NewConnection(func() pluginsdk.Host { return host }))
+	}
+	reviewerToken := strings.TrimSpace(os.Getenv("KANDEV_FORGEJO_REVIEWER_TOKEN"))
+	asReviewer, asAdmin := sourceFor(reviewerToken), sourceFor(token)
+	find := func(source *ReviewSource) []watches.PullRequest {
+		found, err := source.SearchReviewRequests(ctx, watches.ReviewQuery{Repos: []watches.RepoRef{ref}})
+		require.NoError(t, err)
+		var mine []watches.PullRequest
+		for _, candidate := range found {
+			if candidate.Number == pull.Number {
+				mine = append(mine, candidate)
+			}
+		}
+		return mine
+	}
+
+	require.Empty(t, find(asReviewer), "nobody asked yet")
+	require.NoError(t, admin.RequestReviewers(ctx, owner, repo, pull.Number, []string{reviewerLogin}))
+
+	hits := find(asReviewer)
+	require.Len(t, hits, 1)
+	require.Equal(t, ref, hits[0].Repo)
+	require.NotEmpty(t, hits[0].URL)
+	require.NotEmpty(t, hits[0].Author)
+	require.Empty(t, find(asAdmin), "the author is never asked to review their own pull request")
+
+	detail, err := asReviewer.PullDetail(ctx, ref, pull.Number, watches.ReviewScopeUser)
+	require.NoError(t, err)
+	require.True(t, detail.Open)
+	require.True(t, detail.RequestedFromMe, "named directly")
+	require.False(t, detail.Fork, "the head is in the same repository")
+	require.False(t, detail.Draft)
+	require.Equal(t, pull.Head.Ref, detail.HeadBranch)
+	require.Equal(t, pull.Base.Ref, detail.BaseBranch)
+
+	// A pull request the user was not named on is not a direct request.
+	other, _, _ := livePull(t, admin)
+	otherDetail, err := asReviewer.PullDetail(ctx, ref, other.Number, watches.ReviewScopeUser)
+	require.NoError(t, err)
+	require.False(t, otherDetail.RequestedFromMe)
+
+	// Answering the request drops the pull request out of the search.
+	_, err = reviewer.SubmitReview(ctx, owner, repo, pull.Number, SubmitReviewInput{Event: ReviewApprove})
+	require.NoError(t, err)
+	require.Empty(t, find(asReviewer))
+
+	state, err := asReviewer.PullState(ctx, ref, pull.Number)
+	require.NoError(t, err)
+	require.Equal(t, watches.PullOpen, state)
+	time.Sleep(3 * time.Second)
+	require.NoError(t, admin.MergePullRequest(ctx, owner, repo, pull.Number, MergeInput{Do: MergeStyleSquash}))
+	state, err = asReviewer.PullState(ctx, ref, pull.Number)
+	require.NoError(t, err)
+	require.Equal(t, watches.PullMerged, state)
+
+	_, err = admin.EditPullRequest(ctx, owner, repo, other.Number, EditPullRequestInput{State: "closed"})
+	require.NoError(t, err)
+	state, err = asReviewer.PullState(ctx, ref, other.Number)
+	require.NoError(t, err)
+	require.Equal(t, watches.PullClosed, state)
+
+	// Drafts: the title prefix works on every version; the field only on newer.
+	wip, _, _ := livePull(t, admin)
+	_, err = admin.EditPullRequest(ctx, owner, repo, wip.Number, EditPullRequestInput{Title: "WIP: not ready"})
+	require.NoError(t, err)
+	wipDetail, err := asReviewer.PullDetail(ctx, ref, wip.Number, watches.ReviewScopeUserAndTeams)
+	require.NoError(t, err)
+	require.True(t, wipDetail.Draft)
 }

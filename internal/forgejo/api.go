@@ -154,6 +154,8 @@ type IssueSearchResult struct {
 	Title      string `json:"title"`
 	State      string `json:"state"`
 	HTMLURL    string `json:"html_url"`
+	UpdatedAt  string `json:"updated_at"`
+	User       User   `json:"user"`
 	Repository *struct {
 		ID       int64  `json:"id"`
 		Name     string `json:"name"`
@@ -334,6 +336,39 @@ func (c *Client) SearchPullRequests(ctx context.Context, query string, limit int
 	values.Set("sort", "recentupdate")
 	if trimmed := strings.TrimSpace(query); trimmed != "" {
 		values.Set("q", trimmed)
+	}
+	var results []IssueSearchResult
+	if err := c.get(ctx, "/repos/issues/search", values, &results); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// ReviewSearchOptions is one page of the review-requested search.
+type ReviewSearchOptions struct {
+	Labels []string
+	Query  string
+	Page   int
+	Limit  int
+}
+
+// SearchReviewRequested returns one page of the open pull requests whose
+// review the token's user was asked for, directly or through a team. The
+// instance applies the filter, so a request answered by an approval or a
+// rejection drops out on its own, and the user's own pull requests never
+// appear.
+func (c *Client) SearchReviewRequested(ctx context.Context, opts ReviewSearchOptions) ([]IssueSearchResult, error) {
+	values := url.Values{}
+	values.Set("type", "pulls")
+	values.Set("state", "open")
+	values.Set("review_requested", "true")
+	values.Set("page", strconv.Itoa(max(opts.Page, 1)))
+	values.Set("limit", strconv.Itoa(opts.Limit))
+	if trimmed := strings.TrimSpace(opts.Query); trimmed != "" {
+		values.Set("q", trimmed)
+	}
+	if len(opts.Labels) > 0 {
+		values.Set("labels", strings.Join(opts.Labels, ","))
 	}
 	var results []IssueSearchResult
 	if err := c.get(ctx, "/repos/issues/search", values, &results); err != nil {
