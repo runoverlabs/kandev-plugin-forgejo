@@ -4,6 +4,13 @@
 
 Working towards 0.4.
 
+- New read action `change_requests.details`: everything the review panel needs
+  for one linked pull request in a single bounded response (merge styles the
+  repository allows, why a merge is blocked, reviews, requested reviewers,
+  comments). It only answers for a pull request the task has linked, and parts
+  the token cannot see come back empty rather than failing the read. Nothing
+  calls it yet; the panel and the write actions follow.
+
 - Groundwork for PR actions (client layer only, no user-visible change yet):
   writes now classify failures into fixed reasons (not mergeable, conflict, out
   of date, head changed, blocked by protection, self-review, forbidden), so a

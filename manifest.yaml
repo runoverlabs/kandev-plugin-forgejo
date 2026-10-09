@@ -77,6 +77,13 @@ actions:
   - key: "change_requests.get"
     scope: "task"
     max_body_bytes: 1024
+  # The review panel's one read: pull request, merge options and blockers,
+  # reviews and comments, bounded to fit the host's 15 s / 1 MiB limits. Body
+  # is at most {"number": N}; the pull request must already be linked to the
+  # verified task.
+  - key: "change_requests.details"
+    scope: "task"
+    max_body_bytes: 1024
   - key: "change_requests.link"
     scope: "task"
     max_body_bytes: 16384

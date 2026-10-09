@@ -86,6 +86,7 @@ Action bodies:
 | `repositories.inspect` | `{"url":"https://forgejo.example.com/owner/repo"}` |
 | `repositories.branches` | `{"repository":{…full descriptor…}}` — a flat identity is rejected |
 | `change_requests.get` / `.associations` | none |
+| `change_requests.details` | `{"number"}`, optional when the task links one pull request (also needs `taskId`). Read-only. Returns the pull request, merge styles and blockers, reviews, requested reviewers and comments, with `null` for anything the instance does not report. 404 when the task does not link that number, 409 when it links several and none is named |
 | `change_requests.create` | `{"title","description","destination","draft"}` (also needs `taskId`, `sessionId`, `repositoryId`) |
 | `change_requests.link` | `{"reference":"owner/repo#1"}` (also needs `taskId`) |
 | `change_requests.unlink` | `{"connection_scope","repository_id","number"}` (also needs `taskId`) |

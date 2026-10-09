@@ -115,7 +115,9 @@ type Review struct {
 	Dismissed bool   `json:"dismissed"`
 	Body      string `json:"body"`
 	CommitID  string `json:"commit_id"`
-	User      User   `json:"user"`
+	// SubmittedAt is an RFC 3339 timestamp; empty on a pending review.
+	SubmittedAt string `json:"submitted_at"`
+	User        User   `json:"user"`
 }
 
 // CommitStatus is one entry of a combined status. The per-entry field is
