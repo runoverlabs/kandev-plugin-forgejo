@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"time"
 
@@ -83,21 +82,19 @@ func decodeActionBody(request *pluginsdk.PluginActionRequest, into any) *plugins
 	return nil
 }
 
-// audit records who did what, by action and number only: never a body, a title
-// or a token. Every write acts as the operator's shared Forgejo account, so
-// this line is the only place the Kandev user is tied to it.
-func audit(request *pluginsdk.PluginActionRequest, number int64, outcome string) {
-	log.Printf("kandev-plugin-forgejo: action=%s actor=%s workspace=%s task=%s number=%d outcome=%s",
-		request.ActionKey, request.Context.ActorID, request.Context.WorkspaceID, request.Context.TaskID, number, outcome)
-}
-
 // finish turns a port result or error into the reply, auditing either way.
-func finish[T any](request *pluginsdk.PluginActionRequest, number int64, result T, err error) (*pluginsdk.PluginActionResponse, error) {
+func finish[T any](ctx context.Context, r *Runtime, request *pluginsdk.PluginActionRequest, number int64, result T, err error) (*pluginsdk.PluginActionResponse, error) {
+	outcome := "ok"
 	if err != nil {
-		audit(request, number, "refused")
+		outcome = "refused"
+	}
+	r.audit(ctx, auditRecord{
+		Action: request.ActionKey, Actor: request.Context.ActorID, Workspace: request.Context.WorkspaceID,
+		Task: request.Context.TaskID, Number: number, Outcome: outcome,
+	})
+	if err != nil {
 		return pullFailure(err)
 	}
-	audit(request, number, "ok")
 	return jsonResponse(result)
 }
 
@@ -119,7 +116,7 @@ func (r *Runtime) changeRequestMerge(ctx context.Context, request *pluginsdk.Plu
 		Number: body.Number, HeadSHA: body.HeadSHA, Style: body.Style, DeleteBranch: body.DeleteBranch,
 		WhenChecksSucceed: body.WhenChecksSucceed, CancelScheduled: body.CancelScheduled,
 	})
-	return finish(request, body.Number, result, err)
+	return finish(ctx, r, request, body.Number, result, err)
 }
 
 func (r *Runtime) changeRequestReview(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -138,7 +135,7 @@ func (r *Runtime) changeRequestReview(ctx context.Context, request *pluginsdk.Pl
 	result, err := r.pullActions.Review(ctx, request.Context.WorkspaceID, request.Context.TaskID, sourcecontrol.ReviewRequest{
 		Number: body.Number, Event: body.Event, Body: body.Body, HeadSHA: body.HeadSHA, Comments: body.Comments,
 	})
-	return finish(request, body.Number, result, err)
+	return finish(ctx, r, request, body.Number, result, err)
 }
 
 func (r *Runtime) changeRequestReviewers(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -155,7 +152,7 @@ func (r *Runtime) changeRequestReviewers(ctx context.Context, request *pluginsdk
 	result, err := r.pullActions.RequestReviewers(ctx, request.Context.WorkspaceID, request.Context.TaskID, sourcecontrol.ReviewersRequest{
 		Number: body.Number, Add: body.Add, Remove: body.Remove,
 	})
-	return finish(request, body.Number, result, err)
+	return finish(ctx, r, request, body.Number, result, err)
 }
 
 func (r *Runtime) changeRequestUpdateBranch(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -171,7 +168,7 @@ func (r *Runtime) changeRequestUpdateBranch(ctx context.Context, request *plugin
 	result, err := r.pullActions.UpdateBranch(ctx, request.Context.WorkspaceID, request.Context.TaskID, sourcecontrol.UpdateBranchRequest{
 		Number: body.Number, Style: body.Style,
 	})
-	return finish(request, body.Number, result, err)
+	return finish(ctx, r, request, body.Number, result, err)
 }
 
 func (r *Runtime) changeRequestComment(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -187,7 +184,7 @@ func (r *Runtime) changeRequestComment(ctx context.Context, request *pluginsdk.P
 	result, err := r.pullActions.Comment(ctx, request.Context.WorkspaceID, request.Context.TaskID, sourcecontrol.CommentRequest{
 		Number: body.Number, Body: body.Body,
 	})
-	return finish(request, body.Number, result, err)
+	return finish(ctx, r, request, body.Number, result, err)
 }
 
 // pullFailure turns an adapter error into an explicit domain status with a

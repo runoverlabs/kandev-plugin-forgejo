@@ -8,6 +8,8 @@ import type {
   ReviewTaskAssociation,
   ReviewTaskStatus,
 } from "@kandev/plugin-sdk";
+import type { ChangeRequestDetailModel } from "./detail";
+import { createReviewPanel } from "./review-panel";
 import { createSnapshotStore } from "./review-store";
 
 export type SourceControlRecipeOptions = {
@@ -426,6 +428,20 @@ export function registerSourceControlRecipe(
       overlays.add(dialog);
     },
   });
+  const reviewPanel = createReviewPanel(host, {
+    fallback: (props) => {
+      const review = reviewStore.get(props.taskId).find(
+        (candidate) =>
+          candidate.reviewKey === props.reviewKey &&
+          candidate.connectionScope === props.connectionScope &&
+          candidate.repositoryId === props.repositoryId &&
+          String(candidate.changeRequestNumber) === String(props.changeRequestNumber),
+      );
+      return review ? (options.toChangeRequestDetail(review) as ChangeRequestDetailModel) : null;
+    },
+    afterMutation: (workspaceId, taskId) =>
+      refreshAfterMutation(workspaceId, taskId, new AbortController().signal),
+  });
   registry.registerReviewProvider({
     id: options.providerId,
     label: options.label,
@@ -469,21 +485,9 @@ export function registerSourceControlRecipe(
         { signal },
       );
     },
-    ReviewPanel: (props) => {
-      const review = reviewStore.get(props.taskId).find(
-        (candidate) =>
-          candidate.reviewKey === props.reviewKey &&
-          candidate.connectionScope === props.connectionScope &&
-          candidate.repositoryId === props.repositoryId &&
-          String(candidate.changeRequestNumber) === String(props.changeRequestNumber),
-      );
-      return host.jsx(host.ui.ChangeRequestDetail, {
-        detail: review ? options.toChangeRequestDetail(review) : null,
-        presentation: props.presentation,
-        loading: false,
-        error: null,
-      });
-    },
+    // The panel is stateful, so its component type is created once here. A new
+    // type per render would remount it every time and lose the loaded details.
+    ReviewPanel: (props) => host.jsx(reviewPanel, props),
   });
   return {
     destroy() {

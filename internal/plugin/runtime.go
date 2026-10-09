@@ -130,6 +130,8 @@ func (r *Runtime) HandleAction(ctx context.Context, request *pluginsdk.PluginAct
 		return r.setEnabled(ctx, request)
 	case ActionConnectionSetAgentMerge:
 		return r.setAgentMerge(ctx, request)
+	case ActionConnectionAudit:
+		return r.listAudit(ctx, request)
 	case sourcecontrol.ActionChangeRequestsDetails, sourcecontrol.ActionChangeRequestsMerge,
 		sourcecontrol.ActionChangeRequestsReview, sourcecontrol.ActionChangeRequestsRequestReviewers,
 		sourcecontrol.ActionChangeRequestsUpdateBranch, sourcecontrol.ActionChangeRequestsComment:

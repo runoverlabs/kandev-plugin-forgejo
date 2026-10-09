@@ -461,32 +461,14 @@ describe("registerSourceControlRecipe", () => {
     test.reviewProvider!.ReviewPanel({ ...common, presentation: "desktop" });
     test.reviewProvider!.ReviewPanel({ ...common, presentation: "mobile", sessionId: "session-3" });
 
-    expect(test.host.jsx).toHaveBeenNthCalledWith(
-      1,
-      test.host.ui.ChangeRequestDetail,
-      expect.objectContaining({
-        presentation: "desktop",
-        detail: expect.objectContaining({
-          providerId: "acme",
-          connectionScope: "connection-7",
-          repositoryId: "repository-9",
-          changeRequestNumber: 42,
-        }),
-      }),
-    );
-    expect(test.host.jsx).toHaveBeenNthCalledWith(
-      2,
-      test.host.ui.ChangeRequestDetail,
-      expect.objectContaining({
-        presentation: "mobile",
-        detail: expect.objectContaining({
-          providerId: "acme",
-          connectionScope: "connection-7",
-          repositoryId: "repository-9",
-          changeRequestNumber: 42,
-        }),
-      }),
-    );
+    // Both presentations go through one stateful panel component. It must be
+    // the same function each time: a new type per render would remount the
+    // panel and throw away the details it loaded.
+    const [first, second] = (test.host.jsx as unknown as { mock: { calls: unknown[][] } }).mock.calls.slice(0, 2);
+    expect(typeof first![0]).toBe("function");
+    expect(second![0]).toBe(first![0]);
+    expect(first![1]).toEqual(expect.objectContaining({ presentation: "desktop", changeRequestNumber: 42 }));
+    expect(second![1]).toEqual(expect.objectContaining({ presentation: "mobile", sessionId: "session-3" }));
   });
 
   it("fences late refresh results after plugin unload", async () => {

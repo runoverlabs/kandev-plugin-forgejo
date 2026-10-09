@@ -117,6 +117,8 @@ func (a *PullActions) Details(ctx context.Context, workspaceID, taskID string, n
 		URL:                strings.TrimSpace(pull.HTMLURL),
 		State:              pullRequestState(pull),
 		Author:             strings.TrimSpace(pull.User.Login),
+		Description:        clipText(pull.Body),
+		CreatedAt:          pull.CreatedAt,
 		SourceBranch:       pull.Head.Ref,
 		TargetBranch:       pull.Base.Ref,
 		HeadSHA:            pull.Head.Sha,

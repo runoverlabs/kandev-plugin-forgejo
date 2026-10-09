@@ -162,3 +162,67 @@
   gap: 0.5rem;
   font-size: 0.875rem;
 }
+
+/* Review panel: the merge controls and notice sit in host-owned slots, so only
+   layout is set here and every colour comes from host variables. */
+.forgejo-merge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.forgejo-merge__delete {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  color: var(--muted-foreground, inherit);
+}
+
+.forgejo-merge__actor {
+  font-size: 0.75rem;
+  color: var(--muted-foreground, inherit);
+}
+
+.forgejo-merge-notice {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  border: 1px solid var(--border, currentColor);
+  border-radius: 0.375rem;
+  color: var(--muted-foreground, inherit);
+}
+
+.forgejo-review-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.forgejo-review-dialog__events,
+.forgejo-review-dialog__footer {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.forgejo-review-dialog__footer {
+  justify-content: flex-end;
+}
+
+.forgejo-review-dialog__inline {
+  display: grid;
+  grid-template-columns: 1fr 5rem;
+  gap: 0.375rem;
+}
+
+.forgejo-review-dialog__inline textarea,
+.forgejo-review-dialog__inline button {
+  grid-column: 1 / -1;
+}
+
+.forgejo-review-dialog__error {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--destructive, inherit);
+}
