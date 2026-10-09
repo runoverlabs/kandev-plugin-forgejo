@@ -1106,32 +1106,44 @@ function createWatchesPanel(host) {
 // ui/src/detail.ts
 function toChangeRequestDetail(review) {
   const status = review.taskStatus;
-  return {
-    provider: "forgejo",
-    providerLabel: "Forgejo",
+  const reported = status?.state ?? review.state;
+  const draft = reported === "draft";
+  const detail = {
+    providerId: review.providerId,
+    reviewKey: review.reviewKey,
     number: status?.number ?? review.changeRequestNumber,
     title: review.title,
     url: review.url,
-    state: status?.state ?? review.state,
-    pipelineState: status?.pipelineState ?? "neutral",
+    state: draft ? "open" : reported,
+    author: { name: "unknown" },
+    sourceBranch: "",
+    targetBranch: "",
+    additions: 0,
+    deletions: 0,
+    reviews: [],
+    requestedReviewers: [],
     checks: (status?.checks ?? []).map((check) => ({
       id: check.id,
-      label: check.label,
+      name: check.label,
       state: check.state,
-      ...check.detail ? { detail: check.detail } : {},
+      ...check.detail ? { output: check.detail } : {},
       ...check.url ? { url: check.url } : {}
     })),
-    ...status?.review ? {
-      review: {
-        state: status.review.state,
-        approved: status.review.approved,
-        ...status.review.required === void 0 ? {} : { required: status.review.required },
-        ...status.review.requested === void 0 ? {} : { requested: status.review.requested }
-      }
-    } : {},
-    ...status?.unresolvedComments === void 0 ? {} : { unresolvedComments: status.unresolvedComments },
-    ...status?.updatedAt === void 0 ? {} : { updatedAt: status.updatedAt }
+    comments: []
   };
+  if (draft) {
+    detail.draft = true;
+  }
+  if (status?.review) {
+    detail.reviewState = status.review.state.toUpperCase();
+    if (status.review.requested !== void 0) {
+      detail.pendingReviewCount = status.review.requested;
+    }
+  }
+  if (status?.updatedAt !== void 0) {
+    detail.lastSyncedAt = new Date(status.updatedAt).toISOString();
+  }
+  return detail;
 }
 
 // ui/src/references.ts
