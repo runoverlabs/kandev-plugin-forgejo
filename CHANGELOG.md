@@ -74,6 +74,9 @@ the approval against a digest of the whole capability list, not per capability.
 - Bumps `google.golang.org/grpc` to v1.83.2 for GO-2026-6443, a server panic
   reachable from `pluginsdk.Serve` via missing authority or Host headers. Found
   by the new pipeline on its first run.
+- Bumps `golang.org/x/net` to v0.60.0 for GO-2026-6617, an HTTP/2 server crash
+  (HPACK encoder race) reachable from `pluginsdk.Serve`. Published after the
+  first run of the new pipeline, which is the case the weekly scan exists for.
 - Bumps `vitest` to 4.1.11, clearing the open Dependabot alerts in `vitest`,
   `@vitest/mocker` and `tinypool` (two critical, one of them a remote code
   execution gadget), and refreshes `source-map-js`. `npm audit` is clean. This
