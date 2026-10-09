@@ -67,8 +67,8 @@ the approval against a digest of the whole capability list, not per capability.
 
 - Adds `.github/workflows/security.yml`: secret detection with `gitleaks` over
   the working tree **and the full history**, `govulncheck` for Go, `npm audit`
-  for the UI toolchain, and CodeQL with the `security-extended` queries for both
-  languages. It runs on push, on pull requests, and weekly — a dependency
+  for the UI toolchain, and CodeQL with the `security-extended` queries for Go,
+  TypeScript and the GitHub Actions workflows. It runs on push, on pull requests, and weekly — a dependency
   becomes vulnerable when an advisory is published, not when someone pushes.
 - `make security` runs the same checks locally, minus CodeQL.
 - Bumps `google.golang.org/grpc` to v1.83.2 for GO-2026-6443, a server panic

@@ -48,7 +48,7 @@ scans on commit stops being scanned the moment it stops changing.
 | Secret detection | `gitleaks` over the working tree **and the full history** | Any finding fails |
 | Go dependencies | `govulncheck` | Any vulnerability on a reachable call path fails |
 | npm dependencies | `npm audit` | `high` and `critical` fail |
-| Static analysis | CodeQL, `security-extended` queries, Go + TypeScript | Findings surface in the Security tab |
+| Static analysis | CodeQL, `security-extended` queries, Go, TypeScript and GitHub Actions workflows | Findings surface in the Security tab |
 
 Everything but CodeQL runs locally too:
 
