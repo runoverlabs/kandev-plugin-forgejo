@@ -523,3 +523,97 @@ func TestLivePullRequestActions(t *testing.T) {
 	t.Logf("head branch after delete_branch_after_merge: %v", err)
 	_ = baseURL
 }
+
+// liveUserClient returns a client for a second seeded user, skipping when the
+// instance has none. Each is a different account with a different role on the
+// repository: `reviewer` can write, `readonly` can only read.
+func liveUserClient(t *testing.T, envVar string) *Client {
+	t.Helper()
+	token := strings.TrimSpace(os.Getenv(envVar))
+	if token == "" {
+		t.Skipf("set %s to exercise multi-user behaviour", envVar)
+	}
+	baseURL, _, _, _ := liveConfig(t)
+	client, err := NewClient(baseURL, token, nil)
+	require.NoError(t, err)
+	return client
+}
+
+// livePull opens a fresh pull request as the admin and returns it.
+func livePull(t *testing.T, client *Client) (PullRequest, string, string) {
+	t.Helper()
+	_, _, owner, repo := liveConfig(t)
+	base := strings.TrimSpace(os.Getenv("KANDEV_FORGEJO_HEAD_BRANCH"))
+	if base == "" {
+		t.Skip("set KANDEV_FORGEJO_HEAD_BRANCH")
+	}
+	ctx := context.Background()
+	head := fmt.Sprintf("users-%d", time.Now().UnixNano())
+	require.NoError(t, createBranch(ctx, client, owner, repo, head, base))
+	file := map[string]string{"content": "aGVsbG8=", "message": "live test", "branch": head}
+	require.NoError(t, client.do(ctx, http.MethodPost, apiV1,
+		"/repos/"+pathSegment(owner)+"/"+pathSegment(repo)+"/contents/"+head+".txt", nil, file, nil))
+	pull, err := client.CreatePullRequest(ctx, owner, repo, CreatePullRequestInput{Head: head, Base: base, Title: "live users"})
+	require.NoError(t, err)
+	return pull, owner, repo
+}
+
+func requireReason(t *testing.T, err error, want Reason) {
+	t.Helper()
+	var writeErr *WriteError
+	require.ErrorAs(t, err, &writeErr)
+	require.Equal(t, want, writeErr.Reason, "status %d", writeErr.Status)
+}
+
+// TestLiveReviewerFlow: the author cannot approve their own pull request, a
+// second user can, and the approval shows up in the review summary.
+func TestLiveReviewerFlow(t *testing.T) {
+	reviewer := liveUserClient(t, "KANDEV_FORGEJO_REVIEWER_TOKEN")
+	admin, _, _, _, _, _ := liveAdapters(t)
+	ctx := context.Background()
+	pull, owner, repo := livePull(t, admin)
+
+	_, err := admin.SubmitReview(ctx, owner, repo, pull.Number, SubmitReviewInput{Event: ReviewApprove})
+	requireReason(t, err, ReasonSelfReview)
+
+	review, err := reviewer.SubmitReview(ctx, owner, repo, pull.Number, SubmitReviewInput{Event: ReviewApprove, Body: "lgtm"})
+	require.NoError(t, err)
+	require.Equal(t, "APPROVED", review.State)
+
+	reviews, err := admin.Reviews(ctx, owner, repo, pull.Number)
+	require.NoError(t, err)
+	summary := summarizeReviews(reviews)
+	require.NotNil(t, summary)
+	require.Equal(t, 1, summary.Approved)
+
+	changes, err := reviewer.SubmitReview(ctx, owner, repo, pull.Number, SubmitReviewInput{Event: ReviewRequestChanges, Body: "no"})
+	require.NoError(t, err)
+	require.Equal(t, "REQUEST_CHANGES", changes.State)
+}
+
+// TestLiveReadOnlyUserIsForbidden: every write a read-only collaborator may not
+// make is classified as forbidden, whatever status the host picks (merge is a
+// 405 on both hosts, the rest 403), and never as a bad token.
+func TestLiveReadOnlyUserIsForbidden(t *testing.T) {
+	readonly := liveUserClient(t, "KANDEV_FORGEJO_READONLY_TOKEN")
+	admin, _, _, _, _, _ := liveAdapters(t)
+	ctx := context.Background()
+	pull, owner, repo := livePull(t, admin)
+
+	// Mergeability is computed asynchronously; give it a moment so a refusal
+	// is about permission, not "try again later".
+	time.Sleep(3 * time.Second)
+
+	requireReason(t, readonly.MergePullRequest(ctx, owner, repo, pull.Number, MergeInput{Do: MergeStyleSquash}), ReasonForbidden)
+	requireReason(t, readonly.SetLabels(ctx, owner, repo, pull.Number, nil), ReasonForbidden)
+	requireReason(t, readonly.UpdateBranch(ctx, owner, repo, pull.Number, "merge"), ReasonForbidden)
+
+	// Reading and commenting are open to a reader.
+	_, err := readonly.PullRequest(ctx, owner, repo, pull.Number)
+	require.NoError(t, err)
+	require.NoError(t, readonly.CreateComment(ctx, owner, repo, pull.Number, "from a reader"))
+
+	pullAfter, err := admin.PullRequest(ctx, owner, repo, pull.Number)
+	require.NoError(t, err)
+	require.False(t, pullAfter.Merged, "a forbidden merge must not have merged")
+}

@@ -109,11 +109,18 @@ containers (Gitea 1.20.6 and 1.27.3, Forgejo 7.0.16 and 16.0.5) on 2026-10-09.
 | `mergeable` right after a PR is opened | **Unreliable on Gitea.** 1.20 read `false` at t+0 and `true` 500 ms later; 1.27 was seen going true, false, true within three seconds. Forgejo 7 and 16 read `true` immediately. The details action reports a `false` newer than 30 s as unknown |
 | Delete branch after merge (`delete_branch_after_merge`) | Head branch gone (404) afterwards on all four, same-repo head |
 | Merge twice | 405 `not_mergeable` on all but Gitea 1.27 (`already_merged`); the caller re-reads the PR |
+| Merge by a read-only collaborator | **405** `User not allowed to merge PR` on all four, not 403. Classified as forbidden |
+| Labels, update branch by a read-only collaborator | 403 (empty body on most; `write permission is required` on Gitea 1.27; HTML on Forgejo 7) |
+| Request reviewers as a read-only collaborator | 422 (`Doer can't choose reviewer` / the misleading `poster of pr can't be reviewer`) |
+| Review and comment as a read-only collaborator | Both allowed (200 / 201) |
+| `GET .../branches/{b}` for a read-only collaborator | 200 on all four |
 | Files, commits, `.diff` | 200 on all; files carry per-file counts |
 
-Not yet verified: token-scope matrix (`write:repository` without `write:issue`),
-the `readonly` user, merge as a user without write access, and protected-branch
-merges. `TestLivePullRequestActions` re-checks everything else on each CI run.
+Not yet verified: token-scope matrix (`write:repository` without `write:issue`)
+and protected-branch merges. The CI `live` job seeds a write-access `reviewer`
+and a read-only `readonly` user; `TestLivePullRequestActions`,
+`TestLiveReviewerFlow` and `TestLiveReadOnlyUserIsForbidden` re-check the rest on
+each run.
 
 ## Layout
 
