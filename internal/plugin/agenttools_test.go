@@ -218,6 +218,13 @@ func TestAgentToolCIInlinesFailedJobLogs(t *testing.T) {
 	require.Contains(t, result.Text, "earlier output omitted")
 	require.NotContains(t, result.Text, "--- lint", "a passing job has nothing to explain")
 
+	// An absurd request is clamped to the ceiling rather than overflowing or
+	// being honoured: 500 lines fit, so nothing is omitted.
+	huge := fixture.invoke(t, ToolCI, map[string]any{"ref": "feature", "logs": float64(9_000_000_000_000)})
+	require.False(t, huge.IsError)
+	require.Contains(t, huge.Text, "FINAL FAILURE")
+	require.NotContains(t, huge.Text, "earlier output omitted")
+
 	jobs := result.StructuredContent["jobs"].([]any)
 	failed := jobs[1].(map[string]any)
 	require.Equal(t, true, failed["log_attached"])
