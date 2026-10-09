@@ -33,6 +33,10 @@ jobs:
       matrix:
         # standard = KANDEV_REF, minimum = KANDEV_MIN_REF.
         target: [standard, minimum]
+    env:
+      # The minimum SDK has no exact archive command; see archive_min.go. Set for
+      # every step so vet, tests and the package build all compile the same files.
+      GOFLAGS: ${{ matrix.target == 'minimum' && '-tags=kandev_min' || '' }}
     steps:
       - name: Check out plugin
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -76,7 +80,7 @@ jobs:
 
       - name: go vet
         working-directory: kandev-plugin-forgejo
-        run: go vet ${{ matrix.target == 'minimum' && '-tags kandev_min' || '' }} ./...
+        run: go vet ./...
 
       - name: Typecheck UI
         working-directory: kandev-plugin-forgejo
@@ -84,7 +88,7 @@ jobs:
 
       - name: Go tests
         working-directory: kandev-plugin-forgejo
-        run: go test ${{ matrix.target == 'minimum' && '-tags kandev_min' || '' }} ./... -count=1
+        run: go test ./... -count=1
 
       - name: UI tests
         working-directory: kandev-plugin-forgejo
