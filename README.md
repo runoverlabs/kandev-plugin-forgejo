@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icon.svg" alt="kandev-plugin-forgejo: a git branch in Forgejo orange merging into a Kandev-indigo node, drawn in dots" width="140" height="140">
+</p>
+
 # kandev-plugin-forgejo
 
 Connect a self-hosted [Forgejo](https://forgejo.org/) or [Gitea](https://about.gitea.com/)
