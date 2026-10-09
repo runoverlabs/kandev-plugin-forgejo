@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-Working towards 0.4.
+## 0.4.0-rc.1
+
+Release candidate for 0.4. Pull request actions in the review panel and as agent
+tools, and review watches with cleanup. Needs no new capability, so no
+re-approval; it does need the manual checks in `docs/testing-on-kandev.md`.
 
 - A merge blocked by required approvals is now reported as branch protection.
   Every host answers it with 405 and `not allowed to merge [reason: …]`, which
