@@ -76,7 +76,7 @@ jobs:
 
       - name: go vet
         working-directory: kandev-plugin-forgejo
-        run: go vet ./...
+        run: go vet ${{ matrix.target == 'minimum' && '-tags kandev_min' || '' }} ./...
 
       - name: Typecheck UI
         working-directory: kandev-plugin-forgejo
@@ -84,7 +84,7 @@ jobs:
 
       - name: Go tests
         working-directory: kandev-plugin-forgejo
-        run: go test ./... -count=1
+        run: go test ${{ matrix.target == 'minimum' && '-tags kandev_min' || '' }} ./... -count=1
 
       - name: UI tests
         working-directory: kandev-plugin-forgejo

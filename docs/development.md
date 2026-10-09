@@ -24,7 +24,7 @@ CI checks the SDK out at **pinned tags**, never at `main`:
 | Target | Tag | Used for |
 |---|---|---|
 | Standard | `v0.97.0` | Local development, the live contract jobs, the security workflow, and the release build — the newest Kandev this plugin is verified on |
-| Minimum | `v0.95.1` | A second `test` leg: the oldest Kandev the manifest claims (`min_kandev_version`) |
+| Minimum | `v0.95.1` | A second `test` leg: the oldest Kandev the manifest claims (`min_kandev_version`). Built with `-tags kandev_min`: that SDK has no exact archive command, so `internal/watches/archive_min.go` replaces `archive_exact.go` and cleanup only completes tasks |
 
 Build locally against the standard target (`git -C ../kandev checkout v0.97.0`)
 so your build matches CI. The minimum leg is the guard that matters: building
