@@ -133,11 +133,19 @@ Review watches, probed the same way on 2026-10-09 (`TestLiveReviewRequestedSearc
 Still unverified for review watches: a team request, AGit-flow head identity
 (handled by failing closed), and the response when the token lacks `read:issue`.
 
-Not yet verified: token-scope matrix (`write:repository` without `write:issue`)
-and protected-branch merges. The CI `live` job seeds a write-access `reviewer`
-and a read-only `readonly` user; `TestLivePullRequestActions`,
-`TestLiveReviewerFlow` and `TestLiveReadOnlyUserIsForbidden` re-check the rest on
-each run.
+Token scopes and branch protection, probed on all four on 2026-10-09:
+
+| Fact | Result |
+|---|---|
+| `read:repository,write:repository` token | Review, merge, update branch work. **Comment and labels are 403** (`write:issue` needed), and so is the review-requested search (`read:issue`). Request reviewers needs `write:repository` |
+| Scope refusal body | 403 `token does not have at least one of required scope(s)…`, which contains "required": it must not read as branch protection |
+| `write:issue` without `write:repository` | Comment and labels work; review, merge, update branch, request reviewers are 403 |
+| Merge blocked by required approvals | **405** on all four. `not allowed to merge [reason: Does not have enough approvals]` on Gitea 1.20 and both Forgejos, bare `Does not have enough approvals` on Gitea 1.27. Classified as blocked by protection, ahead of "not allowed to merge" (a read-only user's message, which is forbidden) |
+| `GET .../branches/main` on a protected branch | `protected`, `required_approvals`, `user_can_merge` as expected; a writer with an approval merges (200) |
+
+The CI `live` job seeds a write-access `reviewer` and a read-only `readonly`
+user; `TestLivePullRequestActions`, `TestLiveReviewerFlow` and
+`TestLiveReadOnlyUserIsForbidden` re-check the rest on each run.
 
 ## Layout
 

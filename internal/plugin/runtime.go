@@ -472,7 +472,7 @@ func writeReasonMessage(reason forgejo.Reason) string {
 	case forgejo.ReasonAlreadyMerged:
 		return "The pull request is already merged."
 	case forgejo.ReasonForbidden:
-		return "The access token lacks permission for this action. It needs write access to the repository."
+		return "The access token lacks permission for this action. It needs write access to the repository, and the write:repository scope (plus write:issue for comments and labels)."
 	default:
 		return "The instance rejected the request."
 	}

@@ -4,6 +4,13 @@
 
 Working towards 0.4.
 
+- A merge blocked by required approvals is now reported as branch protection.
+  Every host answers it with 405 and `not allowed to merge [reason: …]`, which
+  was read as a permission problem. A token missing a scope is now a permission
+  problem rather than branch protection, and the message names `write:repository`
+  and `write:issue` (comments and labels need the latter, the review search
+  `read:issue`).
+
 - **Review watches.** A new watch kind, next to issue watches, files a task for
   every pull request that asks for your review (the instance's own
   `review_requested` search, so team requests count by default, with an "only me"

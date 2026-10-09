@@ -72,6 +72,12 @@ func classifyWrite(status int, body string) Reason {
 	switch {
 	case has("already merged", "has been merged"):
 		return ReasonAlreadyMerged
+	case has("[reason:", "enough approvals", "status check", "protected branch"):
+		// A merge blocked by branch protection is a 405 on all four hosts, with
+		// "not allowed to merge [reason: Does not have enough approvals]" (Gitea
+		// 1.20, Forgejo) or just "Does not have enough approvals" (Gitea 1.27).
+		// The reason must win over "not allowed to merge" below.
+		return ReasonBlockedByProtection
 	case has("not allowed to merge", "not allowed to"):
 		// Gitea and Forgejo answer a merge by a user without permission with
 		// 405, not 403 (probed with a read-only collaborator on all four).
@@ -99,7 +105,9 @@ func classifyWrite(status int, body string) Reason {
 	case http.StatusForbidden:
 		// "write permission is required" (Gitea 1.27) is a permission failure
 		// even though it contains "required".
-		if !has("permission") && has("protect", "approv", "required", "status check") {
+		// A token without the scope is refused with "token does not have at
+		// least one of required scope(s)", which also contains "required".
+		if !has("permission", "scope") && has("protect", "approv", "required", "status check") {
 			return ReasonBlockedByProtection
 		}
 		return ReasonForbidden
