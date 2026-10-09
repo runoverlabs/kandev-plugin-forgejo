@@ -4,6 +4,37 @@
 
 Working towards 0.4.
 
+- **Review watches.** A new watch kind, next to issue watches, files a task for
+  every pull request that asks for your review (the instance's own
+  `review_requested` search, so team requests count by default, with an "only me"
+  scope that checks the reviewer list). Tasks get the title `PR #N: …`, a prompt
+  with `{{pr.*}}` placeholders filled in (a default modelled on Kandev's GitHub
+  review prompt), and, for same-repository pull requests, the head branch checked
+  out. Drafts are left out unless asked for, using the `draft` field or a `WIP:`
+  title prefix. Settings: scope, drafts, repositories, labels, search, column,
+  profiles, interval (60 s floor), open task limit. See
+  [Review watches](docs/review-watches.md).
+- **Fork pull requests never start an agent on their own.** The plugin cannot
+  set Kandev's manual-start marker, so a fork's task is never started, never has
+  the fork's branch checked out, and lands in a column that does not start agents
+  (a per-watch "fork column") or is left out and counted. The column is checked
+  again on every run, and a fork column that starts agents is refused at save.
+  Documented as weaker than GitHub's in `docs/security.md`.
+- **Cleanup.** A review watch can retire the task of a merged or closed pull
+  request: archived when the operator has granted `host.v2.write:tasks` for the
+  workspace, completed when not (and the watch says which). Never deleted. Opt-in
+  per watch, no instance request for tasks already archived or complete, at most
+  40 checks per pass, and a rate limit or refused token ends the pass. New action
+  `watches.cleanup` ("Clean up now"), which brings the manifest to 27 actions.
+- Review watches are stored under their own `rwatch.` key prefix, and issue
+  watches are stored byte-for-byte as before, so downgrading to 0.3.x leaves
+  issue watches working and review watches unseen. `watches.list` takes an
+  optional `kind`; `watches.options` also returns the review minimum interval,
+  the default prompt, whether archiving is granted, and which steps start agents.
+- No new capability. Verified against Gitea 1.20 and 1.27 and Forgejo 7 and 16
+  (`TestLiveReviewRequestedSearch`); the probe results are in
+  `docs/development.md`.
+
 - The review panel is now fully wired. It loads the real pull request detail
   (author, branches, line counts, reviews, requested reviewers, checks, comments)
   through `change_requests.details`, shows why a merge is blocked, and offers

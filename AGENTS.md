@@ -67,7 +67,7 @@ implements them and owns every Forgejo detail.
 | Package | Owns |
 | --- | --- |
 | `internal/sourcecontrol/` | The source-control recipe: ports, no Forgejo |
-| `internal/watches/` | Issue-watch model, dedup ledger, poll loop: ports, no Forgejo |
+| `internal/watches/` | Issue and review watch model, dedup ledger, poll loop, fork placement, cleanup: ports, no Forgejo |
 | `internal/forgejo/` | Every URL, pagination token, auth detail, error mapping |
 | `internal/plugin/` | Wires adapters to the SDK, owns actions and agent tools |
 | `ui/src/` | The browser half |
@@ -174,6 +174,24 @@ Verified in the sibling checkout; each cost real debugging time.
 - `EmitEvent` publishes to bus subject `plugin.<id>.<name>`, which **nothing
   currently consumes**. It is not a path into Kandev's automations — those are
   fed by webhook receipts via `automation_conditions`.
+- **Archiving a task from a plugin is a separate grant.** Only the exact v2
+  command (`HostTaskCommands(host).Archive`) archives, and it needs the
+  per-workspace operator grant `host.v2.write:tasks` on top of
+  `api_write: tasks`, plus the capability context's `ApprovalRevision` and
+  `ManifestDigest`, the task's current `ResourceVersion` and an idempotency key.
+  `PluginOwnedTaskTrees().Delete` is hard-denied and the task reader has no
+  delete: a plugin **cannot delete a task**. `Tasks().Update` can set the state
+  to `COMPLETED`, which is the fallback.
+- A workflow step's `OnEnterActionTypes` is visible to plugins. `StartAgent:
+  false` does **not** stop an agent when the destination step has
+  `auto_start_agent`, so anything that must not start an agent has to check the
+  step, not just the flag.
+- A plugin cannot set the host's top-level `fork_pr_requires_manual_start`
+  marker; plugin task metadata is namespaced under `plugin:<id>`.
+- Review watches use the instance's own `review_requested=true` search, which
+  returns neither `draft` nor `requested_reviewers`; per-pull-request detail is
+  needed for both. They are stored under `rwatch.`, not `watch.`, so an older
+  binary does not read them as issue watches.
 - `SetHost` is the only lifecycle hook, called once from a background goroutine
   after the broker dial. It is where background work starts.
 

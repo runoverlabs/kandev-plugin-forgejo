@@ -41,6 +41,10 @@ Each watch holds:
   every task a watch creates and the plugin cannot set that itself, so a card
   from a watch is permanently distinguishable from one a person filed.
 
+Pull requests are never turned into tasks by an issue watch; to file a task for
+a pull request awaiting your review, use a [review watch](review-watches.md),
+under the same settings screen.
+
 Pull requests are never turned into tasks, even though Forgejo returns them
 from the same endpoint — this plugin already has a first-class pull request
 surface.
