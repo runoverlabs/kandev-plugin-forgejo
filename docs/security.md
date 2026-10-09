@@ -53,9 +53,14 @@ Forgejo account is the same whichever Kandev user clicked.
 - **Disclosed attribution.** Reviews and comments end with "Posted via Kandev."
   so a reader of the pull request can tell the shared account was driven from
   Kandev.
-- **An audit line per write**, naming the action, verified actor, workspace,
-  task and pull request number, and the outcome. It never contains a body, a
-  title or a token.
+- **An audit trail per write.** Every write, from the panel or from an agent,
+  records the verified actor (`agent:<session>` for an agent), workspace, task,
+  pull request number, action and outcome, never a body, a title or a token. The
+  last 100 per workspace are kept in Host state and listed newest first by
+  `connection.audit`. It is stored rather than only logged because on Kandev
+  v0.97.0 a plugin's stderr is dropped before it reaches the backend log, so a
+  log line alone is unreadable when it is needed. This trail is the only place a
+  write is tied to a Kandev user: Forgejo shows the shared account.
 - **Fixed failure messages.** A failed write maps to a fixed reason; the
   instance's response body is read only to classify it and is never forwarded. A
   403 on a write is reported as a permission problem, not as a bad token.

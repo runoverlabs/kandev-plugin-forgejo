@@ -65,6 +65,11 @@ actions:
   - key: "connection.set_agent_merge"
     scope: "workspace"
     max_body_bytes: 1024
+  # The recent pull request writes in this workspace and who made them: the
+  # shared Forgejo account hides that on the Forgejo side.
+  - key: "connection.audit"
+    scope: "workspace"
+    max_body_bytes: 1024
   - key: "repositories.list"
     scope: "workspace"
     max_body_bytes: 16384

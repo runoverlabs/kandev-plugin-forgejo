@@ -54,7 +54,10 @@ func (r *Runtime) setAgentMerge(ctx context.Context, request *pluginsdk.PluginAc
 	if err := host.SetState(ctx, "workspace", workspaceID, agentMergeStateKey, map[string]any{"enabled": *input.Enabled}); err != nil {
 		return nil, fmt.Errorf("kandev-plugin-forgejo: store agent merge setting: %w", err)
 	}
-	audit(request, 0, fmt.Sprintf("agent_merge=%t", *input.Enabled))
+	r.audit(ctx, auditRecord{
+		Action: request.ActionKey, Actor: request.Context.ActorID, Workspace: workspaceID,
+		Outcome: fmt.Sprintf("agent_merge=%t", *input.Enabled),
+	})
 	return jsonResponse(map[string]any{"agent_merge": *input.Enabled})
 }
 
@@ -84,6 +87,21 @@ func (r *Runtime) prWrite(ctx context.Context, request *pluginsdk.AgentToolReque
 	if err != nil {
 		return agentWriteFailure(err), nil
 	}
+	result, number := r.prWriteOp(ctx, request, op, workspaceID)
+	outcome := "ok"
+	if result.IsError {
+		outcome = "refused"
+	}
+	r.audit(ctx, auditRecord{
+		Action: "agent.pr." + op, Actor: "agent:" + request.Context.SessionID, Workspace: workspaceID,
+		Task: request.Context.TaskID, Number: number, Outcome: outcome,
+	})
+	return result, nil
+}
+
+// prWriteOp runs the op and reports the pull request number it acted on, which
+// is zero when it never got that far.
+func (r *Runtime) prWriteOp(ctx context.Context, request *pluginsdk.AgentToolRequest, op, workspaceID string) (*pluginsdk.AgentToolResult, int64) {
 	taskID := request.Context.TaskID
 	args := request.Arguments
 
@@ -96,33 +114,33 @@ func (r *Runtime) prWrite(ctx context.Context, request *pluginsdk.AgentToolReque
 			Event: event, Body: argString(args, "body"), HeadSHA: argString(args, "sha"),
 		})
 		if err != nil {
-			return agentWriteFailure(err), nil
+			return agentWriteFailure(err), 0
 		}
-		return agentWriteResult(fmt.Sprintf("review submitted on #%d: %s", result.Number, result.State), result.Number), nil
+		return agentWriteResult(fmt.Sprintf("review submitted on #%d: %s", result.Number, result.State), result.Number), result.Number
 	case "request_review":
 		result, err := r.pullActions.RequestReviewers(ctx, workspaceID, taskID, sourcecontrol.ReviewersRequest{
 			Add: argStrings(args, "reviewers"),
 		})
 		if err != nil {
-			return agentWriteFailure(err), nil
+			return agentWriteFailure(err), 0
 		}
-		return agentWriteResult(fmt.Sprintf("review requested on #%d", result.Number), result.Number), nil
+		return agentWriteResult(fmt.Sprintf("review requested on #%d", result.Number), result.Number), result.Number
 	case "update":
 		result, err := r.pullActions.UpdateBranch(ctx, workspaceID, taskID, sourcecontrol.UpdateBranchRequest{
 			Style: argString(args, "style"),
 		})
 		if err != nil {
-			return agentWriteFailure(err), nil
+			return agentWriteFailure(err), 0
 		}
-		return agentWriteResult(fmt.Sprintf("branch of #%d is up to date with its base", result.Number), result.Number), nil
+		return agentWriteResult(fmt.Sprintf("branch of #%d is up to date with its base", result.Number), result.Number), result.Number
 	default: // comment
 		result, err := r.pullActions.Comment(ctx, workspaceID, taskID, sourcecontrol.CommentRequest{
 			Body: argString(args, "body"),
 		})
 		if err != nil {
-			return agentWriteFailure(err), nil
+			return agentWriteFailure(err), 0
 		}
-		return agentWriteResult(fmt.Sprintf("commented on #%d", result.Number), result.Number), nil
+		return agentWriteResult(fmt.Sprintf("commented on #%d", result.Number), result.Number), result.Number
 	}
 }
 
@@ -130,38 +148,29 @@ func (r *Runtime) prWrite(ctx context.Context, request *pluginsdk.AgentToolReque
 // pull request is clean. The checks rule is enforced here regardless of what
 // the repository's own protection requires, so an agent cannot merge red or
 // still-running CI in a repository that does not itself insist on it.
-func (r *Runtime) prMerge(ctx context.Context, request *pluginsdk.AgentToolRequest, workspaceID string) (*pluginsdk.AgentToolResult, error) {
+func (r *Runtime) prMerge(ctx context.Context, request *pluginsdk.AgentToolRequest, workspaceID string) (*pluginsdk.AgentToolResult, int64) {
 	if !r.agentMergeEnabled(ctx, workspaceID) {
-		return toolError("Agents may not merge in this workspace. An operator can allow it in Settings > Plugins > Forgejo; until then merge from the Forgejo UI."), nil
+		return toolError("Agents may not merge in this workspace. An operator can allow it in Settings > Plugins > Forgejo; until then merge from the Forgejo UI."), 0
 	}
 	sha := argString(request.Arguments, "sha")
 	if sha == "" {
-		return toolError("sha is required for merge: pass the head commit from op=get."), nil
+		return toolError("sha is required for merge: pass the head commit from op=get."), 0
 	}
 	taskID := request.Context.TaskID
 	details, err := r.pullActions.Details(ctx, workspaceID, taskID, 0)
 	if err != nil {
-		return agentWriteFailure(err), nil
+		return agentWriteFailure(err), 0
 	}
 	if reasons := agentMergeBlockers(details); len(reasons) > 0 {
-		audit(&pluginsdk.PluginActionRequest{ActionKey: "agent.pr.merge", Context: pluginsdk.VerifiedActionContext{WorkspaceID: workspaceID, TaskID: taskID}}, details.Number, "blocked")
-		return toolError(fmt.Sprintf("Not merged: %s.", strings.Join(reasons, "; "))), nil
+		return toolError(fmt.Sprintf("Not merged: %s.", strings.Join(reasons, "; "))), details.Number
 	}
 	result, err := r.pullActions.Merge(ctx, workspaceID, taskID, sourcecontrol.MergeRequest{
 		HeadSHA: sha, Style: argString(request.Arguments, "style"), DeleteBranch: argBool(request.Arguments, "delete_branch"),
 	})
-	audit(&pluginsdk.PluginActionRequest{ActionKey: "agent.pr.merge", Context: pluginsdk.VerifiedActionContext{WorkspaceID: workspaceID, TaskID: taskID}}, details.Number, outcomeOf(err))
 	if err != nil {
-		return agentWriteFailure(err), nil
+		return agentWriteFailure(err), details.Number
 	}
-	return agentWriteResult(fmt.Sprintf("merged #%d (%s)", result.Number, result.Style), result.Number), nil
-}
-
-func outcomeOf(err error) string {
-	if err != nil {
-		return "refused"
-	}
-	return "ok"
+	return agentWriteResult(fmt.Sprintf("merged #%d (%s)", result.Number, result.Style), result.Number), result.Number
 }
 
 // agentMergeBlockers lists, in plain words, why an agent may not merge. A merge

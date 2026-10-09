@@ -91,6 +91,7 @@ type PullRequest struct {
 	Comments       int    `json:"comments"`
 	ReviewComments int    `json:"review_comments"`
 	UpdatedAt      string `json:"updated_at"`
+	CreatedAt      string `json:"created_at"`
 	// Pointers, because an absent field must read as "unknown", not zero or
 	// false: Gitea 1.20 and Forgejo 7 omit the line counts, and a PR whose
 	// mergeability is not yet computed must not look unmergeable.

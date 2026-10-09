@@ -4,6 +4,17 @@
 
 Working towards 0.4.
 
+- The review panel is now fully wired. It loads the real pull request detail
+  (author, branches, line counts, reviews, requested reviewers, checks, comments)
+  through `change_requests.details`, shows why a merge is blocked, and offers
+  merge (with the styles the repository allows and a delete-branch option),
+  a review dialog (approve, request changes, comment, inline comments) and a
+  comment box. Verified against a real Kandev 0.97.0 and Forgejo 16.
+- Writes are audited. Each leaves an entry (actor, task, pull request number,
+  action, outcome, never text) in Host state, readable through the new
+  `connection.audit` action, because a plugin's stderr never reaches Kandev's
+  log on v0.97.0.
+
 - The `pr` agent tool gains `merge`, `review`, `request_review`, `update` and
   `comment`, acting on the task's one linked pull request (several linked: it
   refuses). `get` now reports the head `sha`, which `merge` requires. Agents

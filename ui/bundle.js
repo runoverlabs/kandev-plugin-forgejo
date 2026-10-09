@@ -1,3 +1,423 @@
+// ui/src/panel-model.ts
+function person(name) {
+  return { name: (name ?? "").trim() || "unknown" };
+}
+function reviewState(state) {
+  const upper = (state ?? "").toUpperCase();
+  return upper === "COMMENT" ? "COMMENTED" : upper || "COMMENTED";
+}
+function toDetailModel(details) {
+  const draft = details.state === "draft";
+  const reviews = (details.reviews ?? []).map((review, index) => ({
+    id: String(review.id ?? index),
+    author: person(review.author),
+    state: reviewState(review.state),
+    ...review.body ? { body: review.body } : {},
+    ...review.submitted_at ? { createdAt: review.submitted_at } : {}
+  }));
+  const checks = (details.checks ?? []).map((check, index) => ({
+    id: check.id ?? String(index),
+    name: check.label ?? "check",
+    state: check.state ?? "neutral",
+    ...check.detail ? { output: check.detail } : {},
+    ...check.url ? { url: check.url } : {}
+  }));
+  const comments = (details.comments ?? []).map((comment, index) => ({
+    id: String(comment.id ?? index),
+    author: person(comment.author),
+    body: comment.body ?? "",
+    ...comment.created_at ? { createdAt: comment.created_at } : {}
+  }));
+  const model = {
+    providerId: details.provider_id ?? "forgejo",
+    reviewKey: details.review_key ?? "",
+    number: details.number ?? 0,
+    title: details.title ?? "",
+    url: details.url ?? "",
+    state: draft ? "open" : details.state ?? "open",
+    author: person(details.author),
+    sourceBranch: details.source_branch ?? "",
+    targetBranch: details.target_branch ?? "",
+    additions: details.additions ?? 0,
+    deletions: details.deletions ?? 0,
+    reviews,
+    requestedReviewers: (details.requested_reviewers ?? []).map((name) => person(name)),
+    checks,
+    comments
+  };
+  if (draft) model.draft = true;
+  if (details.description) model.description = details.description;
+  if (details.created_at) model.createdAt = details.created_at;
+  const decision = reviewDecision(details);
+  if (decision) model.reviewState = decision;
+  return model;
+}
+function reviewDecision(details) {
+  const blockers = details.merge?.blockers ?? [];
+  if (blockers.includes("changes_requested")) return "CHANGES_REQUESTED";
+  if ((details.merge?.approvals ?? 0) > 0) return "APPROVED";
+  return void 0;
+}
+var BLOCKER_TEXT = {
+  conflicts: "This branch has conflicts that must be resolved.",
+  checks_failing: "Required checks are failing.",
+  checks_pending: "Required checks are still running.",
+  approvals_required: "More approvals are required.",
+  changes_requested: "Changes were requested.",
+  not_open: ""
+};
+function mergeNotice(details) {
+  if (details.state === "draft") return "This pull request is a draft (its title starts with WIP:).";
+  const reasons = (details.merge?.blockers ?? []).map((code) => BLOCKER_TEXT[code] ?? "").filter((line) => line !== "");
+  if (reasons.length === 0) return null;
+  const approvals = details.merge?.required_approvals;
+  return reasons.map(
+    (line) => line.startsWith("More approvals") && typeof approvals === "number" ? `${approvals} approval${approvals === 1 ? "" : "s"} required (${details.merge?.approvals ?? 0} so far).` : line
+  ).join(" ");
+}
+var STYLE_LABELS = {
+  merge: "Create a merge commit",
+  squash: "Squash and merge",
+  rebase: "Rebase and merge",
+  "rebase-merge": "Rebase, then merge commit",
+  "fast-forward-only": "Fast-forward only"
+};
+function styleLabel(style) {
+  return STYLE_LABELS[style] ?? style;
+}
+function mergeChoice(details) {
+  const styles = details.merge?.styles ?? [];
+  if (styles.length === 0) return { primary: "", others: [], unreported: true };
+  const preferred = details.merge?.default_style ?? "";
+  const primary = styles.includes(preferred) ? preferred : styles[0];
+  return { primary, others: styles.filter((style) => style !== primary), unreported: false };
+}
+function mergeOffered(details) {
+  return details.state === "open" || details.state === "draft";
+}
+function mergeDisabled(details) {
+  if (details.state === "draft") return true;
+  if (details.merge?.can_merge === false) return true;
+  return (details.merge?.blockers ?? []).length > 0;
+}
+function failureMessage(cause) {
+  if (cause instanceof Error && cause.message.trim()) return cause.message.trim();
+  if (typeof cause === "string" && cause.trim()) return cause.trim();
+  return "The request failed.";
+}
+
+// ui/src/review-panel.ts
+var EVENT_LABELS = {
+  approve: "Approve",
+  request_changes: "Request changes",
+  comment: "Comment"
+};
+function createReviewDialog(host) {
+  return function ReviewDialog(props) {
+    const [event, setEvent] = host.React.useState("comment");
+    const [body, setBody] = host.React.useState("");
+    const [inline, setInline] = host.React.useState([]);
+    const [busy, setBusy] = host.React.useState(false);
+    const [problem, setProblem] = host.React.useState("");
+    const submit = async () => {
+      const comments = [];
+      for (const draft of inline) {
+        const line = Number.parseInt(draft.line, 10);
+        if (!draft.path.trim() || !draft.body.trim() || !Number.isInteger(line) || line <= 0) {
+          setProblem("Each inline comment needs a file path, a line number and some text.");
+          return;
+        }
+        comments.push({ path: draft.path.trim(), line, body: draft.body.trim() });
+      }
+      if (event !== "approve" && !body.trim() && comments.length === 0) {
+        setProblem("Write something, or choose Approve.");
+        return;
+      }
+      setProblem("");
+      setBusy(true);
+      try {
+        await props.onSubmit({ event, body: body.trim(), comments });
+        props.onClose();
+      } catch (cause) {
+        setProblem(failureMessage(cause));
+        setBusy(false);
+      }
+    };
+    const updateInline = (index, patch) => setInline(
+      (current) => current.map((draft, i) => i === index ? { ...draft, ...patch } : draft)
+    );
+    return host.jsx(
+      "div",
+      { className: "forgejo-review-dialog" },
+      host.jsx(
+        "div",
+        { className: "forgejo-review-dialog__events", role: "group", "aria-label": "Review type" },
+        Object.keys(EVENT_LABELS).map(
+          (key) => host.jsx(
+            host.ui.Button,
+            {
+              key,
+              type: "button",
+              size: "sm",
+              variant: event === key ? "default" : "outline",
+              "aria-pressed": event === key,
+              disabled: busy,
+              onClick: () => setEvent(key)
+            },
+            EVENT_LABELS[key]
+          )
+        )
+      ),
+      host.jsx(host.ui.Textarea, {
+        value: body,
+        placeholder: "Leave a comment",
+        "aria-label": "Review body",
+        rows: 5,
+        disabled: busy,
+        onChange: (changed) => setBody(changed.target.value)
+      }),
+      inline.map(
+        (draft, index) => host.jsx(
+          "div",
+          { key: index, className: "forgejo-review-dialog__inline" },
+          host.jsx(host.ui.Input, {
+            value: draft.path,
+            placeholder: "path/to/file",
+            "aria-label": "File path",
+            onChange: (changed) => updateInline(index, { path: changed.target.value })
+          }),
+          host.jsx(host.ui.Input, {
+            value: draft.line,
+            placeholder: "line",
+            inputMode: "numeric",
+            "aria-label": "Line number",
+            onChange: (changed) => updateInline(index, { line: changed.target.value })
+          }),
+          host.jsx(host.ui.Textarea, {
+            value: draft.body,
+            placeholder: "Comment on this line",
+            "aria-label": "Inline comment",
+            rows: 2,
+            onChange: (changed) => updateInline(index, { body: changed.target.value })
+          }),
+          host.jsx(
+            host.ui.Button,
+            {
+              type: "button",
+              size: "sm",
+              variant: "ghost",
+              onClick: () => setInline((current) => current.filter((_, i) => i !== index))
+            },
+            "Remove"
+          )
+        )
+      ),
+      inline.length < 20 ? host.jsx(
+        host.ui.Button,
+        {
+          type: "button",
+          size: "sm",
+          variant: "secondary",
+          disabled: busy,
+          onClick: () => setInline((current) => [...current, { path: "", line: "", body: "" }])
+        },
+        "Add inline comment"
+      ) : null,
+      problem ? host.jsx("p", { role: "alert", className: "forgejo-review-dialog__error" }, problem) : null,
+      host.jsx(
+        "div",
+        { className: "forgejo-review-dialog__footer" },
+        host.jsx(host.ui.Button, { type: "button", variant: "ghost", disabled: busy, onClick: props.onClose }, "Cancel"),
+        host.jsx(
+          host.ui.Button,
+          { type: "button", disabled: busy, onClick: () => void submit() },
+          busy ? "Submitting\u2026" : "Submit review"
+        )
+      )
+    );
+  };
+}
+function createReviewPanel(host, options) {
+  const ReviewDialog = createReviewDialog(host);
+  return function ReviewPanel(props) {
+    const [details, setDetails] = host.React.useState(null);
+    const [loading, setLoading] = host.React.useState(true);
+    const [error, setError] = host.React.useState(null);
+    const [busy, setBusy] = host.React.useState(null);
+    const [deleteBranch, setDeleteBranch] = host.React.useState(null);
+    const number = Number(props.changeRequestNumber);
+    const load = host.React.useCallback(
+      async (signal) => {
+        setLoading(true);
+        try {
+          const response = await host.api.invokeAction(
+            "change_requests.details",
+            { workspaceId: props.workspaceId, taskId: props.taskId, body: { number } },
+            signal ? { signal } : void 0
+          );
+          if (signal?.aborted) return;
+          setDetails(response);
+          setError(null);
+        } catch (cause) {
+          if (signal?.aborted) return;
+          setError(failureMessage(cause));
+        } finally {
+          if (!signal?.aborted) setLoading(false);
+        }
+      },
+      [props.workspaceId, props.taskId, number]
+    );
+    host.React.useEffect(() => {
+      const controller = new AbortController();
+      void load(controller.signal);
+      return () => controller.abort();
+    }, [load]);
+    const run = async (id, write, success) => {
+      if (busy) return;
+      setBusy(id);
+      try {
+        await write();
+        host.toast.success(success);
+      } catch (cause) {
+        host.toast.error(failureMessage(cause));
+      } finally {
+        setBusy(null);
+        await load();
+        void options.afterMutation(props.workspaceId, props.taskId);
+      }
+    };
+    const act = (key, body) => host.api.invokeAction(key, { workspaceId: props.workspaceId, taskId: props.taskId, body: { number, ...body } });
+    const current = details;
+    const model = current ? toDetailModel(current) : options.fallback(props);
+    const choice = current ? mergeChoice(current) : null;
+    const wantsDelete = deleteBranch ?? current?.merge?.delete_branch_default ?? false;
+    const merge = (style) => {
+      if (!current) return;
+      void run(
+        "merge",
+        () => act("change_requests.merge", {
+          head_sha: current.head_sha ?? "",
+          ...style ? { style } : {},
+          delete_branch: wantsDelete
+        }),
+        "Pull request merged"
+      );
+    };
+    const openReview = () => {
+      let modal = null;
+      modal = host.openModal({
+        title: "Submit review",
+        ...current?.actor ? { description: `Posted as ${current.actor}, the account Kandev uses for Forgejo.` } : {},
+        size: "md",
+        content: () => host.jsx(ReviewDialog, {
+          onClose: () => modal?.close(),
+          onSubmit: async (request) => {
+            await act("change_requests.review", {
+              event: request.event,
+              body: request.body,
+              comments: request.comments,
+              head_sha: current?.head_sha ?? ""
+            });
+            host.toast.success("Review submitted");
+            await load();
+            void options.afterMutation(props.workspaceId, props.taskId);
+          }
+        })
+      });
+    };
+    const headerActions = current && mergeOffered(current) ? host.jsx(
+      "div",
+      { className: "forgejo-merge" },
+      host.jsx(
+        host.ui.Button,
+        { type: "button", size: "sm", variant: "outline", disabled: busy !== null, onClick: openReview },
+        "Review"
+      ),
+      host.jsx(
+        host.ui.Button,
+        {
+          type: "button",
+          size: "sm",
+          "data-testid": "forgejo-merge-button",
+          disabled: busy !== null || mergeDisabled(current),
+          onClick: () => merge(choice?.primary ?? "")
+        },
+        busy === "merge" ? "Merging\u2026" : choice && !choice.unreported ? styleLabel(choice.primary) : "Merge"
+      ),
+      choice && choice.others.length > 0 ? host.jsx(
+        host.ui.DropdownMenu,
+        null,
+        host.jsx(
+          host.ui.DropdownMenuTrigger,
+          { asChild: true },
+          host.jsx(
+            host.ui.Button,
+            {
+              type: "button",
+              size: "sm",
+              variant: "outline",
+              "aria-label": "More merge options",
+              disabled: busy !== null || mergeDisabled(current)
+            },
+            "\u25BE"
+          )
+        ),
+        host.jsx(
+          host.ui.DropdownMenuContent,
+          { align: "end" },
+          choice.others.map(
+            (style) => host.jsx(host.ui.DropdownMenuItem, { key: style, onSelect: () => merge(style) }, styleLabel(style))
+          )
+        )
+      ) : null,
+      host.jsx(
+        "label",
+        { className: "forgejo-merge__delete" },
+        host.jsx(host.ui.Checkbox, {
+          checked: wantsDelete,
+          disabled: busy !== null,
+          "aria-label": "Delete branch after merge",
+          onCheckedChange: (next) => setDeleteBranch(next === true)
+        }),
+        host.jsx("span", null, "Delete branch")
+      ),
+      current.actor ? host.jsx("span", { className: "forgejo-merge__actor" }, `as ${current.actor}`) : null
+    ) : void 0;
+    const noticeText = current ? mergeNotice(current) : null;
+    const notice = noticeText ? host.jsx("p", { className: "forgejo-merge-notice", role: "status", "data-testid": "forgejo-merge-notice" }, noticeText) : void 0;
+    const actions = current ? [
+      {
+        id: "comment",
+        label: "Comment",
+        pendingLabel: "Posting\u2026",
+        placement: "comment",
+        input: "text",
+        busy: busy === "comment",
+        disabled: busy !== null && busy !== "comment"
+      }
+    ] : void 0;
+    return host.jsx(host.ui.ChangeRequestDetail, {
+      detail: model,
+      presentation: props.presentation,
+      loading: loading && model === null,
+      contentLoading: loading && model !== null,
+      error: model === null ? error : null,
+      onRefresh: () => void load(),
+      onRetry: () => void load(),
+      actions,
+      busyActionId: busy,
+      onAction: async (request) => {
+        if (request.actionId !== "comment") return;
+        const text3 = (request.body ?? "").trim();
+        if (!text3) return;
+        await run("comment", () => act("change_requests.comment", { body: text3 }), "Comment posted");
+      },
+      headerActions,
+      notice
+    });
+  };
+}
+
 // ui/src/review-store.ts
 function createSnapshotStore() {
   const snapshots = /* @__PURE__ */ new Map();
@@ -87,14 +507,14 @@ function normalizeTaskStatus(value) {
     }];
   }) : [];
   const reviewSource = record(source.review);
-  const reviewState = text(reviewSource.state);
+  const reviewState2 = text(reviewSource.state);
   const approved = nonNegativeInteger(reviewSource.approved);
   const required = nonNegativeInteger(reviewSource.required);
   const requested = nonNegativeInteger(reviewSource.requested);
   const review = approved !== void 0 && ["approved", "changes_requested", "pending"].includes(
-    reviewState
+    reviewState2
   ) ? {
-    state: reviewState,
+    state: reviewState2,
     approved,
     ...required === void 0 ? {} : { required },
     ...requested === void 0 ? {} : { requested }
@@ -366,6 +786,15 @@ function registerSourceControlRecipe(registry, host, options) {
       overlays.add(dialog);
     }
   });
+  const reviewPanel = createReviewPanel(host, {
+    fallback: (props) => {
+      const review = reviewStore.get(props.taskId).find(
+        (candidate) => candidate.reviewKey === props.reviewKey && candidate.connectionScope === props.connectionScope && candidate.repositoryId === props.repositoryId && String(candidate.changeRequestNumber) === String(props.changeRequestNumber)
+      );
+      return review ? options.toChangeRequestDetail(review) : null;
+    },
+    afterMutation: (workspaceId, taskId) => refreshAfterMutation(workspaceId, taskId, new AbortController().signal)
+  });
   registry.registerReviewProvider({
     id: options.providerId,
     label: options.label,
@@ -405,17 +834,9 @@ function registerSourceControlRecipe(registry, host, options) {
         { signal }
       );
     },
-    ReviewPanel: (props) => {
-      const review = reviewStore.get(props.taskId).find(
-        (candidate) => candidate.reviewKey === props.reviewKey && candidate.connectionScope === props.connectionScope && candidate.repositoryId === props.repositoryId && String(candidate.changeRequestNumber) === String(props.changeRequestNumber)
-      );
-      return host.jsx(host.ui.ChangeRequestDetail, {
-        detail: review ? options.toChangeRequestDetail(review) : null,
-        presentation: props.presentation,
-        loading: false,
-        error: null
-      });
-    }
+    // The panel is stateful, so its component type is created once here. A new
+    // type per render would remount it every time and lose the loaded details.
+    ReviewPanel: (props) => host.jsx(reviewPanel, props)
   });
   return {
     destroy() {

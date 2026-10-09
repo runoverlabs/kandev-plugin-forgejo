@@ -81,6 +81,7 @@ Action bodies:
 | Action | Body |
 | --- | --- |
 | `connection.get` / `connection.test` | none |
+| `connection.audit` | none. The 50 most recent pull request writes in the workspace, newest first: `at`, `action`, `actor`, `task`, `number`, `outcome` |
 | `connection.set_agent_merge` | `{"enabled"}`. Whether agents may merge in this workspace; off by default. `connection.get` reports it as `agent_merge` |
 | `connection.set_enabled` | `{"enabled":true}` |
 | `repositories.list` | `{"query":"","cursor":"","limit":100}` |

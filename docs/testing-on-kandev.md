@@ -187,6 +187,34 @@ Change the plugin config (any field) to force a restart, or restart Kandev.
 Confirm the watch still polls afterwards and does **not** re-file the issues it
 already handled — the ledger lives in Host state and must survive the process.
 
+### 10. The review panel and pull request writes
+
+Added with the PR actions work. Use a throwaway Forgejo repository and a task
+with linked pull requests (link with `change_requests.link`). The unit tests
+cannot reach any of this: it is the host seam. Last checked on Kandev 0.97.0
+with Forgejo 16 and WebKit.
+
+- [ ] Open the task's Review panel from the `#N` button (or the "N PRs" menu).
+      It shows the real author, branches, line counts, description, reviews,
+      checks and comments, and the Review and merge controls with "as <account>".
+- [ ] A pull request with a conflict shows "This branch has conflicts that must
+      be resolved." and a disabled merge button. A clean one has an enabled
+      button labelled with the repository's primary style, and the caret lists
+      the other allowed styles.
+- [ ] Review: the dialog opens, the three review types toggle, an inline comment
+      row can be added and removed, submit shows a "Review submitted" toast and
+      the review appears (Forgejo's `COMMENT` shows as "Commented").
+- [ ] Comment through the panel's box: the comment appears and ends with
+      "Posted via Kandev."
+- [ ] Merge with a non-default style and "Delete branch" ticked: toast, the
+      state becomes merged, the controls disappear, and Forgejo shows the pull
+      request merged and the branch gone.
+- [ ] Move the head on Forgejo while the panel is open, then merge: the stale
+      merge is refused with a toast and the panel reloads.
+- [ ] `connection.audit` lists each write with the verified actor.
+- [ ] Settings > Forgejo: "Let agents merge pull requests" is off by default and
+      survives a reload.
+
 ## Rolling back
 
 Know the exit before you need it:

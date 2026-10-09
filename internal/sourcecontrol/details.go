@@ -62,13 +62,16 @@ type DetailComment struct {
 
 // ChangeRequestDetails is the full panel model for one linked change request.
 type ChangeRequestDetails struct {
-	ProviderID   string `json:"provider_id"`
-	ReviewKey    string `json:"review_key"`
-	Number       int64  `json:"number"`
-	Title        string `json:"title"`
-	URL          string `json:"url"`
-	State        string `json:"state"`
-	Author       string `json:"author"`
+	ProviderID string `json:"provider_id"`
+	ReviewKey  string `json:"review_key"`
+	Number     int64  `json:"number"`
+	Title      string `json:"title"`
+	URL        string `json:"url"`
+	State      string `json:"state"`
+	Author     string `json:"author"`
+	// Description is the pull request body, clipped.
+	Description  string `json:"description,omitempty"`
+	CreatedAt    string `json:"created_at,omitempty"`
 	SourceBranch string `json:"source_branch"`
 	TargetBranch string `json:"target_branch"`
 	HeadSHA      string `json:"head_sha"`
