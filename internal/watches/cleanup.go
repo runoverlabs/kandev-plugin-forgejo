@@ -20,7 +20,7 @@ const archiveOperation = "ArchiveTaskExact"
 
 // ArchiveGrantNote is shown when tasks are completed because archiving is not
 // granted. The operator fixes it in the host's approvals, not here.
-const ArchiveGrantNote = "Tasks are completed, not archived: the host has not granted this plugin archiving for the workspace."
+const ArchiveGrantNote = "Tasks are completed, not archived: the host has not approved this plugin archiving tasks."
 
 const archiveFailedNote = "The host could not archive a task, so it was completed instead."
 
@@ -28,12 +28,17 @@ const archiveUnsupportedNote = "This host cannot archive tasks from a plugin, so
 
 // taskDone reports whether a task has already left the board, by archive or by
 // completion. Such a task costs no provider request.
+//
+// The state is checked as well as the timestamps because setting a task's state
+// to COMPLETED, which is how a plugin ends a task it may not archive, does not
+// set its completed_at (checked on Kandev 0.97.0). A failed task is not done: its
+// pull request may still finish and deserve a cleanup.
 func taskDone(task pluginsdk.Task) bool {
 	if task.ArchivedAt != nil || task.CompletedAt != nil {
 		return true
 	}
 	switch strings.ToUpper(task.State) {
-	case "COMPLETED", "CANCELLED", "FAILED":
+	case "COMPLETED", "CANCELLED":
 		return true
 	}
 	return false
@@ -221,12 +226,16 @@ func archiveGranted(ctx context.Context, exact pluginsdk.ExactHost, workspaceID 
 	return false, nil
 }
 
+// ErrCleanupOff means a manual cleanup was asked of a watch whose policy is to
+// leave tasks alone.
+var ErrCleanupOff = errors.New("watches: cleanup is off for this watch")
+
 // Cleanup runs the cleanup pass for one review watch on demand, without a
 // discovery poll and without touching the poll clock.
 func (p *Poller) Cleanup(ctx context.Context, watch Watch) (Result, error) {
 	result := Result{WatchID: watch.ID, Budget: watch.MaxInflightTasks}
 	if !watch.IsReview() || watch.CleanupPolicy != CleanupWhenClosed {
-		return result, errors.New("watches: cleanup is off for this watch")
+		return result, ErrCleanupOff
 	}
 	host, err := p.store.host()
 	if err != nil {

@@ -14,7 +14,7 @@ tests, which talk only to Forgejo:
 | --- | --- | --- |
 | `Tasks().Create` | Issue watches filing a card | `api_write:tasks` |
 | `Tasks().Update` | Review-watch cleanup completing a task | `api_write:tasks` |
-| `GetCapabilityContext`, `TaskCommands().Archive` | Review-watch cleanup archiving a task | `api_write:tasks` **plus** the operator grant `host.v2.write:tasks` |
+| `GetCapabilityContext`, `TaskCommands().Archive` | Review-watch cleanup archiving a task | `api_write:tasks`, and the `host.v2.write:tasks` approval that comes with it on 0.97.0 |
 | `Tasks().List` / `.Get` | The open-task budget, cleanup (archived included), task→workspace lookup | `api_read:tasks` |
 | `Workspaces().List` | The poller, finding due watches | `api_read:workspaces` |
 | `Workflows().List` / `.ListSteps` | The watch form's column picker | `api_read:workflows` |
@@ -239,13 +239,16 @@ starts an agent on entry and one that does not.
       agents, its card lands there, no agent starts, and the repository is
       attached without the fork's branch checked out. Saving a watch whose fork
       column starts agents is refused.
-- [ ] Cleanup without the archive grant: set "Archive the task", merge the pull
-      request, **Clean up now**: the task is completed, and the watch shows
-      "Tasks are completed, not archived…". Run it again: no instance request is
-      made for that task.
-- [ ] Cleanup with the grant (approve `host.v2.write:tasks` for the workspace in
-      Kandev): the next finished pull request's task is archived, the note
-      clears, and the card is not filed again on the next run.
+- [ ] Cleanup: set "Archive the task", merge a pull request, **Clean up now**:
+      the task is archived (checked on Kandev 0.97.0, where the approval of
+      `api_write: tasks` includes `host.v2.write:tasks`; a partial approval was
+      refused), the card is not filed again on the next run, and a second
+      cleanup makes no instance request for it.
+- [ ] Cleanup fallback: needs a host without the exact archive command (older
+      than 0.97.0) or one whose approval leaves it out. The task is completed, the
+      watch shows "Tasks are completed, not archived…", and the task stops
+      counting against the open task limit. Marking a task COMPLETED sets no
+      `completed_at` on 0.97.0, so this is worth seeing once.
 - [ ] Pausing a review watch changes only `enabled`; open it and confirm every
       other field is as it was.
 - [ ] Downgrade check (optional): install the previous release over the top. Issue

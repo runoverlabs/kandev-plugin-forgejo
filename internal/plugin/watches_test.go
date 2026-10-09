@@ -3,6 +3,8 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -129,8 +131,21 @@ func watchAction(t *testing.T, runtime *Runtime, key, workspaceID string, body a
 	if err != nil {
 		return nil, err
 	}
-	return decodeBody(t, response), nil
+	decoded := decodeBody(t, response)
+	if response.Status >= http.StatusBadRequest {
+		// An operator-actionable refusal travels as a status and a message, not
+		// as a Go error the host would mask; surface it as an error here.
+		return nil, &refusedError{status: response.Status, message: fmt.Sprint(decoded["error"])}
+	}
+	return decoded, nil
 }
+
+type refusedError struct {
+	status  int
+	message string
+}
+
+func (e *refusedError) Error() string { return e.message }
 
 func TestWatchActionsRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -544,4 +559,46 @@ func TestCleanupActionRefusesAWatchWithoutAPolicy(t *testing.T) {
 	require.Error(t, err)
 	_, err = watchAction(t, runtime, ActionWatchesCleanup, "ws-1", map[string]any{"id": "missing"})
 	require.Error(t, err)
+}
+
+// The host replaces any Go error with "plugin action unavailable", so an
+// operator-actionable failure must travel as a status and its own message.
+func TestWatchRefusalsCarryAStatusAndAMessage(t *testing.T) {
+	t.Parallel()
+	runtime, _ := newWatchRuntime(t)
+	review := createdWatch(t, runtime, reviewBody(nil))
+
+	statusOf := func(err error) (int, string) {
+		var refused *refusedError
+		require.ErrorAs(t, err, &refused)
+		require.NotContains(t, refused.message, "plugin action unavailable")
+		return refused.status, refused.message
+	}
+	_, err := watchAction(t, runtime, ActionWatchesCreate, "ws-1", map[string]any{"name": "x"})
+	status, message := statusOf(err)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Contains(t, message, "a workflow is required")
+
+	_, err = watchAction(t, runtime, ActionWatchesCreate, "ws-1", reviewBody(map[string]any{"fork_workflow_step_id": "step-auto"}))
+	status, message = statusOf(err)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Contains(t, message, "starts an agent")
+
+	_, err = watchAction(t, runtime, ActionWatchesUpdate, "ws-1", map[string]any{"id": review["id"], "kind": "issue"})
+	status, _ = statusOf(err)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+
+	_, err = watchAction(t, runtime, ActionWatchesDelete, "ws-1", map[string]any{"id": "missing"})
+	status, message = statusOf(err)
+	require.Equal(t, http.StatusNotFound, status)
+	require.Contains(t, message, "no such watch")
+
+	_, err = watchAction(t, runtime, ActionWatchesCleanup, "ws-1", map[string]any{"id": review["id"]})
+	status, _ = statusOf(err)
+	require.Equal(t, http.StatusConflict, status)
+
+	_, err = watchAction(t, runtime, ActionWatchesCreate, "ws-1", reviewBody(map[string]any{"repos": []string{"not-a-repo"}}))
+	status, message = statusOf(err)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Contains(t, message, "owner/name")
 }

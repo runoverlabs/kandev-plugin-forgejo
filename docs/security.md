@@ -54,9 +54,9 @@ host, and what the pipeline checks on every change.
 - **Pull request text is data.** Titles, authors and branch names are substituted
   into the prompt as text and never evaluated.
 - **Cleanup never deletes.** The plugin cannot delete tasks, and does not try.
-  It archives with the host's exact archive command, which only works when the
-  operator has granted `host.v2.write:tasks` for the workspace, and otherwise
-  completes the task. It acts only on task ids in its own ledger, never on
+  It archives with the host's exact archive command, which needs the
+  `host.v2.write:tasks` approval (part of approving `api_write: tasks` on Kandev
+  0.97.0), and otherwise completes the task. It acts only on task ids in its own ledger, never on
   another task in the workspace.
 - **Cleanup is opt-in and bounded.** A watch cleans up only when set to, makes no
   instance request for a task that is already archived or complete, checks at

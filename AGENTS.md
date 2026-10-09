@@ -174,14 +174,18 @@ Verified in the sibling checkout; each cost real debugging time.
 - `EmitEvent` publishes to bus subject `plugin.<id>.<name>`, which **nothing
   currently consumes**. It is not a path into Kandev's automations — those are
   fed by webhook receipts via `automation_conditions`.
-- **Archiving a task from a plugin is a separate grant.** Only the exact v2
-  command (`HostTaskCommands(host).Archive`) archives, and it needs the
-  per-workspace operator grant `host.v2.write:tasks` on top of
-  `api_write: tasks`, plus the capability context's `ApprovalRevision` and
-  `ManifestDigest`, the task's current `ResourceVersion` and an idempotency key.
-  `PluginOwnedTaskTrees().Delete` is hard-denied and the task reader has no
-  delete: a plugin **cannot delete a task**. `Tasks().Update` can set the state
-  to `COMPLETED`, which is the fallback.
+- **Archiving a task from a plugin goes through one exact command.** Only
+  `HostTaskCommands(host).Archive` archives; it needs the `host.v2.write:tasks`
+  approval, the capability context's `ApprovalRevision` and `ManifestDigest`, the
+  task's current `ResourceVersion` and an idempotency key. On Kandev 0.97.0 that
+  approval is declared with `api_write: tasks` and cannot be approved
+  separately (a partial approval returns 400). `PluginOwnedTaskTrees().Delete` is
+  hard-denied and the task reader has no delete: a plugin **cannot delete a
+  task**. `Tasks().Update` can set the state to `COMPLETED`, the fallback, which
+  does **not** set `completed_at`: check the state too.
+- **The host masks every Go error** from an action as `plugin action unavailable`
+  (503). An operator-actionable failure has to be returned as a response with its
+  own status and message, as the pull request and watch handlers do.
 - A workflow step's `OnEnterActionTypes` is visible to plugins. `StartAgent:
   false` does **not** stop an agent when the destination step has
   `auto_start_agent`, so anything that must not start an agent has to check the

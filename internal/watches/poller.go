@@ -412,7 +412,12 @@ func (p *Poller) inflight(ctx context.Context, host pluginsdk.Host, watch Watch)
 			// CompletedAt and ArchivedAt are the two fields that mean "no
 			// longer occupying the board". Task state vocabulary is richer
 			// than this plugin needs to know about.
-			if task.CompletedAt == nil && task.ArchivedAt == nil {
+			//
+			// A review watch also counts the state: it ends a task by marking it
+			// COMPLETED when it may not archive, and that sets no completed_at,
+			// so the budget would otherwise never free. Issue watches keep
+			// reading the timestamps alone, as they always have.
+			if task.CompletedAt == nil && task.ArchivedAt == nil && !(watch.IsReview() && taskDone(task)) {
 				count++
 			}
 		}

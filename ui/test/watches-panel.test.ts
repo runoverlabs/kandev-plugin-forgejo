@@ -333,7 +333,7 @@ describe("review watches", () => {
     // Choose "Archive the task": the first select with that item.
     const select = findAll(tree, (n) => n.type === "select" && textOf(n).includes("Archive the task"))[0]!;
     select.props.onValueChange("when_closed");
-    expect(textOf(render({ workspaceId: "workspace-1" }, "review"))).toContain("Host v2 tasks");
+    expect(textOf(render({ workspaceId: "workspace-1" }, "review"))).toContain("has not approved archiving");
     void host;
   });
 

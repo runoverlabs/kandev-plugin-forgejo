@@ -21,11 +21,18 @@ Working towards 0.4.
   again on every run, and a fork column that starts agents is refused at save.
   Documented as weaker than GitHub's in `docs/security.md`.
 - **Cleanup.** A review watch can retire the task of a merged or closed pull
-  request: archived when the operator has granted `host.v2.write:tasks` for the
-  workspace, completed when not (and the watch says which). Never deleted. Opt-in
+  request: archived through the host's exact archive command (on Kandev 0.97.0 the
+  approval for it comes with the plugin's one capability approval), completed
+  when the host cannot (and the watch says which). A completed task no longer
+  counts against the open task limit. Never deleted. Opt-in
   per watch, no instance request for tasks already archived or complete, at most
   40 checks per pass, and a rate limit or refused token ends the pass. New action
   `watches.cleanup` ("Clean up now"), which brings the manifest to 27 actions.
+- **Watch errors now reach the operator.** The host replaces any Go error from an
+  action with "plugin action unavailable", so a rejected watch (a missing name or
+  workflow, a bad repository, a fork column that starts agents) showed that
+  instead of the reason. Validation failures, a missing watch, a paused watch and
+  the like now travel as 422, 404 or 409 with their message.
 - Review watches are stored under their own `rwatch.` key prefix, and issue
   watches are stored byte-for-byte as before, so downgrading to 0.3.x leaves
   issue watches working and review watches unseen. `watches.list` takes an

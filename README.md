@@ -146,7 +146,7 @@ the shared surface ever diverges, that matrix fails first.
 | Document | What is in it |
 | --- | --- |
 | [Issue watches](docs/issue-watches.md) | Turning Forgejo issues into Kanban tasks: every setting, what the feature guarantees, and the capabilities it needs. |
-| [Review watches](docs/review-watches.md) | Filing a task per pull request awaiting your review: scope, drafts, fork handling, and cleanup with or without the archive grant. |
+| [Review watches](docs/review-watches.md) | Filing a task per pull request awaiting your review: scope, drafts, fork handling, and cleanup by archiving or, where the host cannot, completing the task. |
 | [Agent tools](docs/agent-tools.md) | The two MCP tools on task sessions, what CI data each host version can actually serve, and what the pair costs in prompt tokens. |
 | [Configuration and operations](docs/configuration.md) | Connection scope, the per-workspace enable switch, headless install and action bodies over HTTP, and the unsigned badge. |
 | [Security](docs/security.md) | Credential handling, the capability surface, and what the security pipeline checks. |

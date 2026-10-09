@@ -17,7 +17,6 @@
 package watches
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -124,7 +123,7 @@ func ParseRepoRef(raw string) (RepoRef, error) {
 	owner, name, found := strings.Cut(trimmed, "/")
 	owner, name = strings.TrimSpace(owner), strings.TrimSpace(name)
 	if !found || owner == "" || name == "" || strings.Contains(name, "/") {
-		return RepoRef{}, fmt.Errorf("watches: repository %q must be in owner/name form", raw)
+		return RepoRef{}, ValidationError(fmt.Sprintf("watches: repository %q must be in owner/name form", raw))
 	}
 	return RepoRef{Owner: owner, Name: name}, nil
 }
@@ -338,6 +337,13 @@ func (w *Watch) normalizeKind() {
 	}
 }
 
+// ValidationError is a reason a watch cannot be saved that the operator can act
+// on. It is the one kind of error whose text is safe to show as written: it
+// names a setting, never an instance, a token or a response body.
+type ValidationError string
+
+func (e ValidationError) Error() string { return string(e) }
+
 // Validate reports why a watch cannot be saved, or nil.
 //
 // Placement is required because a task with no workflow step has nowhere to
@@ -348,24 +354,24 @@ func (w *Watch) normalizeKind() {
 func (w Watch) Validate() error {
 	switch {
 	case strings.TrimSpace(w.WorkspaceID) == "":
-		return errors.New("watches: a workspace is required")
+		return ValidationError("watches: a workspace is required")
 	case w.Name == "":
-		return errors.New("watches: a name is required")
+		return ValidationError("watches: a name is required")
 	case w.WorkflowID == "":
-		return errors.New("watches: a workflow is required")
+		return ValidationError("watches: a workflow is required")
 	case w.WorkflowStepID == "":
-		return errors.New("watches: a workflow step is required")
+		return ValidationError("watches: a workflow step is required")
 	case len(w.Repos) == 0 && !w.IsReview():
-		return errors.New("watches: at least one repository is required")
+		return ValidationError("watches: at least one repository is required")
 	case len(w.Repos) > maxReposPerWatch:
-		return fmt.Errorf("watches: a watch covers at most %d repositories", maxReposPerWatch)
+		return ValidationError(fmt.Sprintf("watches: a watch covers at most %d repositories", maxReposPerWatch))
 	}
 	if w.StartAgent && w.AgentProfileID == "" {
 		// Kandev's own launch treats an empty profile as "use the default",
 		// but a watch that auto-starts is unattended by definition: making the
 		// operator name the profile is the difference between a predictable
 		// agent and whichever one the workspace defaults to today.
-		return errors.New("watches: starting an agent automatically requires an agent profile")
+		return ValidationError("watches: starting an agent automatically requires an agent profile")
 	}
 	return nil
 }

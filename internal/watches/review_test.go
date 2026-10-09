@@ -524,3 +524,49 @@ func TestManualCleanupDoesNotAdvanceThePollClock(t *testing.T) {
 	after, _ := rig.store.Get(context.Background(), "ws-1", rig.watch.ID)
 	require.Equal(t, before.LastPolledAt, after.LastPolledAt)
 }
+
+// A review watch ends a task it may not archive by marking it COMPLETED, which
+// sets no completed_at on the host. The budget must free all the same, or the
+// watch would stall at its limit after the first few cleanups.
+func TestReviewBudgetFreesWhenATaskIsMarkedCompleted(t *testing.T) {
+	t.Parallel()
+	rig := newReviewRig(t)
+	rig.watch.MaxInflightTasks = 1
+	rig.reviews.add("acme/web", 1, openPR("One"))
+	rig.reviews.add("acme/web", 2, openPR("Two"))
+	require.Equal(t, 1, rig.run(t).Created)
+	require.Equal(t, 1, rig.run(t).Throttled)
+
+	rig.host.tasks[0].State = "COMPLETED"
+	result := rig.run(t)
+	require.Equal(t, 1, result.Created, "a completed task no longer occupies the budget")
+	require.Equal(t, "PR #2: Two", rig.host.created[1].Title)
+}
+
+func TestIssueWatchBudgetStillReadsTimestampsOnly(t *testing.T) {
+	t.Parallel()
+	host := newFakeHost("ws-1")
+	issues := newFakeIssues()
+	issues.set("acme/app", issue(1, "One"), issue(2, "Two"))
+	poller, store := newTestPoller(t, host, issues, nil)
+	watch := sampleWatch("ws-1", "acme/app")
+	watch.MaxInflightTasks = 1
+	saved, err := store.Put(context.Background(), watch)
+	require.NoError(t, err)
+	_, err = poller.RunWatch(context.Background(), saved)
+	require.NoError(t, err)
+	host.tasks[0].State = "COMPLETED"
+	result, err := poller.RunWatch(context.Background(), saved)
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Throttled, "unchanged from 0.3.x")
+}
+
+func TestAFailedTaskStillGetsCleanedUp(t *testing.T) {
+	t.Parallel()
+	rig := newReviewRig(t)
+	rig.watch.CleanupPolicy = CleanupWhenClosed
+	filedPR(t, rig, 7)
+	rig.host.tasks[0].State = "FAILED"
+	rig.finish(7, PullMerged)
+	require.Equal(t, 1, rig.run(t).Completed)
+}

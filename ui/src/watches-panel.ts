@@ -624,7 +624,7 @@ export function createWatchesPanel(
                 ],
                 "Leave the task alone",
               ),
-              "Tasks are never deleted. Without the archive grant they are marked complete instead.",
+              "Tasks are never deleted. Where the host will not archive them, they are marked complete instead.",
             )
           : field(
               "Duplicate handling",
@@ -643,7 +643,7 @@ export function createWatchesPanel(
           ? host.jsx(
               "p",
               { className: "forgejo-watch-form__hint", role: "note" },
-              "Archiving needs the “Host v2 tasks” grant from your Kandev operator. Until then, finished tasks are completed rather than archived.",
+              "This Kandev has not approved archiving for the plugin, so finished tasks are completed rather than archived.",
             )
           : null,
         host.jsx(
