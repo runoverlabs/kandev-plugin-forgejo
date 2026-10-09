@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -182,4 +183,44 @@ func TestIssueSourceFollowsPagination(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, pages)
 	require.Len(t, issues, maxIssuePageLimit+1)
+}
+
+// A server that ignores type=issues mixes pull requests into every page. A full
+// page that is mostly pull requests must not end the walk: judging the page by
+// how many issues survive the filter would stop after page one and silently drop
+// every issue on the pages after it.
+func TestIssueSourceKeepsPagingWhenAFullPageIsMostlyPullRequests(t *testing.T) {
+	t.Parallel()
+	api := newAPIServer(t)
+	var pages int32
+	api.handleFunc(http.MethodGet, "/api/v1/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&pages, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "1" {
+			full := make([]map[string]any, maxIssuePageLimit)
+			for i := range full {
+				row := map[string]any{"number": i + 1, "title": "Item"}
+				if i%5 != 0 { // four in five are pull requests the server failed to exclude
+					row["pull_request"] = map[string]any{"merged": false}
+				}
+				full[i] = row
+			}
+			_ = json.NewEncoder(w).Encode(full)
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"number": 999, "title": "On page two"}})
+	})
+	connection, _ := newTestConnection(t, api, "token-1")
+	source := NewIssueSource(connection)
+
+	issues, err := source.ListIssues(context.Background(),
+		watches.RepoRef{Owner: "acme", Name: "app"}, watches.IssueQuery{})
+	require.NoError(t, err)
+	require.EqualValues(t, 2, atomic.LoadInt32(&pages), "a full raw page means there may be more")
+	numbers := make([]int64, 0, len(issues))
+	for _, issue := range issues {
+		numbers = append(numbers, int64(issue.Number))
+	}
+	require.Contains(t, numbers, int64(999), "the issue on page two must not be dropped")
+	require.Len(t, issues, maxIssuePageLimit/5+1)
 }
