@@ -9,7 +9,6 @@ import (
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )
 
-
 // archivingHost is a fakeHost that also speaks the exact v2 contract, with a
 // scripted archive outcome.
 type archivingHost struct {
