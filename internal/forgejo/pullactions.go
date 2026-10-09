@@ -269,3 +269,17 @@ func (c *Client) BranchProtectionRule(ctx context.Context, owner, name, branch s
 	}
 	return rule, nil
 }
+
+// IssueComment is one conversation comment on a pull request.
+type IssueComment struct {
+	ID        int64  `json:"id"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"`
+	User      User   `json:"user"`
+}
+
+// IssueComments lists conversation comments, oldest first, up to limit;
+// truncated reports more existed.
+func (c *Client) IssueComments(ctx context.Context, owner, name string, number int64, limit int) ([]IssueComment, bool, error) {
+	return pageAll[IssueComment](ctx, c, issuePath(owner, name, number, "/comments"), limit)
+}

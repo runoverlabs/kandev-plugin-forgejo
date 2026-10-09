@@ -105,6 +105,7 @@ func TestManifestDeclaresEveryRoutedAction(t *testing.T) {
 		sourcecontrol.ActionRepositoriesBranches:      "workspace",
 		sourcecontrol.ActionChangeRequestsCreate:      "task",
 		sourcecontrol.ActionChangeRequestsGet:         "task",
+		sourcecontrol.ActionChangeRequestsDetails:     "task",
 		sourcecontrol.ActionChangeRequestsLink:        "task",
 		sourcecontrol.ActionChangeRequestsUnlink:      "task",
 		sourcecontrol.ActionChangeRequestAssociations: "workspace",
@@ -127,7 +128,7 @@ func TestManifestDeclaresEveryRoutedAction(t *testing.T) {
 		require.True(t, ok, "manifest does not declare routed action %q", key)
 		require.Equal(t, wantScope, scope, "action %q has the wrong scope", key)
 	}
-	require.Len(t, parsed.Actions, 18, "an undeclared or stale action entry drifted from the routed set")
+	require.Len(t, parsed.Actions, 19, "an undeclared or stale action entry drifted from the routed set")
 }
 
 // The source-control contracts first shipped in v0.88.0 and agent tools in

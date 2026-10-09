@@ -54,6 +54,7 @@ type Runtime struct {
 	changeRequests *forgejo.ChangeRequests
 	associations   *forgejo.Associations
 	gitCredentials *forgejo.GitCredentials
+	pullActions    *forgejo.PullActions
 
 	// Issue watches. The store is reachable from the action handlers; the
 	// poller owns the background goroutine and is started once the Host
@@ -88,6 +89,7 @@ func NewRuntime() *Runtime {
 	runtime.changeRequests = changeRequests
 	runtime.associations = associations
 	runtime.gitCredentials = forgejo.NewGitCredentials(connection)
+	runtime.pullActions = forgejo.NewPullActions(connection, repositories, associations, ProviderID)
 
 	runtime.watchStore = watches.NewStore(watches.HostProvider(hosts))
 	runtime.watchPoller = watches.NewPoller(
@@ -123,6 +125,8 @@ func (r *Runtime) HandleAction(ctx context.Context, request *pluginsdk.PluginAct
 		return r.connectionStatus(ctx, request.Context.WorkspaceID, true)
 	case ActionConnectionSetEnabled:
 		return r.setEnabled(ctx, request)
+	case sourcecontrol.ActionChangeRequestsDetails:
+		return r.handlePullAction(ctx, request)
 	case ActionWatchesList, ActionWatchesOptions, ActionWatchesCreate, ActionWatchesUpdate,
 		ActionWatchesDelete, ActionWatchesRun, ActionWatchesReset:
 		// Watch management stays reachable while the integration is off, so an
