@@ -77,6 +77,11 @@ the approval against a digest of the whole capability list, not per capability.
 - Bumps `golang.org/x/net` to v0.60.0 for GO-2026-6617, an HTTP/2 server crash
   (HPACK encoder race) reachable from `pluginsdk.Serve`. Published after the
   first run of the new pipeline, which is the case the weekly scan exists for.
+- Every workflow now resolves Go with `check-latest`, so builds use the newest
+  1.26 patch release rather than the runner image's cached one. GO-2026-6617 is
+  also in the standard library's `net/http` (fixed in go1.26.9), which a
+  dependency bump cannot reach; the release workflow in particular builds the
+  binary operators run.
 - Bumps `vitest` to 4.1.11, clearing the open Dependabot alerts in `vitest`,
   `@vitest/mocker` and `tinypool` (two critical, one of them a remote code
   execution gadget), and refreshes `source-map-js`. `npm audit` is clean. This
