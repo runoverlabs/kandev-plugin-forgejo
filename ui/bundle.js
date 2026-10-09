@@ -503,6 +503,24 @@ function createConnectionPanel(host) {
       },
       [workspaceId, publishEnabled]
     );
+    const setAgentMerge = host.React.useCallback(
+      async (next) => {
+        if (!workspaceId) return;
+        setStatus((current) => ({ ...current ?? {}, agent_merge: next }));
+        const controller = new AbortController();
+        try {
+          await host.api.invokeAction(
+            "connection.set_agent_merge",
+            { workspaceId, body: { enabled: next } },
+            { signal: controller.signal }
+          );
+        } catch (cause) {
+          setStatus((current) => ({ ...current ?? {}, agent_merge: !next }));
+          setError(operatorMessage(cause));
+        }
+      },
+      [workspaceId]
+    );
     const load = host.React.useCallback(
       async (probe, signal) => {
         if (!workspaceId) {
@@ -538,6 +556,7 @@ function createConnectionPanel(host) {
     const configured = status?.configured === true;
     const connected = status?.connected === true;
     const enabled = status?.enabled !== false;
+    const agentMerge = status?.agent_merge === true;
     let detail;
     if (!workspaceId) {
       detail = "Open a workspace to check the Forgejo connection.";
@@ -577,6 +596,21 @@ function createConnectionPanel(host) {
           onCheckedChange: (next) => void setEnabled(next)
         }),
         host.jsx("span", null, enabled ? "Enabled for this workspace" : "Disabled for this workspace")
+      ),
+      host.jsx(
+        "label",
+        { className: "forgejo-connection__toggle" },
+        host.jsx(host.ui.Switch, {
+          checked: agentMerge,
+          disabled: !workspaceId || !enabled,
+          "aria-label": "Let agents merge pull requests in this workspace",
+          onCheckedChange: (next) => void setAgentMerge(next)
+        }),
+        host.jsx(
+          "span",
+          null,
+          agentMerge ? "Agents may merge pull requests when checks pass" : "Agents may not merge pull requests (review and comment stay on)"
+        )
       ),
       host.jsx(
         host.ui.Button,

@@ -9,7 +9,7 @@ filtering can ask for `ci` instead.
 | Tool | Arguments | Answers |
 | --- | --- | --- |
 | `ci` | `ref` (branch or SHA), `logs?` (tail lines per failed job), `repo?` | Overall state (`success`/`failure`/`running`/`pending`/`none`) and each job, with the tail of each failed job's log when `logs` is set. |
-| `pr` | `op` = `get` / `open` / `ready`, plus `head`, `base`, `title`, `body`, `draft`, `repo` | The task's pull request. `open` records the Kandev task association, so the review sidebar sees it too. |
+| `pr` | `op` = `get` / `open` / `ready` / `merge` / `review` / `request_review` / `update` / `comment`, plus `head`, `base`, `title`, `body`, `draft`, `sha`, `event`, `style`, `reviewers`, `delete_branch`, `repo` | The task's pull request. `open` records the Kandev task association, so the review sidebar sees it too. The last five act on the task's linked pull request; see "Acting on a pull request". |
 
 A few properties worth knowing before you write a prompt against them:
 
@@ -62,6 +62,39 @@ id with HTTP 500 rather than 404 (measured on 1.24.7, against 404 on Forgejo
 16.0.5); that is normalized on this one endpoint so an agent chases a stale id
 instead of an imagined outage.
 
+## Acting on a pull request
+
+`merge`, `review`, `request_review`, `update` and `comment` act on the pull
+request the task has linked. There is no number argument: with one linked pull
+request the tool acts on it, with several it refuses and says so (the same rule
+`ready` follows), so an agent cannot be pointed at a pull request the task does
+not own. `get` now prints `sha=` for the head commit.
+
+- **`merge` needs `sha`**, the head commit from `get`. A pull request that has
+  moved since is refused (409) before anything is sent, and the SHA is also sent
+  to the instance. `style` must be one the repository allows; omitted, the
+  repository's own default is used. `delete_branch` deletes the head branch.
+- **Agents cannot merge by default.** A per-workspace switch, shown in the
+  workspace's connection panel as "Let agents merge pull requests", is off until
+  an operator turns it on. Review, comment, request_review and update are not
+  behind it. The switch fails closed: if its state cannot be read, merging is
+  refused.
+- **Merging is stricter for agents than for people.** With the switch on, the
+  tool still refuses a pull request that is not open, has conflicts, is missing
+  approvals or has changes requested, or whose CI is failing or still running,
+  even when the repository's own protection does not require checks. A pull
+  request with no CI at all can be merged. The reply names every reason.
+- **`review`** takes `event` (`approve`, `request_changes`, `comment`) and
+  `body`; `sha` pins it to the commit that was read. **`request_review`** takes
+  `reviewers` (logins). **`update`** takes `style` (`merge` or `rebase`) and
+  treats "already up to date" as success. **`comment`** takes `body`.
+- **Reviews and comments say they came from Kandev**, as the Forgejo account is
+  the operator's shared one.
+- **The annotations are now honest.** The tool declares `destructive_hint: true`
+  and `idempotent_hint: false`, because merge destroys a branch and a review is
+  not repeatable. Kandev passes them on to the agent's MCP client as hints; they
+  can change how a client prompts for approval.
+
 ## Context cost
 
 Every plugin tool is added to the agent's prompt and nothing can be removed to
@@ -73,8 +106,14 @@ attachment evidence):
 | Tool | Tokens |
 | --- | --- |
 | `ci` | 150 |
-| `pr` | 177 |
-| **Total** | **327** |
+| `pr` | 177 before the write ops |
+| **Total** | **327** before the write ops |
+
+The write ops grow `pr` from 591 to 999 bytes of definition JSON, roughly 300
+tokens by the byte ratio (re-measure with the estimator before a release). That
+fits the existing ceilings (1,024 bytes a tool, 1,536 together), which were not
+raised: the descriptions were compressed instead, and the semantics live in this
+page.
 
 For scale, Kandev's own `show_rich_output_kandev` is around 2k tokens by itself.
 

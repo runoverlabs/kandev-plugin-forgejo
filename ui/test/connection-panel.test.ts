@@ -189,4 +189,43 @@ describe("connection panel", () => {
     expect(JSON.stringify(render({ workspaceId: "workspace-1" })))
       .toContain("shared by every workspace");
   });
+
+  describe("agent merge switch", () => {
+    const switches = (node: any, found: any[] = []): any[] => {
+      if (!node || typeof node !== "object") return found;
+      if (node.type === "switch") found.push(node);
+      for (const child of node.children ?? []) switches(child, found);
+      return found;
+    };
+    const agentSwitch = (tree: any) =>
+      switches(tree).find((node) => String(node.props["aria-label"]).includes("agents"));
+
+    // The opposite default to the enable switch: nothing is allowed until the
+    // backend says so.
+    it("is off unless the backend reports it on", async () => {
+      const { render } = makeHost();
+      const tree: any = render({ workspaceId: "workspace-1" });
+      await Promise.resolve();
+      expect(agentSwitch(tree).props.checked).toBe(false);
+      expect(JSON.stringify(tree)).toContain("Agents may not merge");
+    });
+
+    it("persists the choice through its own action", async () => {
+      const { host, render } = makeHost();
+      const tree: any = render({ workspaceId: "workspace-1" });
+      await Promise.resolve();
+      await agentSwitch(tree).props.onCheckedChange(true);
+      expect(host.api.invokeAction).toHaveBeenCalledWith(
+        "connection.set_agent_merge",
+        { workspaceId: "workspace-1", body: { enabled: true } },
+        expect.anything(),
+      );
+    });
+
+    it("is disabled without a workspace", () => {
+      const { render } = makeHost();
+      const tree: any = render({});
+      expect(agentSwitch(tree).props.disabled).toBe(true);
+    });
+  });
 });

@@ -209,8 +209,10 @@ func (r *Runtime) toolPR(ctx context.Context, request *pluginsdk.AgentToolReques
 		return r.prOpen(ctx, request, client, repository)
 	case "ready":
 		return r.prReady(ctx, request, client, repository)
+	case "merge", "review", "request_review", "update", "comment":
+		return r.prWrite(ctx, request, op)
 	default:
-		return toolError("op must be get, open, or ready."), nil
+		return toolError("op must be get, open, ready, merge, review, request_review, update, or comment."), nil
 	}
 }
 
@@ -506,6 +508,10 @@ func pullResult(pulls []forgejo.PullRequest, repository sourcecontrol.Repository
 		}
 		state := pullState(pull)
 		fmt.Fprintf(&text, "#%d %s %s", pull.Number, state, pull.HTMLURL)
+		// The head commit is what merge and review pin themselves to.
+		if sha := strings.TrimSpace(pull.Head.Sha); sha != "" {
+			fmt.Fprintf(&text, " sha=%s", sha)
+		}
 		if i == 0 && note != "" {
 			fmt.Fprintf(&text, " (%s)", note)
 		}
@@ -518,6 +524,7 @@ func pullResult(pulls []forgejo.PullRequest, repository sourcecontrol.Repository
 			"head":   pull.Head.Ref,
 			"base":   pull.Base.Ref,
 			"draft":  forgejo.IsWorkInProgressTitle(pull.Title),
+			"sha":    pull.Head.Sha,
 		})
 	}
 	content := map[string]any{"pulls": entries, "repo": repository.OwnerOrProject + "/" + repository.Name}

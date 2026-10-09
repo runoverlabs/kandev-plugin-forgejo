@@ -32,6 +32,9 @@ const (
 	// ActionConnectionSetEnabled records the operator's per-workspace
 	// enable/disable choice for this integration.
 	ActionConnectionSetEnabled = "connection.set_enabled"
+	// ActionConnectionSetAgentMerge records whether agents may merge in a
+	// workspace. Off unless an operator turns it on.
+	ActionConnectionSetAgentMerge = "connection.set_agent_merge"
 )
 
 // enabledStateKey stores the per-workspace enable/disable choice. Kandev does
@@ -125,6 +128,8 @@ func (r *Runtime) HandleAction(ctx context.Context, request *pluginsdk.PluginAct
 		return r.connectionStatus(ctx, request.Context.WorkspaceID, true)
 	case ActionConnectionSetEnabled:
 		return r.setEnabled(ctx, request)
+	case ActionConnectionSetAgentMerge:
+		return r.setAgentMerge(ctx, request)
 	case sourcecontrol.ActionChangeRequestsDetails, sourcecontrol.ActionChangeRequestsMerge,
 		sourcecontrol.ActionChangeRequestsReview, sourcecontrol.ActionChangeRequestsRequestReviewers,
 		sourcecontrol.ActionChangeRequestsUpdateBranch, sourcecontrol.ActionChangeRequestsComment:
@@ -245,6 +250,7 @@ func (r *Runtime) connectionStatus(ctx context.Context, workspaceID string, forc
 	status := map[string]any{"provider": ProviderID, "configured": false, "connected": false}
 	if enabled, err := r.integrationEnabled(ctx, workspaceID); err == nil {
 		status["enabled"] = enabled
+		status["agent_merge"] = r.agentMergeEnabled(ctx, workspaceID)
 	}
 
 	client, err := r.connection.Client(ctx)
