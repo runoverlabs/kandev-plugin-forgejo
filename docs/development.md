@@ -19,14 +19,25 @@ parent/
 `../kandev/apps/packages/plugin-sdk`. Both paths change once the SDK ships as a
 versioned module.
 
-CI checks the SDK out at a **pinned tag**, `v0.95.1` — the oldest Kandev this
-plugin supports (`min_kandev_version` in `manifest.yaml`) — rather than at
-`main`. Check out the same tag locally (`git -C ../kandev checkout v0.95.1`) so
-your build matches CI. An unpinned SDK breaks the build whenever upstream moves
-a dependency, which is how the Go jobs went red without a change here. To move
-the pin, change `ref:` in every `kdlbs/kandev` checkout under
-`.github/workflows/`, then run `go mod tidy` against that checkout and commit
-the `go.mod` and `go.sum` it produces.
+CI checks the SDK out at **pinned tags**, never at `main`:
+
+| Target | Tag | Used for |
+|---|---|---|
+| Standard | `v0.97.0` | Local development, the live contract jobs, the security workflow, and the release build — the newest Kandev this plugin is verified on |
+| Minimum | `v0.95.1` | A second `test` leg: the oldest Kandev the manifest claims (`min_kandev_version`) |
+
+Build locally against the standard target (`git -C ../kandev checkout v0.97.0`)
+so your build matches CI. The minimum leg is the guard that matters: building
+only against the newest SDK would let a call to an API added after 0.95 compile
+and pass, then fail on a 0.95 host. The SDK has so far only grown, so one
+`go.mod` builds against both.
+
+An unpinned SDK breaks the build whenever upstream moves a dependency, which is
+how the Go jobs went red without a change here. To move the standard target when
+a new Kandev ships, change `KANDEV_REF` at the top of `ci.yml`, `security.yml`
+and `release.yml`, run `go mod tidy` against that checkout, and commit the
+`go.mod` and `go.sum` it produces. Then run `make lint && make test` against the
+minimum tag too before raising `min_kandev_version`.
 
 ```sh
 npm install

@@ -22,6 +22,13 @@ on:
 permissions:
   contents: read
 
+# The Kandev SDK the plugin is built against: the standard target, the newest
+# Kandev release this plugin is verified on. It is a tag, not HEAD — an unpinned
+# SDK breaks the build whenever upstream moves a dependency. Move it when a new
+# Kandev ships, and keep it in step across the workflows in this directory.
+env:
+  KANDEV_REF: v0.97.0
+
 jobs:
   # Secret detection. The plugin handles an operator's Forgejo token, and the
   # live contract tests mint real ones, so a token reaching a commit is the most
@@ -73,10 +80,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kdlbs/kandev
-          # Pinned to the oldest Kandev this plugin supports (manifest
-          # min_kandev_version), not HEAD: an unpinned SDK breaks the build
-          # whenever upstream moves a dependency. Keep every pin in step.
-          ref: v0.95.1
+          ref: ${{ env.KANDEV_REF }}
           path: kandev
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -131,10 +135,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kdlbs/kandev
-          # Pinned to the oldest Kandev this plugin supports (manifest
-          # min_kandev_version), not HEAD: an unpinned SDK breaks the build
-          # whenever upstream moves a dependency. Keep every pin in step.
-          ref: v0.95.1
+          ref: ${{ env.KANDEV_REF }}
           path: kandev
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

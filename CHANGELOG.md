@@ -90,10 +90,13 @@ the approval against a digest of the whole capability list, not per capability.
   it reached an operator; `npm audit` stays gated at `high` for that reason.
 
 - CI, the security workflow and the release build now check out the Kandev SDK
-  at the pinned tag `v0.95.1`, the oldest supported Kandev, instead of `main`.
-  An unpinned SDK let an upstream dependency bump fail every Go job with
-  "updates to go.mod needed" and no change here. `go.mod` and `go.sum` are
-  tidied against that tag.
+  at pinned tags instead of `main`. An unpinned SDK let an upstream dependency
+  bump fail every Go job with "updates to go.mod needed" and no change here.
+  The standard target is `v0.97.0`, the newest Kandev this plugin is verified
+  on, and it is set once per workflow. The `test` job also builds against
+  `v0.95.1`, the oldest the manifest claims, so an API newer than
+  `min_kandev_version` cannot slip in. The SDK has only grown between the two,
+  so one `go.mod` serves both. `go.sum` is tidied against the standard target.
 
 ### Documentation
 
