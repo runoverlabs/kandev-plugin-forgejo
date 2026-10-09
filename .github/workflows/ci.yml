@@ -10,6 +10,10 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege by default: every job here only reads the repository.
+permissions:
+  contents: read
+
 # The Kandev SDK the plugin is built against: the standard target, the newest
 # Kandev release this plugin is verified on. It is a tag, not HEAD — an unpinned
 # SDK breaks the build whenever upstream moves a dependency. Move it when a new

@@ -87,7 +87,12 @@ func (r *Runtime) toolCI(ctx context.Context, request *pluginsdk.AgentToolReques
 	}
 	lines := 0
 	if requested, ok := argInt(request.Arguments, "logs"); ok && requested > 0 {
-		lines = int(min64(requested, ciLogMaxLines))
+		// Compare before converting, so the bound is visible where the
+		// int64 narrows.
+		lines = ciLogMaxLines
+		if requested < ciLogMaxLines {
+			lines = int(requested)
+		}
 	}
 	repository, client, failure := r.agentRepository(ctx, request)
 	if failure != nil {
@@ -600,11 +605,4 @@ func argInt(arguments map[string]any, key string) (int64, bool) {
 	default:
 		return 0, false
 	}
-}
-
-func min64(value int64, limit int64) int64 {
-	if value < limit {
-		return value
-	}
-	return limit
 }
