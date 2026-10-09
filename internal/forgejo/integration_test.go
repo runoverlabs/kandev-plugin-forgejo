@@ -617,3 +617,55 @@ func TestLiveReadOnlyUserIsForbidden(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, pullAfter.Merged, "a forbidden merge must not have merged")
 }
+
+// TestLiveWriteActions drives the neutral write port end to end on a real
+// instance: the same calls the five change_requests.* actions make.
+func TestLiveWriteActions(t *testing.T) {
+	admin, repositories, associations, _, _, host := liveAdapters(t)
+	ctx := context.Background()
+	pull, owner, repo := livePull(t, admin)
+	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "ws-1"}
+	inspected, err := repositories.Inspect(ctx, "ws-1", admin.Scope()+"/"+owner+"/"+repo)
+	require.NoError(t, err)
+	require.NoError(t, associations.Link(ctx, "task-1", sourcecontrol.ChangeRequestIdentity{
+		ConnectionScope: admin.Scope(), RepositoryID: inspected.RepositoryID, Number: pull.Number,
+	}))
+	actions := NewPullActions(NewConnection(func() pluginsdk.Host { return host }), repositories, associations, "forgejo")
+
+	_, err = actions.Comment(ctx, "ws-1", "task-1", sourcecontrol.CommentRequest{Number: pull.Number, Body: "hello from the live test"})
+	require.NoError(t, err)
+	details, err := actions.Details(ctx, "ws-1", "task-1", pull.Number)
+	require.NoError(t, err)
+	require.NotEmpty(t, details.Comments)
+	require.Contains(t, details.Comments[len(details.Comments)-1].Body, attribution)
+
+	// An author may comment on their own pull request but not approve it.
+	_, err = actions.Review(ctx, "ws-1", "task-1", sourcecontrol.ReviewRequest{Number: pull.Number, Event: sourcecontrol.ReviewEventApprove})
+	requireReason(t, err, ReasonSelfReview)
+	review, err := actions.Review(ctx, "ws-1", "task-1", sourcecontrol.ReviewRequest{
+		Number: pull.Number, Event: sourcecontrol.ReviewEventComment, Body: "a note", HeadSHA: details.HeadSHA,
+		Comments: []sourcecontrol.InlineComment{{Path: pull.Head.Ref + ".txt", Body: "inline", Line: 1}},
+	})
+	require.NoError(t, err)
+	t.Logf("comment review state: %s", review.State)
+
+	_, err = actions.UpdateBranch(ctx, "ws-1", "task-1", sourcecontrol.UpdateBranchRequest{Number: pull.Number})
+	require.NoError(t, err)
+
+	_, err = actions.Merge(ctx, "ws-1", "task-1", sourcecontrol.MergeRequest{Number: pull.Number, HeadSHA: "0123456789abcdef"})
+	requireReason(t, err, ReasonHeadChanged)
+
+	result, err := actions.Merge(ctx, "ws-1", "task-1", sourcecontrol.MergeRequest{
+		Number: pull.Number, HeadSHA: details.HeadSHA, Style: MergeStyleSquash, DeleteBranch: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, sourcecontrol.MergeOutcomeMerged, result.Outcome)
+
+	after, err := actions.Details(ctx, "ws-1", "task-1", pull.Number)
+	require.NoError(t, err)
+	require.Equal(t, "merged", after.State)
+	require.Contains(t, after.Merge.Blockers, sourcecontrol.BlockerNotOpen)
+
+	_, err = actions.Merge(ctx, "ws-1", "task-1", sourcecontrol.MergeRequest{Number: pull.Number, HeadSHA: details.HeadSHA})
+	requireReason(t, err, ReasonAlreadyMerged)
+}

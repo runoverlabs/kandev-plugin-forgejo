@@ -38,14 +38,14 @@ func detailsFixture(t *testing.T) (*PullActions, *apiServer, *Associations) {
 	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7", 200, map[string]any{
 		"number": 7, "title": "Add x", "state": "open", "mergeable": false,
 		"user": map[string]any{"login": "alice"},
-		"head": map[string]any{"ref": "feat", "sha": "abc"}, "base": map[string]any{"ref": "main"},
+		"head": map[string]any{"ref": "feat", "sha": "abc1234"}, "base": map[string]any{"ref": "main"},
 		"requested_reviewers": []map[string]any{{"login": "bob"}},
 	})
 	api.handle(http.MethodGet, "/api/v1/repos/o/r/branches/main", 200, map[string]any{
 		"name": "main", "protected": true, "required_approvals": 1,
 		"enable_status_check": true, "user_can_merge": true,
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/commits/abc/status", 200, map[string]any{
+	api.handle(http.MethodGet, "/api/v1/repos/o/r/commits/abc1234/status", 200, map[string]any{
 		"state": "failure", "statuses": []map[string]any{{"id": 1, "status": "failure", "context": "ci"}},
 	})
 	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", 200, []map[string]any{
@@ -67,7 +67,7 @@ func TestDetailsReturnsTheFullModel(t *testing.T) {
 	require.Equal(t, "alice", got.Author)
 	require.Equal(t, "feat", got.SourceBranch)
 	require.Equal(t, "main", got.TargetBranch)
-	require.Equal(t, "abc", got.HeadSHA)
+	require.Equal(t, "abc1234", got.HeadSHA)
 	require.Equal(t, "kandev", got.Actor)
 	require.Equal(t, []string{"bob"}, got.RequestedReviewers)
 	require.Equal(t, []string{"squash", "merge"}, got.Merge.Styles)
@@ -116,9 +116,9 @@ func TestDetailsDegradesWhenPartsAreNotVisible(t *testing.T) {
 	require.NoError(t, associations.Unlink(context.Background(), "task-1", identity(api.url(), "5", 8)))
 	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7", 200, map[string]any{
 		"number": 7, "title": "Add x", "state": "open",
-		"head": map[string]any{"ref": "feat", "sha": "abc"}, "base": map[string]any{"ref": "main"},
+		"head": map[string]any{"ref": "feat", "sha": "abc1234"}, "base": map[string]any{"ref": "main"},
 	})
-	for _, path := range []string{"/branches/main", "/commits/abc/status", "/pulls/7/reviews", "/issues/7/comments"} {
+	for _, path := range []string{"/branches/main", "/commits/abc1234/status", "/pulls/7/reviews", "/issues/7/comments"} {
 		api.handle(http.MethodGet, "/api/v1/repos/o/r"+path, 403, nil)
 	}
 

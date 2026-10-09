@@ -36,6 +36,32 @@ host, and what the pipeline checks on every change.
   `source = "plugin:kandev-plugin-forgejo"` on rows this plugin creates and the
   plugin cannot set that field itself.
 
+## Write authority
+
+The review panel can merge, review, request reviewers, update the branch and
+comment. Every write uses the operator's one shared Forgejo token, so the
+Forgejo account is the same whichever Kandev user clicked.
+
+- **Only linked pull requests.** A write resolves the pull request from the
+  task's own stored links and the repository from the stored identity. A number
+  the task does not link, or an owner or repository in the body, is never
+  honoured, so holding the action does not let anyone act on any pull request
+  the token can reach.
+- **The head must match.** Merge requires the commit SHA the caller last saw and
+  is refused if the pull request has moved; the same SHA is sent to the instance
+  as `head_commit_id`, so a race is refused there too.
+- **Disclosed attribution.** Reviews and comments end with "Posted via Kandev."
+  so a reader of the pull request can tell the shared account was driven from
+  Kandev.
+- **An audit line per write**, naming the action, verified actor, workspace,
+  task and pull request number, and the outcome. It never contains a body, a
+  title or a token.
+- **Fixed failure messages.** A failed write maps to a fixed reason; the
+  instance's response body is read only to classify it and is never forwarded. A
+  403 on a write is reported as a permission problem, not as a bad token.
+- **Token scope.** Writes need `write:repository`; comments, labels and
+  assignees may also need `write:issue` on some versions.
+
 ## Supply chain and scanning
 
 `.github/workflows/security.yml` runs on every push and pull request **and on a
