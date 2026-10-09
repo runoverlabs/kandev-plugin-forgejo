@@ -40,7 +40,7 @@ func (s *IssueSource) ListIssues(ctx context.Context, repo watches.RepoRef, quer
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		issues, err := client.ListIssues(ctx, repo.Owner, repo.Name, IssueListOptions{
+		issues, raw, err := client.listIssuesPage(ctx, repo.Owner, repo.Name, IssueListOptions{
 			State:  query.State,
 			Labels: query.Labels,
 			Query:  query.Query,
@@ -68,12 +68,12 @@ func (s *IssueSource) ListIssues(ctx context.Context, repo watches.RepoRef, quer
 				UpdatedAt: issue.UpdatedAt,
 			})
 		}
-		// ListIssues filters pull requests out of the page, so a short page is
-		// only a reliable end-of-results signal when nothing was filtered.
-		// Comparing against the requested limit before filtering is not
-		// possible here, so the page is treated as final when the server
-		// returned fewer rows than asked for.
-		if len(issues) < maxIssuePageLimit {
+		// The walk ends on a short page, judged by the rows the server sent, not
+		// by what is left after pull requests are filtered out. A server that
+		// ignores type=issues can fill a page with pull requests; counting only
+		// the issues would make that full page look short and drop every issue
+		// on the pages after it.
+		if raw < maxIssuePageLimit {
 			break
 		}
 	}
