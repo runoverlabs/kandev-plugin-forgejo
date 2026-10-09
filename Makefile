@@ -1,4 +1,5 @@
 .PHONY: build run test test-backend test-ui typecheck fmt vet lint \
+	security security-secrets security-deps claude-md \
 	package package-host verify-package verify-package-host clean
 
 # VERSION is read from manifest.yaml so the packaged asset name cannot drift
@@ -20,6 +21,30 @@ KANDEV_SDK := ../kandev/apps/backend
 # which keeps builds reproducible and keeps the build machine's directory
 # layout out of the shipped artifact.
 RELEASE_FLAGS := -trimpath -ldflags="-s -w"
+
+## Recreate the local-only CLAUDE.md pointer. AGENTS.md is the committed source
+## of truth; CLAUDE.md is gitignored, so a fresh clone does not have one and
+## Claude Code would find no guidance. This restores it without duplicating
+## content. Safe to re-run: it never overwrites an existing file.
+claude-md:
+	@if [ -f CLAUDE.md ]; then \
+		echo "CLAUDE.md already present; leaving it alone"; \
+	else \
+		printf '%s\n' \
+			'# CLAUDE.md' \
+			'' \
+			'**Read [AGENTS.md](AGENTS.md) — it is the guide for this repo.**' \
+			'' \
+			'Everything an agent needs is there: the sibling-checkout setup, the commands,' \
+			'the architecture rule, the conventions, and the host behaviours that cost real' \
+			'debugging time. This file only exists because Claude Code looks for' \
+			'`CLAUDE.md`; it is deliberately a pointer so there is one source of truth to' \
+			'keep current.' \
+			'' \
+			'This file is gitignored and local-only. Do not move content here, and do not' \
+			'commit it.' > CLAUDE.md; \
+		echo "wrote CLAUDE.md"; \
+	fi
 
 ## Build the plugin binary for the host platform (development only). Kandev
 ## always installs from `make package`/`package-host` output.
@@ -50,6 +75,34 @@ vet:
 	go vet ./...
 
 lint: fmt vet typecheck
+
+# Pinned so a local run and CI check the same thing. Bump both here and in
+# .github/workflows/security.yml; the checksum is the release's own.
+GITLEAKS_VERSION := 8.30.0
+GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.8.0
+
+## The same checks .github/workflows/security.yml runs, minus CodeQL, which
+## needs GitHub's own infrastructure. Run this before opening a PR that touches
+## dependencies or anything that handles the operator token.
+security: security-secrets security-deps
+
+## Secret detection over the working tree AND the history: a credential that was
+## committed and later removed is still leaked. Needs gitleaks on PATH --
+## `go install github.com/gitleaks/gitleaks/v8@v$(GITLEAKS_VERSION)`, or grab the
+## release binary.
+security-secrets:
+	@command -v gitleaks >/dev/null || { \
+		echo "gitleaks not found: install v$(GITLEAKS_VERSION) or run the Security workflow"; exit 1; }
+	gitleaks git . --no-banner --redact --verbose
+	gitleaks dir . --no-banner --redact --verbose
+
+## Known-vulnerable dependencies. npm is gated at `high`: every npm dependency
+## here is a devDependency and the published package ships a pre-built bundle
+## with no node_modules, so a moderate in a test runner never reaches an
+## operator.
+security-deps:
+	go run $(GOVULNCHECK) ./...
+	npm audit --audit-level=high
 
 ## Cross-compile every platform in manifest.yaml's runtime.executables, stage
 ## manifest.yaml + ui/ + assets/ alongside them, and pack the tree.

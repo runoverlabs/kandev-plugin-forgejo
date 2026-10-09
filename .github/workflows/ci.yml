@@ -10,9 +10,25 @@ on:
     branches: [main]
   pull_request:
 
+# The Kandev SDK the plugin is built against: the standard target, the newest
+# Kandev release this plugin is verified on. It is a tag, not HEAD — an unpinned
+# SDK breaks the build whenever upstream moves a dependency. Move it when a new
+# Kandev ships, and keep it in step across the workflows in this directory.
+env:
+  KANDEV_REF: v0.97.0
+  # The oldest Kandev the manifest claims (min_kandev_version). The test job
+  # also builds against it, so an API newer than that cannot slip in unnoticed.
+  KANDEV_MIN_REF: v0.95.1
+
 jobs:
   test:
+    name: test (${{ matrix.target }})
     runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # standard = KANDEV_REF, minimum = KANDEV_MIN_REF.
+        target: [standard, minimum]
     steps:
       - name: Check out plugin
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -20,16 +36,21 @@ jobs:
           path: kandev-plugin-forgejo
 
       # The SDK is not a standalone module yet, so the build needs a sibling
-      # kandev checkout (see README, "Development").
+      # kandev checkout (see docs/development.md).
       - name: Check out kandev SDK
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kdlbs/kandev
+          ref: ${{ matrix.target == 'minimum' && env.KANDEV_MIN_REF || env.KANDEV_REF }}
           path: kandev
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          # An exact patch release, not "1.26": the runner image caches an older
+          # one, and stdlib fixes (net/http, crypto/tls) ship in patch releases.
+          # The release workflow builds the binary operators run. Keep every pin
+          # in step; bump it when govulncheck reports a newer fix.
+          go-version: "1.26.9"
           cache-dependency-path: kandev-plugin-forgejo/go.sum
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -98,10 +119,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kdlbs/kandev
+          ref: ${{ env.KANDEV_REF }}
           path: kandev
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          # An exact patch release, not "1.26": the runner image caches an older
+          # one, and stdlib fixes (net/http, crypto/tls) ship in patch releases.
+          # The release workflow builds the binary operators run. Keep every pin
+          # in step; bump it when govulncheck reports a newer fix.
+          go-version: "1.26.9"
           cache-dependency-path: kandev-plugin-forgejo/go.sum
 
       - name: Start ${{ matrix.image }}

@@ -1,0 +1,172 @@
+name: Security
+
+# Same pinning rule as ci.yml: actions are pinned by commit SHA with the tag in
+# a trailing comment, and the runner is pinned too. A tag can be moved, a SHA
+# cannot, and everything here has access to the build.
+#
+# This is a separate workflow rather than jobs in ci.yml because it has a
+# different trigger: a dependency becomes vulnerable when an advisory is
+# published, not when someone pushes. The weekly schedule is the point — a repo
+# that only scans on commit stops being scanned the moment it stops changing.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Mondays, 07:00 UTC. Cron on a fork is disabled automatically by GitHub.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+# Least privilege by default; the CodeQL job widens its own.
+permissions:
+  contents: read
+
+# The Kandev SDK the plugin is built against: the standard target, the newest
+# Kandev release this plugin is verified on. It is a tag, not HEAD — an unpinned
+# SDK breaks the build whenever upstream moves a dependency. Move it when a new
+# Kandev ships, and keep it in step across the workflows in this directory.
+env:
+  KANDEV_REF: v0.97.0
+
+jobs:
+  # Secret detection. The plugin handles an operator's Forgejo token, and the
+  # live contract tests mint real ones, so a token reaching a commit is the most
+  # plausible credential leak in this repo.
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The whole history: a secret that was committed and later removed is
+          # still a leaked secret, and a shallow clone cannot see it.
+          fetch-depth: 0
+
+      # The binary is fetched and checksummed rather than run through
+      # gitleaks-action, which requires a paid licence key for organization
+      # accounts. Moving this repo under an org should not silently disable its
+      # secret scanning.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: "8.30.0"
+          GITLEAKS_SHA256: "79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e"
+        run: |
+          set -euo pipefail
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sfL "$url" -o gitleaks.tar.gz
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar xzf gitleaks.tar.gz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Scan history
+        run: gitleaks git . --no-banner --redact --verbose
+
+      - name: Scan working tree
+        run: gitleaks dir . --no-banner --redact --verbose
+
+  # Known-vulnerable dependencies, both ecosystems.
+  dependencies:
+    name: Dependency audit
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: kandev-plugin-forgejo
+
+      # The SDK is not a standalone module yet, so the build needs a sibling
+      # kandev checkout (see docs/development.md).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: kdlbs/kandev
+          ref: ${{ env.KANDEV_REF }}
+          path: kandev
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # An exact patch release, not "1.26": the runner image caches an older
+          # one, and stdlib fixes (net/http, crypto/tls) ship in patch releases.
+          # The release workflow builds the binary operators run. Keep every pin
+          # in step; bump it when govulncheck reports a newer fix.
+          go-version: "1.26.9"
+          cache-dependency-path: kandev-plugin-forgejo/go.sum
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      # govulncheck reports only vulnerabilities on a reachable call path, so a
+      # finding here is one this plugin can actually hit rather than one merely
+      # present in the module graph.
+      - name: govulncheck
+        working-directory: kandev-plugin-forgejo
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+      - name: Install UI dependencies
+        working-directory: kandev-plugin-forgejo
+        run: npm install --no-audit --no-fund
+
+      # Gated at `high`. Every npm dependency here is a devDependency — the
+      # published plugin package contains a pre-built bundle and no node_modules
+      # — so a moderate finding in a test runner does not reach an operator.
+      # High and critical still fail, because a compromised build tool does.
+      - name: npm audit
+        working-directory: kandev-plugin-forgejo
+        run: npm audit --audit-level=high
+
+  # Static analysis for code-level flaws that secret and dependency scanning do
+  # not see: injection, path traversal, unsafe deserialization.
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [go, javascript-typescript, actions]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: kandev-plugin-forgejo
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: kdlbs/kandev
+          ref: ${{ env.KANDEV_REF }}
+          path: kandev
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.language == 'go'
+        with:
+          # An exact patch release, not "1.26": the runner image caches an older
+          # one, and stdlib fixes (net/http, crypto/tls) ship in patch releases.
+          # The release workflow builds the binary operators run. Keep every pin
+          # in step; bump it when govulncheck reports a newer fix.
+          go-version: "1.26.9"
+          cache-dependency-path: kandev-plugin-forgejo/go.sum
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+        with:
+          languages: ${{ matrix.language }}
+          # security-extended adds lower-severity and experimental queries. This
+          # plugin holds an operator credential and talks to two networks, so the
+          # extra noise is worth the extra coverage.
+          queries: security-extended
+          source-root: kandev-plugin-forgejo
+
+      # CodeQL's Go autobuild would build the sibling kandev checkout too. Build
+      # only this module, so the database covers this plugin's code.
+      - name: Build
+        if: matrix.language == 'go'
+        working-directory: kandev-plugin-forgejo
+        run: go build ./...
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+        with:
+          category: /language:${{ matrix.language }}
+          checkout_path: kandev-plugin-forgejo

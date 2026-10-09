@@ -12,6 +12,7 @@ import (
 
 	"kandev-plugin-forgejo/internal/forgejo"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
+	"kandev-plugin-forgejo/internal/watches"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )
@@ -53,6 +54,12 @@ type Runtime struct {
 	changeRequests *forgejo.ChangeRequests
 	associations   *forgejo.Associations
 	gitCredentials *forgejo.GitCredentials
+
+	// Issue watches. The store is reachable from the action handlers; the
+	// poller owns the background goroutine and is started once the Host
+	// arrives (see SetHost).
+	watchStore  *watches.Store
+	watchPoller *watches.Poller
 }
 
 var (
@@ -81,6 +88,14 @@ func NewRuntime() *Runtime {
 	runtime.changeRequests = changeRequests
 	runtime.associations = associations
 	runtime.gitCredentials = forgejo.NewGitCredentials(connection)
+
+	runtime.watchStore = watches.NewStore(watches.HostProvider(hosts))
+	runtime.watchPoller = watches.NewPoller(
+		runtime.watchStore,
+		watches.HostProvider(hosts),
+		forgejo.NewIssueSource(connection),
+		runtime.integrationEnabled,
+	)
 	runtime.extension = &sourcecontrol.Extension{
 		ProviderID:           ProviderID,
 		ReferenceSource:      ReferenceSource,
@@ -108,6 +123,13 @@ func (r *Runtime) HandleAction(ctx context.Context, request *pluginsdk.PluginAct
 		return r.connectionStatus(ctx, request.Context.WorkspaceID, true)
 	case ActionConnectionSetEnabled:
 		return r.setEnabled(ctx, request)
+	case ActionWatchesList, ActionWatchesOptions, ActionWatchesCreate, ActionWatchesUpdate,
+		ActionWatchesDelete, ActionWatchesRun, ActionWatchesReset:
+		// Watch management stays reachable while the integration is off, so an
+		// operator can see and edit what will resume when they turn it back on.
+		// The poller and the manual run both refuse separately, which is where
+		// the toggle has to bite.
+		return r.handleWatchAction(ctx, request)
 	default:
 		// A disabled integration contributes nothing to its workspace. The
 		// toggle would otherwise be decorative: it would move a badge while
@@ -120,6 +142,29 @@ func (r *Runtime) HandleAction(ctx context.Context, request *pluginsdk.PluginAct
 			return disabledResponse(request.ActionKey)
 		}
 		return r.extension.HandleAction(ctx, request)
+	}
+}
+
+// SetHost receives the Host once kandev's broker connection is established and
+// starts the watch poller.
+//
+// This is the only lifecycle hook the SDK offers: Serve dials the host from a
+// background goroutine after the plugin is already serving, so there is no
+// earlier point at which a poll could reach kandev. Start is idempotent, so a
+// re-injection does not leave two loops competing for the same watches.
+func (r *Runtime) SetHost(host pluginsdk.Host) {
+	r.UnimplementedPlugin.SetHost(host)
+	if r.watchPoller != nil {
+		r.watchPoller.Start()
+	}
+}
+
+// Stop halts background work. pluginsdk.Serve does not call this — kandev
+// terminates the subprocess — but a test that starts a Runtime needs a way to
+// leave no goroutine behind.
+func (r *Runtime) Stop() {
+	if r.watchPoller != nil {
+		r.watchPoller.Stop()
 	}
 }
 
