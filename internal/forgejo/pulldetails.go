@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
@@ -36,13 +37,15 @@ type PullActions struct {
 	repositories *Repositories
 	associations *Associations
 	providerID   string
+	// now is the clock; tests replace it.
+	now func() time.Time
 }
 
 var _ sourcecontrol.ChangeRequestDetailReader = (*PullActions)(nil)
 
 // NewPullActions returns the pull request action adapter.
 func NewPullActions(connection *Connection, repositories *Repositories, associations *Associations, providerID string) *PullActions {
-	return &PullActions{connection: connection, repositories: repositories, associations: associations, providerID: providerID}
+	return &PullActions{connection: connection, repositories: repositories, associations: associations, providerID: providerID, now: time.Now}
 }
 
 // linked is a pull request resolved from the task's own associations.
@@ -139,7 +142,8 @@ func (a *PullActions) Details(ctx context.Context, workspaceID, taskID string, n
 		details.Actor = me.Login
 	}
 
-	merge := sourcecontrol.MergeStatus{Styles: []string{}, Blockers: []string{}, Mergeable: pull.Mergeable}
+	mergeable := a.settledMergeable(pull)
+	merge := sourcecontrol.MergeStatus{Styles: []string{}, Blockers: []string{}, Mergeable: mergeable}
 	if id, err := strconv.ParseInt(target.identity.RepositoryID, 10, 64); err == nil {
 		if repo, err := client.RepoByID(ctx, id); err == nil {
 			merge.Styles = nonNil(repo.MergeStyles())
@@ -207,9 +211,30 @@ func (a *PullActions) Details(ctx context.Context, workspaceID, taskID string, n
 		return sourcecontrol.ChangeRequestDetails{}, err
 	}
 
-	merge.Blockers = mergeBlockers(details.State, pull.Mergeable, details.PipelineState, statusCheckRequired, summary, merge.RequiredApprovals)
+	merge.Blockers = mergeBlockers(details.State, mergeable, details.PipelineState, statusCheckRequired, summary, merge.RequiredApprovals)
 	details.Merge = merge
 	return details, nil
+}
+
+// mergeableSettle is how long after a pull request last changed a "not
+// mergeable" answer is not yet trusted. Probed on Gitea 1.20 and 1.27, the flag
+// reads false for up to a second or two after a PR is opened, and Gitea 1.27 was
+// seen flipping true, false, true within three seconds.
+const mergeableSettle = 30 * time.Second
+
+// settledMergeable returns the pull request's mergeable flag, or nil (unknown)
+// when it says false but the pull request changed too recently to believe it.
+// A true answer is always passed through: a stale true is caught by the head SHA
+// precondition on merge, whereas a stale false would wrongly block the user.
+func (a *PullActions) settledMergeable(pull PullRequest) *bool {
+	if pull.Mergeable == nil || *pull.Mergeable {
+		return pull.Mergeable
+	}
+	updated := parseTimestampMillis(pull.UpdatedAt)
+	if updated > 0 && a.now().Sub(time.UnixMilli(updated)) < mergeableSettle {
+		return nil
+	}
+	return pull.Mergeable
 }
 
 // userCanMerge reports the branch's per-user merge permission. The field is

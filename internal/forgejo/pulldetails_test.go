@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
@@ -139,4 +140,24 @@ func TestMergeBlockersOnlyBlockWhenChecksAreRequired(t *testing.T) {
 		mergeBlockers("open", nil, "pending", true, nil, nil))
 	require.Equal(t, []string{sourcecontrol.BlockerNotOpen},
 		mergeBlockers("merged", nil, "success", true, nil, nil))
+}
+
+// Probed live: Gitea reports mergeable=false for a moment after a PR is
+// opened or pushed. That must read as unknown, not as conflicts.
+func TestRecentNotMergeableIsUnknownNotConflicts(t *testing.T) {
+	t.Parallel()
+	actions, _, _ := detailsFixture(t)
+	no := false
+	pull := PullRequest{Mergeable: &no, UpdatedAt: "2026-10-09T12:00:00Z"}
+
+	actions.now = func() time.Time { return time.Date(2026, 10, 9, 12, 0, 5, 0, time.UTC) }
+	require.Nil(t, actions.settledMergeable(pull), "5s after the change a false is not trusted")
+
+	actions.now = func() time.Time { return time.Date(2026, 10, 9, 12, 5, 0, 0, time.UTC) }
+	got := actions.settledMergeable(pull)
+	require.NotNil(t, got)
+	require.False(t, *got, "a false that has held for minutes is real")
+
+	yes := true
+	require.Equal(t, &yes, actions.settledMergeable(PullRequest{Mergeable: &yes, UpdatedAt: "2026-10-09T12:04:59Z"}))
 }

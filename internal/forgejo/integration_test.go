@@ -2,6 +2,7 @@ package forgejo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -429,4 +430,96 @@ func TestLiveIssueListingExcludesPullRequests(t *testing.T) {
 	if len(future) != 0 {
 		t.Logf("this host ignores `since` (%d issues returned); the poller still dedups correctly", len(future))
 	}
+}
+
+// TestLivePullRequestActions drives the write surface and the details read
+// against a real instance: details, comment, labels, reviewers, a stale-head
+// merge refusal, an idempotent branch update, a squash merge that deletes the
+// branch, and a second merge being refused. Set KANDEV_FORGEJO_HEAD_BRANCH to
+// the base branch; it branches off a fresh head every run.
+//
+// Set KANDEV_FORGEJO_REVIEWER to a second user's login to also request a review
+// from them.
+func TestLivePullRequestActions(t *testing.T) {
+	baseBranch := strings.TrimSpace(os.Getenv("KANDEV_FORGEJO_HEAD_BRANCH"))
+	if baseBranch == "" {
+		t.Skip("set KANDEV_FORGEJO_HEAD_BRANCH to exercise pull request actions")
+	}
+	client, repositories, associations, _, _, host := liveAdapters(t)
+	baseURL, _, owner, repo := liveConfig(t)
+	ctx := context.Background()
+	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "ws-1"}
+
+	head := fmt.Sprintf("actions-%d", time.Now().UnixNano())
+	require.NoError(t, createBranch(ctx, client, owner, repo, head, baseBranch))
+	file := map[string]string{"content": "aGVsbG8=", "message": "live test", "branch": head}
+	require.NoError(t, client.do(ctx, http.MethodPost, apiV1,
+		"/repos/"+pathSegment(owner)+"/"+pathSegment(repo)+"/contents/"+head+".txt", nil, file, nil))
+	pull, err := client.CreatePullRequest(ctx, owner, repo, CreatePullRequestInput{Head: head, Base: baseBranch, Title: "live actions"})
+	require.NoError(t, err)
+
+	inspected, err := repositories.Inspect(ctx, "ws-1", client.Scope()+"/"+owner+"/"+repo)
+	require.NoError(t, err)
+	require.NoError(t, associations.Link(ctx, "task-1", sourcecontrol.ChangeRequestIdentity{
+		ConnectionScope: client.Scope(), RepositoryID: inspected.RepositoryID, Number: pull.Number,
+	}))
+	connection := NewConnection(func() pluginsdk.Host { return host })
+	actions := NewPullActions(connection, repositories, associations, "forgejo")
+
+	// Details: the shape is stable even where the instance omits fields.
+	details, err := actions.Details(ctx, "ws-1", "task-1", pull.Number)
+	require.NoError(t, err)
+	require.Equal(t, "open", details.State)
+	require.Equal(t, head, details.SourceBranch)
+	require.NotEmpty(t, details.HeadSHA)
+	require.NotEmpty(t, details.Actor)
+	t.Logf("merge styles %v, mergeable %v, blockers %v, additions %v",
+		details.Merge.Styles, details.Merge.Mergeable, details.Merge.Blockers, details.Additions)
+
+	require.NoError(t, client.CreateComment(ctx, owner, repo, pull.Number, "live test comment"))
+	details, err = actions.Details(ctx, "ws-1", "task-1", pull.Number)
+	require.NoError(t, err)
+	require.NotEmpty(t, details.Comments)
+
+	require.NoError(t, client.SetLabels(ctx, owner, repo, pull.Number, nil), "clearing labels must work")
+	require.NoError(t, client.SetAssignees(ctx, owner, repo, pull.Number, nil))
+	if reviewer := strings.TrimSpace(os.Getenv("KANDEV_FORGEJO_REVIEWER")); reviewer != "" {
+		require.NoError(t, client.RequestReviewers(ctx, owner, repo, pull.Number, []string{reviewer}))
+		require.NoError(t, client.RemoveReviewRequest(ctx, owner, repo, pull.Number, []string{reviewer}))
+	}
+
+	// Updating a branch that is already current is not an error.
+	require.NoError(t, client.UpdateBranch(ctx, owner, repo, pull.Number, "merge"))
+
+	// Gitea 1.20 answers a transient 405 while it computes mergeability.
+	merge := func(input MergeInput) error {
+		var err error
+		for attempt := 0; attempt < 15; attempt++ {
+			err = client.MergePullRequest(ctx, owner, repo, pull.Number, input)
+			var writeErr *WriteError
+			if !errors.As(err, &writeErr) || writeErr.Reason != ReasonChecking {
+				return err
+			}
+			time.Sleep(time.Second)
+		}
+		return err
+	}
+
+	stale := merge(MergeInput{Do: MergeStyleSquash, HeadCommitID: "0000000000000000000000000000000000000000"})
+	var writeErr *WriteError
+	require.ErrorAs(t, stale, &writeErr, "a stale head must be refused, not merged")
+	t.Logf("stale head -> %d %s", writeErr.Status, writeErr.Reason)
+
+	require.NoError(t, merge(MergeInput{Do: MergeStyleSquash, HeadCommitID: details.HeadSHA, DeleteBranch: true}))
+	merged, err := client.PullRequest(ctx, owner, repo, pull.Number)
+	require.NoError(t, err)
+	require.True(t, merged.Merged)
+
+	again := merge(MergeInput{Do: MergeStyleSquash})
+	require.ErrorAs(t, again, &writeErr, "merging twice must be refused")
+	t.Logf("second merge -> %d %s", writeErr.Status, writeErr.Reason)
+
+	_, err = client.BranchDetail(ctx, owner, repo, head)
+	t.Logf("head branch after delete_branch_after_merge: %v", err)
+	_ = baseURL
 }

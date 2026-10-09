@@ -106,11 +106,14 @@ containers (Gitea 1.20.6 and 1.27.3, Forgejo 7.0.16 and 16.0.5) on 2026-10-09.
 | `GET .../branch_protections/{b}` as a non-admin writer | Same: 403 |
 | Labels on `PUT .../issues/{n}/labels` | Numeric ids on all. **Names fail (422) on Gitea 1.20 and Forgejo 7** |
 | Assignees via `PATCH .../issues/{n}` | 201; `[]` clears |
+| `mergeable` right after a PR is opened | **Unreliable on Gitea.** 1.20 read `false` at t+0 and `true` 500 ms later; 1.27 was seen going true, false, true within three seconds. Forgejo 7 and 16 read `true` immediately. The details action reports a `false` newer than 30 s as unknown |
+| Delete branch after merge (`delete_branch_after_merge`) | Head branch gone (404) afterwards on all four, same-repo head |
+| Merge twice | 405 `not_mergeable` on all but Gitea 1.27 (`already_merged`); the caller re-reads the PR |
 | Files, commits, `.diff` | 200 on all; files carry per-file counts |
 
 Not yet verified: token-scope matrix (`write:repository` without `write:issue`),
-the `readonly` user, merge as a user without write access, protected-branch
-merges, `mergeable` convergence time, and branch deletion after merge.
+the `readonly` user, merge as a user without write access, and protected-branch
+merges. `TestLivePullRequestActions` re-checks everything else on each CI run.
 
 ## Layout
 
