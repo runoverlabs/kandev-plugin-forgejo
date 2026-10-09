@@ -12,6 +12,7 @@ import (
 // the issue list endpoint filters on; the colour and description are display
 // data the board does not use.
 type Label struct {
+	ID   int64  `json:"id"`
 	Name string `json:"name"`
 }
 

@@ -78,6 +78,40 @@ prints which Actions endpoints the instance serves, which is the table under
 "What CI data you get, by version". Run the suite against Forgejo and Gitea
 containers before releasing; CI does this across the supported range.
 
+## Verified against
+
+Provider behaviour the PR-actions work relies on, probed with throwaway
+containers (Gitea 1.20.6 and 1.27.3, Forgejo 7.0.16 and 16.0.5) on 2026-10-09.
+"Same" means identical on all four. Behaviour not listed here is still assumed.
+
+| Fact | Result |
+|---|---|
+| Merge-style flags on `GET /repos/{o}/{r}` | `allow_merge_commits`, `allow_rebase`, `allow_rebase_explicit`, `allow_squash_merge`, `default_merge_style`, `default_delete_branch_after_merge` on all. `allow_fast_forward_only_merge` is **absent on Gitea 1.20** |
+| `mergeable` on a PR | Present on all |
+| `additions`, `deletions`, `changed_files` on a PR | **Absent on Gitea 1.20 and Forgejo 7**; present on Gitea 1.27 and Forgejo 16 |
+| `requested_reviewers` / `assignees` on a PR | Null or `[]` depending on version; both decode to empty |
+| Review events | `APPROVED` and `APPROVE` both accepted; `REQUEST_CHANGES`, `COMMENT` accepted. `GET .../reviews` returns `APPROVED`, `REQUEST_CHANGES`, `COMMENT` |
+| Self-approval | Same: 422 `approve your own pull is not allowed` |
+| Request the PR author as reviewer | Same: 422 `poster of pr can't be reviewer` |
+| Request / remove reviewer | 201 with a list / 204 |
+| Merge, bad `Do` | Same: 422 `[Do]: In` |
+| Merge, stale `head_commit_id` | 409 `head out of date` (Gitea 1.20 answered the transient 405 below) |
+| Merge while mergeability is computing | **Gitea 1.20: 405 `Please try again later`**, retryable. Newer hosts merged straight away |
+| Merge an already-merged PR | 405 on all. Message is `The PR is already merged` on Gitea 1.27 and **empty** on Gitea 1.20 and both Forgejos, so it cannot be told from "not mergeable" by message: re-read the PR |
+| `merge_when_checks_succeed` with no CI | 201, then `DELETE .../merge` cancels with 204 |
+| Update branch, behind | 200 |
+| Update branch, up to date | **500 `HeadBranch of PR is up to date` on Gitea and Forgejo 7**, 200 on Forgejo 16. The client treats it as success |
+| Inline review comment (`new_position`) | Accepted, 200 |
+| `GET .../branches/{b}` as a non-admin | `protected`, `required_approvals`, `enable_status_check`, `status_check_contexts`, `user_can_merge` on all |
+| `GET .../branch_protections/{b}` as a non-admin writer | Same: 403 |
+| Labels on `PUT .../issues/{n}/labels` | Numeric ids on all. **Names fail (422) on Gitea 1.20 and Forgejo 7** |
+| Assignees via `PATCH .../issues/{n}` | 201; `[]` clears |
+| Files, commits, `.diff` | 200 on all; files carry per-file counts |
+
+Not yet verified: token-scope matrix (`write:repository` without `write:issue`),
+the `readonly` user, merge as a user without write access, protected-branch
+merges, `mergeable` convergence time, and branch deletion after merge.
+
 ## Layout
 
 | Path | Contents |

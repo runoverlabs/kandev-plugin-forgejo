@@ -30,6 +30,17 @@ type Repo struct {
 	HTMLURL       string `json:"html_url"`
 	DefaultBranch string `json:"default_branch"`
 	Empty         bool   `json:"empty"`
+
+	// Merge-style flags. A style is offered only when its flag is true; a flag
+	// an older instance omits decodes false, so "not reported" and "disabled"
+	// are the same to callers and the backend is left to choose.
+	AllowMergeCommits         bool   `json:"allow_merge_commits"`
+	AllowRebase               bool   `json:"allow_rebase"`
+	AllowRebaseExplicit       bool   `json:"allow_rebase_explicit"`
+	AllowSquashMerge          bool   `json:"allow_squash_merge"`
+	AllowFastForwardOnlyMerge bool   `json:"allow_fast_forward_only_merge"`
+	DefaultMergeStyle         string `json:"default_merge_style"`
+	DefaultDeleteBranch       bool   `json:"default_delete_branch_after_merge"`
 }
 
 // OwnerLogin prefers the embedded owner object and falls back to parsing
@@ -51,6 +62,13 @@ type Branch struct {
 	Commit struct {
 		ID string `json:"id"`
 	} `json:"commit"`
+
+	// Protection facts, as the branch endpoint reports them to a non-admin.
+	Protected          bool     `json:"protected"`
+	RequiredApprovals  int64    `json:"required_approvals"`
+	EnableStatusCheck  bool     `json:"enable_status_check"`
+	StatusCheckContext []string `json:"status_check_contexts"`
+	UserCanMerge       bool     `json:"user_can_merge"`
 }
 
 // PullRequestRef is one side of a pull request.
@@ -62,20 +80,30 @@ type PullRequestRef struct {
 
 // PullRequest mirrors the REST v1 pull request object.
 type PullRequest struct {
-	ID             int64          `json:"id"`
-	Number         int64          `json:"number"`
-	Title          string         `json:"title"`
-	Body           string         `json:"body"`
-	HTMLURL        string         `json:"html_url"`
-	State          string         `json:"state"`
-	Draft          bool           `json:"draft"`
-	Merged         bool           `json:"merged"`
-	Comments       int            `json:"comments"`
-	ReviewComments int            `json:"review_comments"`
-	UpdatedAt      string         `json:"updated_at"`
-	Head           PullRequestRef `json:"head"`
-	Base           PullRequestRef `json:"base"`
-	User           User           `json:"user"`
+	ID             int64  `json:"id"`
+	Number         int64  `json:"number"`
+	Title          string `json:"title"`
+	Body           string `json:"body"`
+	HTMLURL        string `json:"html_url"`
+	State          string `json:"state"`
+	Draft          bool   `json:"draft"`
+	Merged         bool   `json:"merged"`
+	Comments       int    `json:"comments"`
+	ReviewComments int    `json:"review_comments"`
+	UpdatedAt      string `json:"updated_at"`
+	// Pointers, because an absent field must read as "unknown", not zero or
+	// false: Gitea 1.20 and Forgejo 7 omit the line counts, and a PR whose
+	// mergeability is not yet computed must not look unmergeable.
+	Mergeable    *bool          `json:"mergeable"`
+	Additions    *int           `json:"additions"`
+	Deletions    *int           `json:"deletions"`
+	ChangedFiles *int           `json:"changed_files"`
+	Requested    []User         `json:"requested_reviewers"`
+	Assignees    []User         `json:"assignees"`
+	Labels       []Label        `json:"labels"`
+	Head         PullRequestRef `json:"head"`
+	Base         PullRequestRef `json:"base"`
+	User         User           `json:"user"`
 }
 
 // Review mirrors the REST v1 pull review object. Forgejo and Gitea both use
@@ -85,6 +113,8 @@ type Review struct {
 	State     string `json:"state"`
 	Stale     bool   `json:"stale"`
 	Dismissed bool   `json:"dismissed"`
+	Body      string `json:"body"`
+	CommitID  string `json:"commit_id"`
 	User      User   `json:"user"`
 }
 

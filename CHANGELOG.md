@@ -4,6 +4,13 @@
 
 Working towards 0.4.
 
+- Groundwork for PR actions (client layer only, no user-visible change yet):
+  writes now classify failures into fixed reasons (not mergeable, conflict, out
+  of date, head changed, blocked by protection, self-review, forbidden), so a
+  403 on a write no longer reads as "the instance rejected the access token".
+  Adds merge, review, reviewer, update-branch, files, commits, diff, comment,
+  label and assignee calls to the Forgejo client.
+
 - New plugin icon: the Forgejo branch mark drawn as a dot matrix, in Forgejo
   orange inside a Kandev-indigo frame, on a dark rounded plate so it reads the
   same on light and dark themes. It replaces the plain outline icon in the

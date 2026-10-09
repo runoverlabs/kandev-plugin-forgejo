@@ -422,7 +422,10 @@ func (r *Runtime) clearConnectionCache(ctx context.Context, workspaceID string) 
 // safeMessage maps an adapter error onto an operator-facing message. Provider
 // error bodies are never forwarded: on some deployments they echo the token.
 func safeMessage(err error) string {
+	var writeErr *forgejo.WriteError
 	switch {
+	case errors.As(err, &writeErr):
+		return writeReasonMessage(writeErr.Reason)
 	case errors.Is(err, forgejo.ErrUnauthorized):
 		return "The instance rejected the access token. Check that it is valid and has repository scope."
 	case errors.Is(err, forgejo.ErrNotFound):
@@ -431,6 +434,33 @@ func safeMessage(err error) string {
 		return "Set the instance URL and access token in Settings > Plugins > Forgejo."
 	default:
 		return "Could not reach the configured instance."
+	}
+}
+
+// writeReasonMessage maps a classified write failure onto a fixed message. A
+// 403 on a write is a permission or protection problem, never a bad token.
+func writeReasonMessage(reason forgejo.Reason) string {
+	switch reason {
+	case forgejo.ReasonNotMergeable:
+		return "The pull request cannot be merged right now."
+	case forgejo.ReasonChecking:
+		return "The instance is still checking whether this can be merged. Try again in a moment."
+	case forgejo.ReasonConflict:
+		return "The pull request has merge conflicts."
+	case forgejo.ReasonOutOfDate:
+		return "The branch is out of date with its base. Update it first."
+	case forgejo.ReasonHeadChanged:
+		return "The pull request changed since it was last read. Refresh and try again."
+	case forgejo.ReasonBlockedByProtection:
+		return "Branch protection blocks this: required approvals or checks are missing."
+	case forgejo.ReasonSelfReview:
+		return "An account cannot review its own pull request."
+	case forgejo.ReasonAlreadyMerged:
+		return "The pull request is already merged."
+	case forgejo.ReasonForbidden:
+		return "The access token lacks permission for this action. It needs write access to the repository."
+	default:
+		return "The instance rejected the request."
 	}
 }
 

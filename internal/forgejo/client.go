@@ -123,6 +123,18 @@ func (c *Client) post(ctx context.Context, path string, body, out any) error {
 	return c.do(ctx, http.MethodPost, apiV1, path, nil, body, out)
 }
 
+// put issues an authenticated PUT against /api/v1<path>. Like delete, it
+// classifies failures into *WriteError.
+func (c *Client) put(ctx context.Context, path string, body, out any) error {
+	return c.write(ctx, http.MethodPut, path, nil, body, out)
+}
+
+// delete issues an authenticated DELETE against /api/v1<path>. body may be nil;
+// the reviewer endpoints take one.
+func (c *Client) delete(ctx context.Context, path string, body any) error {
+	return c.write(ctx, http.MethodDelete, path, nil, body, nil)
+}
+
 // newRequest builds one authenticated request against <base><prefix><path>.
 func (c *Client) newRequest(ctx context.Context, method, prefix, path string, query url.Values, body any) (*http.Request, error) {
 	if err := ctx.Err(); err != nil {
@@ -168,6 +180,16 @@ func (c *Client) newRequest(ctx context.Context, method, prefix, path string, qu
 }
 
 func (c *Client) do(ctx context.Context, method, prefix, path string, query url.Values, body, out any) error {
+	return c.send(ctx, method, prefix, path, query, body, out, false)
+}
+
+// write is do for mutations whose failures callers must tell apart: a 403 or
+// 409 becomes a *WriteError with a fixed Reason instead of being flattened.
+func (c *Client) write(ctx context.Context, method, path string, query url.Values, body, out any) error {
+	return c.send(ctx, method, apiV1, path, query, body, out, true)
+}
+
+func (c *Client) send(ctx context.Context, method, prefix, path string, query url.Values, body, out any, classify bool) error {
 	request, err := c.newRequest(ctx, method, prefix, path, query, body)
 	if err != nil {
 		return err
@@ -185,8 +207,14 @@ func (c *Client) do(ctx context.Context, method, prefix, path string, query url.
 	switch {
 	case response.StatusCode == http.StatusNotFound, response.StatusCode == http.StatusGone:
 		return ErrNotFound
-	case response.StatusCode == http.StatusUnauthorized, response.StatusCode == http.StatusForbidden:
+	case response.StatusCode == http.StatusUnauthorized:
 		return ErrUnauthorized
+	case response.StatusCode == http.StatusForbidden && !classify:
+		return ErrUnauthorized
+	case response.StatusCode >= 400 && classify:
+		// The body is read only to classify and is never returned or logged.
+		raw, _ := io.ReadAll(io.LimitReader(response.Body, maxErrorBodyBytes))
+		return &WriteError{Status: response.StatusCode, Reason: classifyWrite(response.StatusCode, string(raw))}
 	case response.StatusCode >= 400:
 		return &StatusError{Method: method, Path: path, Status: response.StatusCode}
 	}
@@ -196,6 +224,10 @@ func (c *Client) do(ctx context.Context, method, prefix, path string, query url.
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes))
 	if err := decoder.Decode(out); err != nil {
+		if classify && errors.Is(err, io.EOF) {
+			// A mutation may legitimately answer 200 or 204 with no body.
+			return nil
+		}
 		return fmt.Errorf("forgejo: decode %s response: %w", path, err)
 	}
 	return nil
@@ -288,4 +320,47 @@ func appendTail(tail, next []byte, maxBytes int) []byte {
 		tail = append(tail[:0], tail[overflow:]...)
 	}
 	return append(tail, next...)
+}
+
+// getHead issues an authenticated GET against /api/v1<path> and returns at most
+// maxBytes from the START of the response body, plus whether anything was
+// dropped. It is the head-bounded counterpart of getTail, for diffs, where the
+// first files are the ones a reader wants and the rest can be paged or dropped.
+func (c *Client) getHead(ctx context.Context, path string, query url.Values, maxBytes int) (string, bool, error) {
+	if maxBytes <= 0 {
+		return "", false, errors.New("forgejo: head size must be positive")
+	}
+	request, err := c.newRequest(ctx, http.MethodGet, apiV1, path, query, nil)
+	if err != nil {
+		return "", false, err
+	}
+	request.Header.Set("Accept", "text/plain")
+
+	response, err := c.http.Do(request)
+	if err != nil {
+		return "", false, fmt.Errorf("forgejo: GET %s: %w", path, err)
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBytes))
+		_ = response.Body.Close()
+	}()
+
+	switch {
+	case response.StatusCode == http.StatusNotFound, response.StatusCode == http.StatusGone:
+		return "", false, ErrNotFound
+	case response.StatusCode == http.StatusUnauthorized, response.StatusCode == http.StatusForbidden:
+		return "", false, ErrUnauthorized
+	case response.StatusCode >= 400:
+		return "", false, &StatusError{Method: http.MethodGet, Path: path, Status: response.StatusCode}
+	}
+
+	// Read one byte past the cap to learn whether the body was longer.
+	head, err := io.ReadAll(io.LimitReader(response.Body, int64(maxBytes)+1))
+	if err != nil {
+		return "", false, fmt.Errorf("forgejo: read %s: %w", path, err)
+	}
+	if len(head) > maxBytes {
+		return string(head[:maxBytes]), true, nil
+	}
+	return string(head), false, nil
 }
