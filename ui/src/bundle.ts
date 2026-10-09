@@ -43,6 +43,7 @@ window.registerKandevPlugin(PLUGIN_ID, {
     if (typeof registry.registerIntegrationSettings === "function") {
       const ConnectionPanel = createConnectionPanel(host);
       const WatchesPanel = createWatchesPanel(host);
+      const ReviewWatchesPanel = createWatchesPanel(host, { kind: "review" });
 
       // One settings surface, two sections. Kandev's native issue-watch UI is
       // compiled in per provider, so a plugin has nowhere else to render this:
@@ -55,13 +56,16 @@ window.registerKandevPlugin(PLUGIN_ID, {
           host.jsx("hr", { className: "forgejo-settings__rule" }),
           host.jsx("h3", { className: "forgejo-settings__heading" }, "Issue watches"),
           host.jsx(WatchesPanel, props),
+          host.jsx("hr", { className: "forgejo-settings__rule" }),
+          host.jsx("h3", { className: "forgejo-settings__heading" }, "Review watches"),
+          host.jsx(ReviewWatchesPanel, props),
         );
 
       registry.registerIntegrationSettings({
         id: PROVIDER_ID,
         label: "Forgejo",
         description:
-          "Connect a Forgejo or Gitea instance for repositories, pull requests, reviews, and issue watches.",
+          "Connect a Forgejo or Gitea instance for repositories, pull requests, reviews, and issue and review watches.",
         icon,
         Component: SettingsPanel,
       });

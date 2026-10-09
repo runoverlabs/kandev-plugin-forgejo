@@ -1,5 +1,8 @@
 import type { Component, PluginHostApi } from "@kandev/plugin-sdk";
 
+/** What a watch files tasks for. A record from before review watches has no kind. */
+export type WatchKind = "issue" | "review";
+
 /** One watch as the backend serializes it. */
 export type Watch = {
   id: string;
@@ -20,6 +23,12 @@ export type Watch = {
   poll_interval_seconds?: number;
   max_inflight_tasks?: number;
   dedup_scope?: string;
+  kind?: WatchKind;
+  review_scope?: string;
+  include_drafts?: boolean;
+  cleanup_policy?: string;
+  fork_workflow_step_id?: string;
+  last_cleanup_note?: string;
   last_polled_at?: string;
   last_error?: string;
   last_error_at?: string;
@@ -28,7 +37,7 @@ export type Watch = {
 type WorkflowOption = {
   id: string;
   name: string;
-  steps: { id: string; name: string; is_start_step?: boolean }[];
+  steps: { id: string; name: string; is_start_step?: boolean; auto_starts_agent?: boolean }[];
 };
 
 type Options = {
@@ -38,6 +47,9 @@ type Options = {
   default_interval?: number;
   min_interval?: number;
   default_max_inflight?: number;
+  min_review_interval?: number;
+  default_review_prompt?: string;
+  archive_granted?: boolean;
 };
 
 type RunResult = {
@@ -45,6 +57,11 @@ type RunResult = {
   created?: number;
   duplicates?: number;
   throttled?: number;
+  drafts?: number;
+  skipped_forks?: number;
+  archived?: number;
+  completed?: number;
+  cleanup_note?: string;
   errors?: string[];
 };
 
@@ -65,11 +82,16 @@ type Draft = {
   maxInflightTasks: string;
   dedupScope: string;
   startAgent: boolean;
+  kind: WatchKind;
+  reviewScope: string;
+  includeDrafts: boolean;
+  cleanupPolicy: string;
+  forkStepId: string;
 };
 
 const NONE = "__none__";
 
-function emptyDraft(options: Options): Draft {
+function emptyDraft(options: Options, kind: WatchKind): Draft {
   const workflow = options.workflows?.[0];
   const step = workflow?.steps?.find((entry) => entry.is_start_step) ?? workflow?.steps?.[0];
   return {
@@ -88,12 +110,17 @@ function emptyDraft(options: Options): Draft {
     maxInflightTasks: String(options.default_max_inflight ?? 5),
     dedupScope: "watch",
     startAgent: false,
+    kind,
+    reviewScope: "user_and_teams",
+    includeDrafts: false,
+    cleanupPolicy: "never",
+    forkStepId: "",
   };
 }
 
-function toDraft(watch: Watch, options: Options): Draft {
+function toDraft(watch: Watch, options: Options, kind: WatchKind): Draft {
   return {
-    ...emptyDraft(options),
+    ...emptyDraft(options, kind),
     id: watch.id,
     name: watch.name ?? "",
     repos: (watch.repos ?? []).map((repo) => `${repo.owner}/${repo.name}`).join(", "),
@@ -109,6 +136,10 @@ function toDraft(watch: Watch, options: Options): Draft {
     maxInflightTasks: String(watch.max_inflight_tasks ?? options.default_max_inflight ?? 5),
     dedupScope: watch.dedup_scope || "watch",
     startAgent: watch.start_agent === true,
+    reviewScope: watch.review_scope || "user_and_teams",
+    includeDrafts: watch.include_drafts === true,
+    cleanupPolicy: watch.cleanup_policy || "never",
+    forkStepId: watch.fork_workflow_step_id ?? "",
   };
 }
 
@@ -137,6 +168,17 @@ function draftToBody(draft: Draft): Record<string, unknown> {
     poll_interval_seconds: Number(draft.pollIntervalSeconds) || 0,
     max_inflight_tasks: Number(draft.maxInflightTasks) || 0,
     dedup_scope: draft.dedupScope,
+    // The kind is fixed at creation; the backend rejects a change, and sending
+    // it on update just restates it.
+    kind: draft.kind,
+    ...(draft.kind === "review"
+      ? {
+          review_scope: draft.reviewScope,
+          include_drafts: draft.includeDrafts,
+          cleanup_policy: draft.cleanupPolicy,
+          fork_workflow_step_id: draft.forkStepId,
+        }
+      : {}),
   };
 }
 
@@ -172,7 +214,25 @@ function summarize(result: RunResult): string {
   const parts = [`${result.created ?? 0} created`];
   if (result.duplicates) parts.push(`${result.duplicates} already tracked`);
   if (result.throttled) parts.push(`${result.throttled} held back by the task limit`);
+  if (result.drafts) parts.push(`${result.drafts} draft(s) left out`);
+  if (result.skipped_forks) {
+    parts.push(`${result.skipped_forks} from a fork left out (no safe column to put them in)`);
+  }
+  const retired = (result.archived ?? 0) + (result.completed ?? 0);
+  if (retired) {
+    parts.push(
+      `${result.archived ?? 0} archived, ${result.completed ?? 0} completed because their pull request is finished`,
+    );
+  }
   return `${result.matched ?? 0} matched — ${parts.join(", ")}.`;
+}
+
+/** The summary of a manual cleanup, which has no discovery numbers. */
+function summarizeCleanup(result: RunResult): string {
+  const archived = result.archived ?? 0;
+  const completed = result.completed ?? 0;
+  if (archived + completed === 0) return "Nothing to clean up: no tracked pull request has finished.";
+  return `${archived} archived, ${completed} completed.`;
 }
 
 function formatWhen(value?: string): string {
@@ -189,7 +249,12 @@ function formatWhen(value?: string): string {
  * the feature. Everything it shows is workspace-scoped, matching the backend:
  * the host verifies the workspace before the action runs.
  */
-export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId?: string }> {
+export function createWatchesPanel(
+  host: PluginHostApi,
+  { kind = "issue" }: { kind?: WatchKind } = {},
+): Component<{ workspaceId?: string }> {
+  const review = kind === "review";
+  const noun = review ? "pull request" : "issue";
   return function ForgejoWatchesPanel(props: { workspaceId?: string } = {}) {
     const [watches, setWatches] = host.React.useState<Watch[]>([]);
     const [options, setOptions] = host.React.useState<Options>({});
@@ -225,7 +290,7 @@ export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId
         setError(null);
         try {
           const [list, config] = await Promise.all([
-            call<{ watches?: Watch[] }>("watches.list", undefined, signal),
+            call<{ watches?: Watch[] }>("watches.list", { kind }, signal),
             call<Options>("watches.options", undefined, signal),
           ]);
           if (signal.aborted) return;
@@ -310,7 +375,18 @@ export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId
       (watch: Watch) =>
         act(watch.id, async () => {
           const response = await call<{ forgotten?: number }>("watches.reset", { id: watch.id });
-          return `Forgot ${response?.forgotten ?? 0} tracked issue(s); the next run will file them again.`;
+          return `Forgot ${response?.forgotten ?? 0} tracked ${noun}(s); the next run will file the ones still ${
+            review ? "awaiting your review" : "matching"
+          } again.`;
+        }),
+      [act, call],
+    );
+
+    const cleanUp = host.React.useCallback(
+      (watch: Watch) =>
+        act(watch.id, async () => {
+          const response = await call<{ result?: RunResult }>("watches.cleanup", { id: watch.id });
+          return summarizeCleanup(response?.result ?? {});
         }),
       [act, call],
     );
@@ -319,7 +395,7 @@ export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId
       return host.jsx(
         "p",
         { className: "forgejo-watches__empty" },
-        "Open a workspace to manage Forgejo issue watches.",
+        `Open a workspace to manage Forgejo ${noun} watches.`,
       );
     }
 
@@ -365,18 +441,20 @@ export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId
           "Name",
           host.jsx(host.ui.Input, {
             value: current.name,
-            placeholder: "Bug reports",
+            placeholder: review ? "My reviews" : "Bug reports",
             onChange: (event: { target: { value: string } }) => update({ name: event.target.value }),
           }),
         ),
         field(
-          "Repositories",
+          review ? "Repositories (optional)" : "Repositories",
           host.jsx(host.ui.Input, {
             value: current.repos,
             placeholder: "owner/name, owner/other",
             onChange: (event: { target: { value: string } }) => update({ repos: event.target.value }),
           }),
-          "One or more owner/name pairs, separated by commas.",
+          review
+            ? "Owner/name pairs, separated by commas. Leave empty to follow every repository this token can see."
+            : "One or more owner/name pairs, separated by commas.",
         ),
         field(
           "Labels",
@@ -385,21 +463,50 @@ export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId
             placeholder: "bug, needs-triage",
             onChange: (event: { target: { value: string } }) => update({ labels: event.target.value }),
           }),
-          "An issue must carry every label listed here. Leave empty to match any.",
+          `${review ? "A pull request" : "An issue"} must carry every label listed here. Leave empty to match any.`,
         ),
-        field(
-          "Issue state",
-          select(
-            current.state,
-            (next) => update({ state: next }),
-            [
-              { id: "open", name: "Open" },
-              { id: "closed", name: "Closed" },
-              { id: "all", name: "All" },
-            ],
-            "Open",
-          ),
-        ),
+        review
+          ? null
+          : field(
+              "Issue state",
+              select(
+                current.state,
+                (next) => update({ state: next }),
+                [
+                  { id: "open", name: "Open" },
+                  { id: "closed", name: "Closed" },
+                  { id: "all", name: "All" },
+                ],
+                "Open",
+              ),
+            ),
+        review
+          ? field(
+              "Whose requests",
+              select(
+                current.reviewScope,
+                (next) => update({ reviewScope: next }),
+                [
+                  { id: "user_and_teams", name: "Me and my teams" },
+                  { id: "user", name: "Only me" },
+                ],
+                "Me and my teams",
+              ),
+              "Pull requests where this token's account was asked to review, directly or through a team. A pull request drops out once the account answers.",
+            )
+          : null,
+        review
+          ? host.jsx(
+              "label",
+              { className: "forgejo-watch-form__toggle" },
+              host.jsx(host.ui.Switch, {
+                checked: current.includeDrafts,
+                "aria-label": "Also file draft pull requests",
+                onCheckedChange: (next: boolean) => update({ includeDrafts: next }),
+              }),
+              host.jsx("span", null, "Include draft pull requests"),
+            )
+          : null,
         field(
           "Search",
           host.jsx(host.ui.Input, {
@@ -407,7 +514,9 @@ export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId
             placeholder: "crash",
             onChange: (event: { target: { value: string } }) => update({ query: event.target.value }),
           }),
-          "Optional free text matched against the title and body. Served by the instance's issue indexer, so a brand-new issue may take a moment to match — and nothing matches if indexing is turned off.",
+          review
+            ? "Optional free text matched against the title and body, by the instance's search."
+            : "Optional free text matched against the title and body. Served by the instance's issue indexer, so a brand-new issue may take a moment to match — and nothing matches if indexing is turned off.",
         ),
 
         field(
@@ -431,8 +540,21 @@ export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId
             steps.map((entry) => ({ id: entry.id, name: entry.name })),
             "Choose a column",
           ),
-          "Where a card lands when an issue matches.",
+          `Where a card lands when a ${noun} matches.`,
         ),
+        review
+          ? field(
+              "Column for fork pull requests",
+              select(
+                current.forkStepId,
+                (next) => update({ forkStepId: next }),
+                steps.filter((entry) => !entry.auto_starts_agent).map((entry) => ({ id: entry.id, name: entry.name })),
+                "Same column",
+                true,
+              ),
+              "A pull request from a fork is code its author controls, so its task never starts an agent and never checks the fork out. Pick a column that does not start agents on entry; with none, fork pull requests are left out if the column above starts agents.",
+            )
+          : null,
         field(
           "Agent profile",
           select(
@@ -458,22 +580,26 @@ export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId
           host.jsx(host.ui.Textarea, {
             value: current.prompt,
             rows: 3,
-            placeholder: "Investigate this issue and propose a fix.",
+            placeholder: review
+              ? (options.default_review_prompt ?? "Review this pull request.")
+              : "Investigate this issue and propose a fix.",
             onChange: (event: { target: { value: string } }) => update({ prompt: event.target.value }),
           }),
-          "Sent to the agent when the task starts.",
+          review
+            ? "The task description, and what the agent is asked. Placeholders: {{pr.number}} {{pr.title}} {{pr.link}} {{pr.author}} {{pr.repo}} {{pr.branch}} {{pr.base_branch}}. Empty uses the default shown."
+            : "Sent to the agent when the task starts.",
         ),
 
         field(
           "Poll interval (seconds)",
           host.jsx(host.ui.Input, {
             type: "number",
-            min: options.min_interval ?? 30,
+            min: (review ? options.min_review_interval : options.min_interval) ?? (review ? 60 : 30),
             value: current.pollIntervalSeconds,
             onChange: (event: { target: { value: string } }) =>
               update({ pollIntervalSeconds: event.target.value }),
           }),
-          `At least ${options.min_interval ?? 30} seconds.`,
+          `At least ${(review ? options.min_review_interval : options.min_interval) ?? (review ? 60 : 30)} seconds.`,
         ),
         field(
           "Open task limit",
@@ -484,21 +610,42 @@ export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId
             onChange: (event: { target: { value: string } }) =>
               update({ maxInflightTasks: event.target.value }),
           }),
-          "How many of this watch's tasks may be open at once. Matched issues above the limit wait for a later run.",
+          `How many of this watch's tasks may be open at once. Matched ${noun}s above the limit wait for a later run.`,
         ),
-        field(
-          "Duplicate handling",
-          select(
-            current.dedupScope,
-            (next) => update({ dedupScope: next }),
-            [
-              { id: "watch", name: "One task per watch" },
-              { id: "workspace", name: "One task per issue" },
-            ],
-            "One task per watch",
-          ),
-          "“One task per issue” stops a second watch filing the same issue again.",
-        ),
+        review
+          ? field(
+              "When a pull request is merged or closed",
+              select(
+                current.cleanupPolicy,
+                (next) => update({ cleanupPolicy: next }),
+                [
+                  { id: "never", name: "Leave the task alone" },
+                  { id: "when_closed", name: "Archive the task" },
+                ],
+                "Leave the task alone",
+              ),
+              "Tasks are never deleted. Without the archive grant they are marked complete instead.",
+            )
+          : field(
+              "Duplicate handling",
+              select(
+                current.dedupScope,
+                (next) => update({ dedupScope: next }),
+                [
+                  { id: "watch", name: "One task per watch" },
+                  { id: "workspace", name: "One task per issue" },
+                ],
+                "One task per watch",
+              ),
+              "“One task per issue” stops a second watch filing the same issue again.",
+            ),
+        review && current.cleanupPolicy === "when_closed" && options.archive_granted === false
+          ? host.jsx(
+              "p",
+              { className: "forgejo-watch-form__hint", role: "note" },
+              "Archiving needs the “Host v2 tasks” grant from your Kandev operator. Until then, finished tasks are completed rather than archived.",
+            )
+          : null,
         host.jsx(
           "label",
           { className: "forgejo-watch-form__toggle" },
@@ -556,7 +703,19 @@ export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId
             onCheckedChange: (next: boolean) => void toggle(watch, next),
           }),
         ),
-        host.jsx("p", { className: "forgejo-watch__query" }, repos + (labels ? ` — ${labels}` : "")),
+        host.jsx(
+          "p",
+          { className: "forgejo-watch__query" },
+          review
+            ? [
+                watch.review_scope === "user" ? "Requested of me" : "Requested of me or my teams",
+                repos ? `in ${repos}` : "in every repository",
+                labels,
+              ]
+                .filter(Boolean)
+                .join(" — ")
+            : repos + (labels ? ` — ${labels}` : ""),
+        ),
         host.jsx(
           "p",
           { className: "forgejo-watch__meta" },
@@ -564,6 +723,9 @@ export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId
         ),
         watch.last_error
           ? host.jsx("p", { className: "forgejo-watch__error", role: "alert" }, watch.last_error)
+          : null,
+        watch.last_cleanup_note
+          ? host.jsx("p", { className: "forgejo-watch__meta", role: "note" }, watch.last_cleanup_note)
           : null,
         host.jsx(
           "div",
@@ -586,10 +748,23 @@ export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId
               variant: "ghost",
               size: "sm",
               disabled: busy === watch.id,
-              onClick: () => setDraft(toDraft(watch, options)),
+              onClick: () => setDraft(toDraft(watch, options, kind)),
             },
             "Edit",
           ),
+          review && watch.cleanup_policy === "when_closed"
+            ? host.jsx(
+                host.ui.Button,
+                {
+                  type: "button",
+                  variant: "ghost",
+                  size: "sm",
+                  disabled: busy === watch.id,
+                  onClick: () => void cleanUp(watch),
+                },
+                "Clean up now",
+              )
+            : null,
           host.jsx(
             host.ui.Button,
             {
@@ -622,7 +797,9 @@ export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId
       host.jsx(
         "p",
         { className: "forgejo-watches__intro" },
-        "Turn Forgejo issues into tasks. Each watch polls the repositories you name and files a card for every new issue that matches.",
+        review
+          ? "File a task for every pull request that asks for your review. Each watch searches the instance for open requests and files a card for each new one."
+          : "Turn Forgejo issues into tasks. Each watch polls the repositories you name and files a card for every new issue that matches.",
       ),
       error ? host.jsx("p", { className: "forgejo-watches__error", role: "alert" }, error) : null,
       notice ? host.jsx("p", { className: "forgejo-watches__notice", role: "status" }, notice) : null,
@@ -630,7 +807,11 @@ export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId
         ? host.jsx("p", { className: "forgejo-watches__empty" }, "Loading watches…")
         : null,
       !loading && watches.length === 0
-        ? host.jsx("p", { className: "forgejo-watches__empty" }, "No watches yet.")
+        ? host.jsx(
+            "p",
+            { className: "forgejo-watches__empty" },
+            review ? "No review watches yet." : "No watches yet.",
+          )
         : null,
       ...watches.map(renderRow),
       draft
@@ -641,7 +822,7 @@ export function createWatchesPanel(host: PluginHostApi): Component<{ workspaceId
               type: "button",
               variant: "secondary",
               size: "sm",
-              onClick: () => setDraft(emptyDraft(options)),
+              onClick: () => setDraft(emptyDraft(options, kind)),
             },
             "Add watch",
           ),
