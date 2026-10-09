@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+Working towards 0.4.
+
+- New plugin icon: the Forgejo branch mark drawn as a dot matrix, in Forgejo
+  orange inside a Kandev-indigo frame, on a dark rounded plate so it reads the
+  same on light and dark themes. It replaces the plain outline icon in the
+  marketplace and plugin lists. The in-app icon is unchanged: it keeps
+  `currentColor` so it follows the host's theme and status colours.
+- Adds the logo to the top of the README. `assets/logo-dotmatrix.svg` is the
+  transparent mark for dark backgrounds and `assets/logo-dotmatrix-light.svg` a
+  variant for white ones.
+
 ## 0.3.0
 
 Issue watches. A watch polls Forgejo repositories on an interval and files each
