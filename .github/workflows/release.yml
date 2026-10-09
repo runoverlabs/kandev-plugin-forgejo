@@ -69,8 +69,24 @@ jobs:
         working-directory: kandev-plugin-forgejo
         run: make verify-package
 
+      # The release page shows this version's CHANGELOG section, so the notes
+      # are written once, in the changelog. An empty section fails the release
+      # rather than publishing a blank page.
+      - name: Extract release notes
+        working-directory: kandev-plugin-forgejo
+        run: |
+          set -euo pipefail
+          awk -v v="$version" '$0 ~ "^## " v "$" {f=1; next} /^## /{f=0} f' CHANGELOG.md \
+            | sed '/./,$!d' > "$RUNNER_TEMP/notes.md"
+          if [ ! -s "$RUNNER_TEMP/notes.md" ]; then
+            echo "::error::CHANGELOG.md has no '## $version' section"
+            exit 1
+          fi
+        env:
+          version: ${{ env.version }}
+
       - name: Publish release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: kandev-plugin-forgejo/kandev-plugin-forgejo-${{ env.version }}.tar.gz
-          generate_release_notes: true
+          body_path: ${{ runner.temp }}/notes.md
