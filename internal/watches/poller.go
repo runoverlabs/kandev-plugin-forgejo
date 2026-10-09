@@ -74,13 +74,14 @@ const taskPageSize = 200
 // instance and the Host RPC, and a goroutine per watch would multiply
 // rate-limit pressure without finishing sooner.
 type Poller struct {
-	store  *Store
-	hosts  HostProvider
-	issues IssueSource
-	gate   WorkspaceGate
-	tick   time.Duration
-	now    func() time.Time
-	logf   func(format string, args ...any)
+	store   *Store
+	hosts   HostProvider
+	issues  IssueSource
+	reviews ReviewSource
+	gate    WorkspaceGate
+	tick    time.Duration
+	now     func() time.Time
+	logf    func(format string, args ...any)
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -232,6 +233,17 @@ type Result struct {
 	Inflight int      `json:"inflight"`
 	Budget   int      `json:"budget"`
 	Errors   []string `json:"errors,omitempty"`
+
+	// Review watches only. Drafts counts pull requests left out because they
+	// are drafts. SkippedForks counts fork pull requests left out because no
+	// placement for them was safe. Cleaned and Completed report the cleanup
+	// pass that follows discovery.
+	Drafts       int `json:"drafts,omitempty"`
+	SkippedForks int `json:"skipped_forks,omitempty"`
+	Archived     int `json:"archived,omitempty"`
+	Completed    int `json:"completed,omitempty"`
+	// CleanupNote says why tasks were completed rather than archived.
+	CleanupNote string `json:"cleanup_note,omitempty"`
 }
 
 // RunWatch polls one watch once and creates tasks for issues it has not seen.
@@ -258,11 +270,50 @@ func (p *Poller) RunWatch(ctx context.Context, watch Watch) (Result, error) {
 	}
 	result.Inflight = inflight
 
+	var failures []string
+	if watch.IsReview() {
+		failures = p.pollReviews(ctx, host, watch, &result)
+	} else {
+		failures = p.pollIssues(ctx, host, watch, &result)
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+
+	// Either way the poll clock advances, so a watch against an unreachable
+	// instance backs off to its interval instead of retrying every tick. The
+	// difference is only whether the panel has an error to show.
+	result.Errors = failures
+	if watch.IsReview() && watch.CleanupPolicy == CleanupWhenClosed {
+		// The note follows the latest pass that did something: it clears once
+		// archiving works, and appears once it stops.
+		switch {
+		case result.CleanupNote != "":
+			watch.LastCleanupNote = result.CleanupNote
+		case result.Archived > 0:
+			watch.LastCleanupNote = ""
+		}
+	}
+	var mark error
+	if len(failures) == 0 {
+		mark = p.store.MarkPolled(ctx, watch)
+	} else {
+		mark = p.store.MarkError(ctx, watch, strings.Join(failures, "; "))
+	}
+	if mark != nil {
+		return result, mark
+	}
+	return result, nil
+}
+
+// pollIssues files a task per new issue and returns the failures it met.
+func (p *Poller) pollIssues(ctx context.Context, host pluginsdk.Host, watch Watch, result *Result) []string {
 	since := watchSince(watch)
+	inflight := result.Inflight
 	var failures []string
 	for _, repo := range watch.Repos {
 		if ctx.Err() != nil {
-			return result, ctx.Err()
+			return failures
 		}
 		issues, err := p.issues.ListIssues(ctx, repo, IssueQuery{
 			State:  watch.State,
@@ -303,21 +354,7 @@ func (p *Poller) RunWatch(ctx context.Context, watch Watch) (Result, error) {
 			result.Created++
 		}
 	}
-
-	// Either way the poll clock advances, so a watch against an unreachable
-	// instance backs off to its interval instead of retrying every tick. The
-	// difference is only whether the panel has an error to show.
-	result.Errors = failures
-	var mark error
-	if len(failures) == 0 {
-		mark = p.store.MarkPolled(ctx, watch)
-	} else {
-		mark = p.store.MarkError(ctx, watch, strings.Join(failures, "; "))
-	}
-	if mark != nil {
-		return result, mark
-	}
-	return result, nil
+	return failures
 }
 
 // watchSince is the incremental bound for a poll.

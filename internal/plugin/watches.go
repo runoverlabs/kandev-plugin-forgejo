@@ -33,6 +33,9 @@ const (
 	// ActionWatchesReset forgets which issues a watch already handled, so the
 	// next run re-creates their tasks.
 	ActionWatchesReset = "watches.reset"
+	// ActionWatchesCleanup retires the tasks of one review watch's finished
+	// pull requests now, instead of at the next poll.
+	ActionWatchesCleanup = "watches.cleanup"
 	// ActionWatchesOptions returns the workflows, steps and profiles the
 	// configuration form offers.
 	ActionWatchesOptions = "watches.options"
@@ -48,24 +51,29 @@ const (
 // string cannot tell those two apart, which is how pausing a watch once erased
 // its prompt, profiles, repository, query and labels.
 type watchRequest struct {
-	ID                  string             `json:"id"`
-	Name                string             `json:"name"`
-	WorkflowID          string             `json:"workflow_id"`
-	WorkflowStepID      string             `json:"workflow_step_id"`
-	AgentProfileID      *string            `json:"agent_profile_id"`
-	ExecutorProfileID   *string            `json:"executor_profile_id"`
-	Prompt              *string            `json:"prompt"`
-	StartAgent          *bool              `json:"start_agent"`
-	RepositoryID        *string            `json:"repository_id"`
-	BaseBranch          *string            `json:"base_branch"`
-	Repos               []string           `json:"repos"`
-	Labels              []string           `json:"labels"`
-	State               string             `json:"state"`
-	Query               *string            `json:"query"`
-	Enabled             *bool              `json:"enabled"`
-	PollIntervalSeconds int                `json:"poll_interval_seconds"`
-	MaxInflightTasks    int                `json:"max_inflight_tasks"`
-	DedupScope          watches.DedupScope `json:"dedup_scope"`
+	ID                  string                `json:"id"`
+	Name                string                `json:"name"`
+	WorkflowID          string                `json:"workflow_id"`
+	WorkflowStepID      string                `json:"workflow_step_id"`
+	AgentProfileID      *string               `json:"agent_profile_id"`
+	ExecutorProfileID   *string               `json:"executor_profile_id"`
+	Prompt              *string               `json:"prompt"`
+	StartAgent          *bool                 `json:"start_agent"`
+	RepositoryID        *string               `json:"repository_id"`
+	BaseBranch          *string               `json:"base_branch"`
+	Repos               []string              `json:"repos"`
+	Labels              []string              `json:"labels"`
+	State               string                `json:"state"`
+	Query               *string               `json:"query"`
+	Kind                watches.Kind          `json:"kind"`
+	ReviewScope         watches.ReviewScope   `json:"review_scope"`
+	IncludeDrafts       *bool                 `json:"include_drafts"`
+	CleanupPolicy       watches.CleanupPolicy `json:"cleanup_policy"`
+	ForkWorkflowStepID  *string               `json:"fork_workflow_step_id"`
+	Enabled             *bool                 `json:"enabled"`
+	PollIntervalSeconds int                   `json:"poll_interval_seconds"`
+	MaxInflightTasks    int                   `json:"max_inflight_tasks"`
+	DedupScope          watches.DedupScope    `json:"dedup_scope"`
 }
 
 // handleWatchAction routes the watch actions.
@@ -83,7 +91,7 @@ func (r *Runtime) handleWatchAction(ctx context.Context, request *pluginsdk.Plug
 
 	switch request.ActionKey {
 	case ActionWatchesList:
-		return r.listWatches(ctx, workspaceID)
+		return r.listWatches(ctx, workspaceID, body.Kind)
 	case ActionWatchesOptions:
 		return r.watchOptions(ctx, workspaceID)
 	case ActionWatchesCreate:
@@ -96,15 +104,25 @@ func (r *Runtime) handleWatchAction(ctx context.Context, request *pluginsdk.Plug
 		return r.runWatch(ctx, workspaceID, body)
 	case ActionWatchesReset:
 		return r.resetWatch(ctx, workspaceID, body)
+	case ActionWatchesCleanup:
+		return r.cleanupWatch(ctx, workspaceID, body)
 	default:
 		return nil, fmt.Errorf("kandev-plugin-forgejo: unknown watch action %q", request.ActionKey)
 	}
 }
 
-func (r *Runtime) listWatches(ctx context.Context, workspaceID string) (*pluginsdk.PluginActionResponse, error) {
-	found, err := r.watchStore.List(ctx, workspaceID)
+func (r *Runtime) listWatches(ctx context.Context, workspaceID string, kind watches.Kind) (*pluginsdk.PluginActionResponse, error) {
+	all, err := r.watchStore.List(ctx, workspaceID)
 	if err != nil {
 		return nil, err
+	}
+	// The kind filter is optional so a caller that predates review watches, and
+	// asks for none, still gets every watch.
+	found := make([]watches.Watch, 0, len(all))
+	for _, watch := range all {
+		if kind == "" || watch.IsReview() == (kind == watches.KindReview) {
+			found = append(found, watch)
+		}
 	}
 	return jsonResponse(map[string]any{"watches": found})
 }
@@ -112,6 +130,9 @@ func (r *Runtime) listWatches(ctx context.Context, workspaceID string) (*plugins
 func (r *Runtime) createWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
 	watch, err := watchFromRequest(workspaceID, watches.Watch{Enabled: true}, body)
 	if err != nil {
+		return nil, err
+	}
+	if err := r.checkForkStep(ctx, watch); err != nil {
 		return nil, err
 	}
 	id, err := watches.NewID()
@@ -133,6 +154,9 @@ func (r *Runtime) updateWatch(ctx context.Context, workspaceID string, body watc
 	}
 	watch, err := watchFromRequest(workspaceID, existing, body)
 	if err != nil {
+		return nil, err
+	}
+	if err := r.checkForkStep(ctx, watch); err != nil {
 		return nil, err
 	}
 	saved, err := r.watchStore.Put(ctx, watch)
@@ -194,6 +218,66 @@ func (r *Runtime) resetWatch(ctx context.Context, workspaceID string, body watch
 	return jsonResponse(map[string]any{"forgotten": forgotten, "watch_id": watch.ID})
 }
 
+func (r *Runtime) cleanupWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
+	watch, err := r.requireWatch(ctx, workspaceID, body.ID)
+	if err != nil {
+		return nil, err
+	}
+	enabled, err := r.integrationEnabled(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if !enabled {
+		return nil, errors.New("kandev-plugin-forgejo: the Forgejo integration is turned off for this workspace")
+	}
+	result, err := r.watchPoller.Cleanup(ctx, watch)
+	if err != nil {
+		return nil, err
+	}
+	refreshed, err := r.watchStore.Get(ctx, workspaceID, watch.ID)
+	if err != nil {
+		return nil, err
+	}
+	return jsonResponse(map[string]any{"result": result, "watch": refreshed})
+}
+
+// checkForkStep refuses a fork step that would start an agent on entry. It is
+// the save-time half of the fork protection; the poller checks again on every
+// run, because a step can be edited after the watch is saved.
+func (r *Runtime) checkForkStep(ctx context.Context, watch watches.Watch) error {
+	if !watch.IsReview() || strings.TrimSpace(watch.ForkWorkflowStepID) == "" {
+		return nil
+	}
+	host := r.Host()
+	if host == nil {
+		return errors.New("kandev-plugin-forgejo: host is unavailable")
+	}
+	steps, err := host.Workflows().ListSteps(ctx, watch.WorkflowID)
+	if err != nil {
+		return fmt.Errorf("kandev-plugin-forgejo: list workflow steps: %w", err)
+	}
+	for _, step := range steps {
+		if step.ID != watch.ForkWorkflowStepID {
+			continue
+		}
+		if startsAgent(step) {
+			return errors.New("kandev-plugin-forgejo: the fork step starts an agent when a task enters it; choose a step that does not")
+		}
+		return nil
+	}
+	return errors.New("kandev-plugin-forgejo: the fork step is not in the watch's workflow")
+}
+
+// startsAgent reports whether entering a step launches an agent.
+func startsAgent(step pluginsdk.WorkflowStep) bool {
+	for _, action := range step.OnEnterActionTypes {
+		if action == "auto_start_agent" {
+			return true
+		}
+	}
+	return false
+}
+
 // watchOptions serves the configuration form's pickers. Without these the
 // operator has no way to name a workflow step or a profile, and a watch has
 // nowhere to put the task it creates.
@@ -219,6 +303,8 @@ func (r *Runtime) watchOptions(ctx context.Context, workspaceID string) (*plugin
 			renderedSteps = append(renderedSteps, map[string]any{
 				"id": step.ID, "name": step.Name, "position": step.Position,
 				"is_start_step": step.IsStartStep,
+				// The fork picker offers only steps that do not start an agent.
+				"auto_starts_agent": startsAgent(step),
 			})
 		}
 		rendered = append(rendered, map[string]any{
@@ -259,6 +345,10 @@ func (r *Runtime) watchOptions(ctx context.Context, workspaceID string) (*plugin
 		"default_interval":     int(watches.DefaultPollInterval.Seconds()),
 		"min_interval":         int(watches.MinPollInterval.Seconds()),
 		"default_max_inflight": watches.DefaultMaxInflightTasks,
+		// Review watches.
+		"min_review_interval":   int(watches.MinReviewPollInterval.Seconds()),
+		"default_review_prompt": watches.DefaultReviewPrompt,
+		"archive_granted":       watches.ArchiveGranted(ctx, host, workspaceID),
 	})
 }
 
@@ -283,6 +373,22 @@ func (r *Runtime) requireWatch(ctx context.Context, workspaceID, id string) (wat
 func watchFromRequest(workspaceID string, base watches.Watch, body watchRequest) (watches.Watch, error) {
 	watch := base
 	watch.WorkspaceID = workspaceID
+
+	// A watch's kind is fixed when it is created. Changing it would reinterpret
+	// the filters and the ledger it already has.
+	if base.ID == "" {
+		watch.Kind = body.Kind
+	} else if body.Kind != "" && body.Kind != watches.Kind(effectiveKind(base)) {
+		return watches.Watch{}, errors.New("kandev-plugin-forgejo: a watch's kind cannot be changed")
+	}
+	if body.ReviewScope != "" {
+		watch.ReviewScope = body.ReviewScope
+	}
+	if body.CleanupPolicy != "" {
+		watch.CleanupPolicy = body.CleanupPolicy
+	}
+	assignPtr(&watch.IncludeDrafts, body.IncludeDrafts)
+	assignPtr(&watch.ForkWorkflowStepID, body.ForkWorkflowStepID)
 
 	assignString(&watch.Name, body.Name)
 	assignString(&watch.WorkflowID, body.WorkflowID)
@@ -330,6 +436,13 @@ func watchFromRequest(workspaceID string, base watches.Watch, body watchRequest)
 		watch.Repos = repos
 	}
 	return watch, nil
+}
+
+func effectiveKind(watch watches.Watch) string {
+	if watch.IsReview() {
+		return string(watches.KindReview)
+	}
+	return string(watches.KindIssue)
 }
 
 // assignPtr writes *value onto target when the body carried the field, empty

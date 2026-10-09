@@ -100,7 +100,7 @@ func NewRuntime() *Runtime {
 		watches.HostProvider(hosts),
 		forgejo.NewIssueSource(connection),
 		runtime.integrationEnabled,
-	)
+	).WithReviews(forgejo.NewReviewSource(connection))
 	runtime.extension = &sourcecontrol.Extension{
 		ProviderID:           ProviderID,
 		ReferenceSource:      ReferenceSource,
@@ -137,7 +137,7 @@ func (r *Runtime) HandleAction(ctx context.Context, request *pluginsdk.PluginAct
 		sourcecontrol.ActionChangeRequestsUpdateBranch, sourcecontrol.ActionChangeRequestsComment:
 		return r.handlePullAction(ctx, request)
 	case ActionWatchesList, ActionWatchesOptions, ActionWatchesCreate, ActionWatchesUpdate,
-		ActionWatchesDelete, ActionWatchesRun, ActionWatchesReset:
+		ActionWatchesDelete, ActionWatchesRun, ActionWatchesReset, ActionWatchesCleanup:
 		// Watch management stays reachable while the integration is off, so an
 		// operator can see and edit what will resume when they turn it back on.
 		// The poller and the manual run both refuse separately, which is where

@@ -121,3 +121,50 @@ func TestValidate(t *testing.T) {
 	}
 	require.Error(t, watch.Validate())
 }
+
+func TestNormalizeReviewWatch(t *testing.T) {
+	t.Parallel()
+	watch := Watch{Kind: KindReview, PollIntervalSeconds: 45, DedupScope: DedupScopeWorkspace, State: "all"}
+	watch.Normalize()
+	require.Equal(t, ReviewScopeUserAndTeams, watch.ReviewScope, "the search's own scope is the default")
+	require.Equal(t, CleanupNever, watch.CleanupPolicy, "cleanup is opt-in")
+	require.Equal(t, 60, watch.PollIntervalSeconds, "the review floor is higher than the issue floor")
+	require.Equal(t, DedupScopeWatch, watch.DedupScope)
+	require.Equal(t, "open", watch.State)
+
+	watch = Watch{Kind: KindReview, ReviewScope: "nonsense", CleanupPolicy: "auto"}
+	watch.Normalize()
+	require.Equal(t, ReviewScopeUserAndTeams, watch.ReviewScope)
+	require.Equal(t, CleanupNever, watch.CleanupPolicy, "an unknown policy never cleans up")
+	require.Equal(t, int(DefaultPollInterval.Seconds()), watch.PollIntervalSeconds)
+
+	watch = Watch{Kind: KindReview, ReviewScope: ReviewScopeUser, CleanupPolicy: CleanupWhenClosed, PollIntervalSeconds: 600}
+	watch.Normalize()
+	require.Equal(t, ReviewScopeUser, watch.ReviewScope)
+	require.Equal(t, CleanupWhenClosed, watch.CleanupPolicy)
+	require.Equal(t, 600, watch.PollIntervalSeconds)
+}
+
+func TestNormalizeIssueWatchDropsReviewFields(t *testing.T) {
+	t.Parallel()
+	watch := Watch{Kind: "bogus", ReviewScope: ReviewScopeUser, IncludeDrafts: true, CleanupPolicy: CleanupWhenClosed,
+		ForkWorkflowStepID: "s", LastCleanupNote: "n", PollIntervalSeconds: 30}
+	watch.Normalize()
+	require.Equal(t, Kind(""), watch.Kind)
+	require.Empty(t, watch.ReviewScope)
+	require.False(t, watch.IncludeDrafts)
+	require.Empty(t, watch.CleanupPolicy)
+	require.Empty(t, watch.ForkWorkflowStepID)
+	require.Empty(t, watch.LastCleanupNote)
+	require.Equal(t, 30, watch.PollIntervalSeconds, "the issue floor is unchanged")
+}
+
+func TestReviewWatchNeedsNoRepositories(t *testing.T) {
+	t.Parallel()
+	watch := sampleReviewWatch("ws-1")
+	watch.Normalize()
+	require.NoError(t, watch.Validate(), "no repositories means every repository the token can see")
+	issueWatch := sampleWatch("ws-1")
+	issueWatch.Normalize()
+	require.Error(t, issueWatch.Validate())
+}

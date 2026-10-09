@@ -64,6 +64,49 @@ const (
 	DedupScopeWorkspace DedupScope = "workspace"
 )
 
+// Kind says what a watch files tasks for.
+type Kind string
+
+const (
+	// KindIssue files a task per matching issue. It is the zero value's
+	// meaning: every record written before review watches existed has no kind.
+	KindIssue Kind = "issue"
+	// KindReview files a task per pull request awaiting the token user's
+	// review.
+	KindReview Kind = "review"
+)
+
+// ReviewScope decides whose review requests a review watch follows.
+type ReviewScope string
+
+const (
+	// ReviewScopeUserAndTeams follows a request addressed to the token's user
+	// or to any team the user belongs to. It is what the instance's own
+	// review-requested search returns, and the default.
+	ReviewScopeUserAndTeams ReviewScope = "user_and_teams"
+	// ReviewScopeUser follows only a request addressed to the user by name.
+	// The search cannot express that, so it is checked per new pull request.
+	ReviewScopeUser ReviewScope = "user"
+)
+
+// CleanupPolicy decides what happens to a review watch's task once its pull
+// request is merged or closed.
+type CleanupPolicy string
+
+const (
+	// CleanupNever leaves the task alone and makes no provider request for it.
+	CleanupNever CleanupPolicy = "never"
+	// CleanupWhenClosed archives the task when its pull request is merged or
+	// closed, or completes it when the host will not archive. A task is never
+	// deleted: a plugin cannot, and the card is the record of the review.
+	CleanupWhenClosed CleanupPolicy = "when_closed"
+)
+
+// MinReviewPollInterval is the floor for a review watch. Its poll is one
+// instance-wide search plus a request per new pull request, which is heavier
+// than an issue watch's per-repository list.
+const MinReviewPollInterval = 60 * time.Second
+
 // RepoRef names one repository on the connected instance.
 type RepoRef struct {
 	Owner string `json:"owner"`
@@ -142,13 +185,30 @@ type Watch struct {
 	MaxInflightTasks    int        `json:"max_inflight_tasks"`
 	DedupScope          DedupScope `json:"dedup_scope"`
 
+	// Review watches only. Every field is omitted from an issue watch's record,
+	// so an issue watch is stored exactly as it was before review watches.
+	Kind Kind `json:"kind,omitempty"`
+	// ReviewScope is user_and_teams unless the operator narrowed it.
+	ReviewScope ReviewScope `json:"review_scope,omitempty"`
+	// IncludeDrafts also files draft pull requests. Off by default: a draft is
+	// not asking for a review yet.
+	IncludeDrafts bool `json:"include_drafts,omitempty"`
+	// CleanupPolicy is never unless the operator opted in.
+	CleanupPolicy CleanupPolicy `json:"cleanup_policy,omitempty"`
+	// ForkWorkflowStepID is where a pull request from a fork lands. The step
+	// must not start an agent on entry; see the fork handling in the poller.
+	ForkWorkflowStepID string `json:"fork_workflow_step_id,omitempty"`
+
 	// Observability. These mirror the native watch columns and are what the
 	// panel shows when a watch stops working.
 	LastPolledAt string `json:"last_polled_at,omitempty"`
 	LastError    string `json:"last_error,omitempty"`
 	LastErrorAt  string `json:"last_error_at,omitempty"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	// LastCleanupNote says what the last cleanup could not do, for example that
+	// the host has not granted archiving and tasks were completed instead.
+	LastCleanupNote string `json:"last_cleanup_note,omitempty"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
 }
 
 // PollInterval returns the configured interval, clamped into the supported
@@ -157,8 +217,12 @@ type Watch struct {
 // watch scheduled slightly differently from what a hand-edited record asked.
 func (w Watch) PollInterval() time.Duration {
 	interval := time.Duration(w.PollIntervalSeconds) * time.Second
+	floor := MinPollInterval
+	if w.IsReview() {
+		floor = MinReviewPollInterval
+	}
 	switch {
-	case interval < MinPollInterval:
+	case interval < floor:
 		return DefaultPollInterval
 	case interval > MaxPollInterval:
 		return MaxPollInterval
@@ -166,6 +230,9 @@ func (w Watch) PollInterval() time.Duration {
 		return interval
 	}
 }
+
+// IsReview reports whether this is a review watch.
+func (w Watch) IsReview() bool { return w.Kind == KindReview }
 
 // DueAt reports when this watch should next poll, given its last successful
 // poll. A watch that has never polled is due immediately.
@@ -203,7 +270,10 @@ func (w *Watch) Normalize() {
 		w.State = "open"
 	}
 
-	if w.DedupScope != DedupScopeWorkspace {
+	// A pull request and an issue share one number space per repository, so a
+	// workspace-wide ledger would be sound, but GitHub's review watches are
+	// per-watch and two review watches overlapping is the operator's call.
+	if w.DedupScope != DedupScopeWorkspace || w.IsReview() {
 		w.DedupScope = DedupScopeWatch
 	}
 	if w.PollIntervalSeconds <= 0 {
@@ -212,6 +282,7 @@ func (w *Watch) Normalize() {
 	if w.MaxInflightTasks <= 0 {
 		w.MaxInflightTasks = DefaultMaxInflightTasks
 	}
+	w.normalizeKind()
 
 	labels := make([]string, 0, len(w.Labels))
 	seen := map[string]struct{}{}
@@ -245,6 +316,28 @@ func (w *Watch) Normalize() {
 	w.Repos = repos
 }
 
+// normalizeKind canonicalizes the review-only fields. An issue watch carries
+// none of them, so a stray value on one never reaches the store.
+func (w *Watch) normalizeKind() {
+	if w.Kind != KindReview {
+		w.Kind = ""
+		w.ReviewScope, w.IncludeDrafts, w.CleanupPolicy, w.ForkWorkflowStepID = "", false, "", ""
+		w.LastCleanupNote = ""
+		return
+	}
+	if w.ReviewScope != ReviewScopeUser {
+		w.ReviewScope = ReviewScopeUserAndTeams
+	}
+	if w.CleanupPolicy != CleanupWhenClosed {
+		w.CleanupPolicy = CleanupNever
+	}
+	w.ForkWorkflowStepID = strings.TrimSpace(w.ForkWorkflowStepID)
+	w.State = "open"
+	if time.Duration(w.PollIntervalSeconds)*time.Second < MinReviewPollInterval {
+		w.PollIntervalSeconds = int(MinReviewPollInterval / time.Second)
+	}
+}
+
 // Validate reports why a watch cannot be saved, or nil.
 //
 // Placement is required because a task with no workflow step has nowhere to
@@ -262,7 +355,7 @@ func (w Watch) Validate() error {
 		return errors.New("watches: a workflow is required")
 	case w.WorkflowStepID == "":
 		return errors.New("watches: a workflow step is required")
-	case len(w.Repos) == 0:
+	case len(w.Repos) == 0 && !w.IsReview():
 		return errors.New("watches: at least one repository is required")
 	case len(w.Repos) > maxReposPerWatch:
 		return fmt.Errorf("watches: a watch covers at most %d repositories", maxReposPerWatch)
