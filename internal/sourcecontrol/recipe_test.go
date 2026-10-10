@@ -626,3 +626,27 @@ func TestAssociationRefreshReturnsCompleteImmutableIdentities(t *testing.T) {
 	require.Equal(t, associations[0].RepositoryID, body.Associations[0].RepositoryID)
 	require.Equal(t, associations[0].ChangeRequestNumber, body.Associations[0].ChangeRequestNumber)
 }
+
+// The host masks a Go error as "plugin action unavailable"; a malformed body
+// has to say what is wrong, with a status the host passes through.
+func TestLinkAndUnlinkRejectMalformedBodiesWith422(t *testing.T) {
+	t.Parallel()
+	extension := &Extension{ProviderID: "acme", ChangeRequests: &changeRequestStub{}, Associations: &associationStub{}}
+	for name, tc := range map[string]struct{ key, body, want string }{
+		"missing reference": {ActionChangeRequestsLink, `{"url":"x"}`, "reference is required"},
+		"wrong type":        {ActionChangeRequestsLink, `{"reference":5}`, "reference"},
+		"unlink wrong type": {ActionChangeRequestsUnlink, `{"number":"x"}`, "unlink body"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			response, err := extension.HandleAction(context.Background(), &pluginsdk.PluginActionRequest{
+				ActionKey: tc.key,
+				Context:   pluginsdk.VerifiedActionContext{WorkspaceID: "workspace-1", TaskID: "task-1"},
+				Body:      []byte(tc.body),
+			})
+			require.NoError(t, err)
+			require.Equal(t, 422, response.Status)
+			require.Contains(t, string(response.Body), tc.want)
+		})
+	}
+}

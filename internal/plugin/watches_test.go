@@ -602,3 +602,40 @@ func TestWatchRefusalsCarryAStatusAndAMessage(t *testing.T) {
 	require.Equal(t, http.StatusUnprocessableEntity, status)
 	require.Contains(t, message, "owner/name")
 }
+
+func TestWatchBodyErrorsNameTheFieldAndTravelAs422(t *testing.T) {
+	t.Parallel()
+	runtime, _ := newWatchRuntime(t)
+	response, err := runtime.HandleAction(context.Background(), &pluginsdk.PluginActionRequest{
+		ActionKey: ActionWatchesCreate,
+		Context:   pluginsdk.VerifiedActionContext{WorkspaceID: "ws-1"},
+		Body:      []byte(`{"name":"x","labels":"bug"}`),
+	})
+	require.NoError(t, err, "a Go error would be masked as plugin action unavailable")
+	require.Equal(t, http.StatusUnprocessableEntity, response.Status)
+	require.Contains(t, string(response.Body), "labels")
+
+	response, err = runtime.HandleAction(context.Background(), &pluginsdk.PluginActionRequest{
+		ActionKey: ActionWatchesCreate,
+		Context:   pluginsdk.VerifiedActionContext{WorkspaceID: "ws-1"},
+		Body:      []byte(`{not json`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusUnprocessableEntity, response.Status)
+}
+
+// watches.list returns repositories as objects; they must be accepted back.
+func TestRepositoriesAcceptTheShapeListReturns(t *testing.T) {
+	t.Parallel()
+	runtime, _ := newWatchRuntime(t)
+	created := createdWatch(t, runtime, reviewBody(map[string]any{
+		"repos": []any{map[string]any{"owner": "acme", "name": "web"}, "acme/api"},
+	}))
+	require.Equal(t, []any{
+		map[string]any{"owner": "acme", "name": "web"},
+		map[string]any{"owner": "acme", "name": "api"},
+	}, created["repos"])
+	updated, err := watchAction(t, runtime, ActionWatchesUpdate, "ws-1", map[string]any{"id": created["id"], "repos": created["repos"]})
+	require.NoError(t, err)
+	require.Equal(t, created["repos"], updated["watch"].(map[string]any)["repos"])
+}

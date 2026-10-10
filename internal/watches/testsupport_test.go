@@ -26,6 +26,7 @@ type fakeHost struct {
 	steps     map[string][]pluginsdk.WorkflowStep
 	updated   []pluginsdk.UpdateTaskInput
 	stepsErr  error
+	landAt    string // when set, created tasks end up in this step, as if automation moved them
 	updateErr error
 
 	nextTaskID int
@@ -159,6 +160,9 @@ func (t fakeTasks) Create(_ context.Context, in pluginsdk.CreateTaskInput) (*plu
 		Description:    in.Description,
 		WorkflowStepID: derefString(in.WorkflowStepID),
 		Metadata:       in.Metadata,
+	}
+	if t.host.landAt != "" {
+		task.WorkflowStepID = t.host.landAt
 	}
 	t.host.created = append(t.host.created, in)
 	t.host.tasks = append(t.host.tasks, task)

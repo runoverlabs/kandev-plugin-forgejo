@@ -36,7 +36,9 @@ func TestSearchReviewRequestsAsksTheInstanceForMyRequests(t *testing.T) {
 	var query map[string][]string
 	api.handleFunc(http.MethodGet, "/api/v1/repos/issues/search", func(w http.ResponseWriter, r *http.Request) {
 		query = r.URL.Query()
-		_ = json.NewEncoder(w).Encode([]any{searchHit(4, "acme/web")})
+		hit := searchHit(4, "acme/web")
+		hit["labels"] = []any{map[string]any{"name": "Needs-Review"}, map[string]any{"name": "ui"}}
+		_ = json.NewEncoder(w).Encode([]any{hit})
 	})
 	found, err := newReviewSource(t, api).SearchReviewRequests(context.Background(), watches.ReviewQuery{
 		Labels: []string{"needs-review", "ui"}, Query: "export",
@@ -278,4 +280,20 @@ func TestPullStateReadsMergedClosedAndOpen(t *testing.T) {
 			require.Equal(t, tc.want, state)
 		})
 	}
+}
+
+// The instance ignores a label name it does not know rather than matching
+// nothing, so a typo would otherwise match every pull request.
+func TestSearchReviewRequestsChecksLabelsItself(t *testing.T) {
+	t.Parallel()
+	api := newAPIServer(t)
+	labelled := searchHit(1, "acme/web")
+	labelled["labels"] = []any{map[string]any{"name": "ui"}}
+	api.handle(http.MethodGet, "/api/v1/repos/issues/search", http.StatusOK, []any{labelled, searchHit(2, "acme/web")})
+	found, err := newReviewSource(t, api).SearchReviewRequests(context.Background(), watches.ReviewQuery{Labels: []string{"ui"}})
+	require.NoError(t, err)
+	require.Len(t, found, 1)
+	found, err = newReviewSource(t, api).SearchReviewRequests(context.Background(), watches.ReviewQuery{Labels: []string{"nolabel-xyz"}})
+	require.NoError(t, err)
+	require.Empty(t, found)
 }

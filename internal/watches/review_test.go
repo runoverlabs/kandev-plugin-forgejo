@@ -484,3 +484,31 @@ func TestAFailedTaskStillGetsCleanedUp(t *testing.T) {
 	rig.finish(7, PullMerged)
 	require.Equal(t, 1, rig.run(t).Completed)
 }
+
+func TestForkTaskMovedByAutomationIsReported(t *testing.T) {
+	t.Parallel()
+	rig := newReviewRig(t)
+	rig.host.landAt = "step-run"
+	rig.reviews.add("acme/web", 3, forkPR("From a fork"))
+	result, err := rig.poller.RunWatch(context.Background(), rig.watch)
+	require.NoError(t, err)
+	require.Len(t, result.Errors, 1)
+	require.Contains(t, result.Errors[0], "moved by workflow automation")
+
+	// A same-repository task is the operator's own placement: no read-back.
+	rig2 := newReviewRig(t)
+	rig2.host.landAt = "step-run"
+	rig2.reviews.add("acme/web", 4, openPR("Same repo"))
+	result, err = rig2.poller.RunWatch(context.Background(), rig2.watch)
+	require.NoError(t, err)
+	require.Empty(t, result.Errors)
+}
+
+func TestEveryRunLaunchingActionMakesAStepUnsafeForForks(t *testing.T) {
+	t.Parallel()
+	for _, action := range []string{"auto_start_agent", "queue_run", "queue_run_for_each_participant", "run_code_review"} {
+		require.True(t, StartsAgent([]string{"notify", action}), action)
+	}
+	require.False(t, StartsAgent([]string{"enable_plan_mode", "set_session_mode", "notify"}))
+	require.False(t, StartsAgent(nil))
+}

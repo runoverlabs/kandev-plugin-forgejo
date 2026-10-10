@@ -62,7 +62,7 @@ type watchRequest struct {
 	StartAgent          *bool                 `json:"start_agent"`
 	RepositoryID        *string               `json:"repository_id"`
 	BaseBranch          *string               `json:"base_branch"`
-	Repos               []string              `json:"repos"`
+	Repos               []repoInput           `json:"repos"`
 	Labels              []string              `json:"labels"`
 	State               string                `json:"state"`
 	Query               *string               `json:"query"`
@@ -89,6 +89,28 @@ type watchRefusal struct {
 func (e watchRefusal) Error() string { return "kandev-plugin-forgejo: " + e.message }
 
 func refuse(status int, message string) error { return watchRefusal{status: status, message: message} }
+
+// repoInput is one repository in a request: "owner/name", or the
+// {"owner","name"} object watches.list returns, so a watch read back can be
+// written back unchanged.
+type repoInput string
+
+func (r *repoInput) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		*r = repoInput(text)
+		return nil
+	}
+	var object struct {
+		Owner string `json:"owner"`
+		Name  string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &object); err != nil {
+		return err
+	}
+	*r = repoInput(object.Owner + "/" + object.Name)
+	return nil
+}
 
 // handleWatchAction routes the watch actions, turning an operator-actionable
 // failure into a response with its own status.
@@ -120,7 +142,13 @@ func (r *Runtime) routeWatchAction(ctx context.Context, request *pluginsdk.Plugi
 	var body watchRequest
 	if len(request.Body) > 0 {
 		if err := json.Unmarshal(request.Body, &body); err != nil {
-			return nil, fmt.Errorf("kandev-plugin-forgejo: decode watch body: %w", err)
+			// Say which field, not the whole decoder error: it can echo input.
+			var typeErr *json.UnmarshalTypeError
+			if errors.As(err, &typeErr) && typeErr.Field != "" {
+				return domainResponse(http.StatusUnprocessableEntity,
+					"kandev-plugin-forgejo: the field "+typeErr.Field+" has the wrong type")
+			}
+			return domainResponse(http.StatusUnprocessableEntity, "kandev-plugin-forgejo: the request body is not valid JSON")
 		}
 	}
 
@@ -305,12 +333,7 @@ func (r *Runtime) checkForkStep(ctx context.Context, watch watches.Watch) error 
 
 // startsAgent reports whether entering a step launches an agent.
 func startsAgent(step pluginsdk.WorkflowStep) bool {
-	for _, action := range step.OnEnterActionTypes {
-		if action == "auto_start_agent" {
-			return true
-		}
-	}
-	return false
+	return watches.StartsAgent(step.OnEnterActionTypes)
 }
 
 // watchOptions serves the configuration form's pickers. Without these the
@@ -455,10 +478,10 @@ func watchFromRequest(workspaceID string, base watches.Watch, body watchRequest)
 	if body.Repos != nil {
 		repos := make([]watches.RepoRef, 0, len(body.Repos))
 		for _, raw := range body.Repos {
-			if strings.TrimSpace(raw) == "" {
+			if strings.TrimSpace(string(raw)) == "" {
 				continue
 			}
-			ref, err := watches.ParseRepoRef(raw)
+			ref, err := watches.ParseRepoRef(string(raw))
 			if err != nil {
 				return watches.Watch{}, err
 			}
