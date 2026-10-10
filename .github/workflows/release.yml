@@ -90,3 +90,5 @@ jobs:
         with:
           files: kandev-plugin-forgejo/kandev-plugin-forgejo-${{ env.version }}.tar.gz
           body_path: ${{ runner.temp }}/notes.md
+          # A version with a hyphen (0.4.0-rc.1) is a pre-release.
+          prerelease: ${{ contains(env.version, '-') }}
