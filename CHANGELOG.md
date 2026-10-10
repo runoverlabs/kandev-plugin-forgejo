@@ -2,7 +2,14 @@
 
 ## Unreleased
 
-- Found by the first real-installation run of 0.4.0-rc.1:
+## 0.4.0
+
+Pull request actions (merge, review, request reviewers, comment, update branch)
+in the review panel and as agent tools, and review watches with cleanup. Adds no
+capability, so there is no re-approval prompt. Verified against Gitea 1.20 and
+1.27 and Forgejo 7 and 16, and on a real Kandev 0.97.0.
+
+- Fixed after the first real-installation run of 0.4.0-rc.1:
   - A watch labelled with a name no issue carries matched every issue, because
     Forgejo and Gitea ignore an unknown label name instead of matching nothing.
     Issue and review watches now check the labels each result really carries.
@@ -15,12 +22,6 @@
     `queue_run`, `queue_run_for_each_participant` or `run_code_review`, not only
     `auto_start_agent`, and reports a fork task that workflow automation moved out
     of the column it was filed in.
-
-## 0.4.0-rc.1
-
-Release candidate for 0.4. Pull request actions in the review panel and as agent
-tools, and review watches with cleanup. Needs no new capability, so no
-re-approval; it does need the manual checks in `docs/testing-on-kandev.md`.
 
 - A merge blocked by required approvals is now reported as branch protection.
   Every host answers it with 405 and `not allowed to merge [reason: …]`, which
