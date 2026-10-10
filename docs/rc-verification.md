@@ -97,7 +97,7 @@ Run on a repository with labelled issues.
 
 1. Create a watch with a label no issue carries; **Run now**. Pass: `0 matched,
    0 created`, no error.
-2. Label one issue; **Run now**. Pass: exactly one card in the chosen column;
+2. A label no issue carries must match **nothing** (rc.1 matched everything; fixed after rc.1). Label one issue; **Run now**. Pass: exactly one card in the chosen column;
    its `source` is `plugin:kandev-plugin-forgejo`.
 3. **Run now** again. Pass: `0 created, 1 already tracked`, no second card.
 4. **Forget history**, run: exactly one new card.
@@ -122,12 +122,12 @@ request URL or `owner/repo#N`). Open the task and the **Review** panel from the
 | Check | Pass |
 | --- | --- |
 | Details | Author, branches, line counts, description, reviews, checks and comments are the real ones; merge and review controls show "as <account>". |
-| Conflict | A PR with a conflict shows "This branch has conflicts that must be resolved." with merge disabled. A clean PR has merge enabled, labelled with the repository's primary style; the caret lists only the styles the repository allows. |
+| Conflict | Mergeability is computed asynchronously: right after a PR is opened `mergeable` is `null` and `blockers` empty, on purpose, so the panel stays quiet rather than flashing "not mergeable". Re-read after a few seconds. A PR with a conflict then shows "This branch has conflicts that must be resolved." with merge disabled. A clean PR has merge enabled, labelled with the repository's primary style; the caret lists only the styles the repository allows. |
 | Review | The dialog submits approve / request changes / comment, with an inline comment row. A "Review submitted" toast appears and the review is listed (`COMMENT` shows as "Commented"). Self-approval is refused with a readable message. |
 | Comment | Appears on Forgejo and ends with "Posted via Kandev." |
 | Merge | Squash merge with "Delete branch" ticked: toast, state flips to merged, controls disappear; Forgejo shows it merged and the branch gone. |
 | Stale head | Open the panel, push a new commit to the PR on Forgejo, then merge in the panel. Refused with a message; the panel reloads. |
-| Audit | `A connection.audit` (no taskId) lists each write with the verified actor, number, action and outcome, and **no text**. |
+| Audit | `A connection.audit` (no taskId) lists each write with the verified Kandev actor (the signed-in Kandev user, `default-user` on a single-user install; `agent:<session>` for an agent), number, action and outcome, and **no text**. The Forgejo account is the connection's, shown by `connection.get`; it is not repeated per entry. |
 | Agent merge | Settings: "Let agents merge pull requests" is off by default and survives a reload. |
 
 ### Agent tool (needs an agent session on the task)
@@ -161,7 +161,7 @@ agents, `fork_workflow_step_id` set to another non-starting column,
 | Check | Pass |
 | --- | --- |
 | Discovery | `matched: 3, created: 2, drafts: 1`. Titles read `PR #N: …`. The description has the prompt with number, title, link, author, repo and branches filled in, and no `{{`. |
-| Placement | The same-repo card is in the main column; the fork card is in the fork column and carries `forgejo_fork: true` in its plugin metadata. **No agent session started for either.** |
+| Placement | The same-repo card is in the main column; the fork card is in the fork column and carries `forgejo_fork: true` in its plugin metadata. The plugin passes the configured column to Kandev, but Kandev applies that column's own on_enter actions and workflow rules, which can move a card on or start an agent. If a card lands elsewhere than configured, read the column's actions in the workflow before suspecting the plugin; for a fork card the watch also reports "moved by workflow automation" in its last error. **No agent session started for the fork card.** |
 | Idempotence | Run again: `created: 0, duplicates: 2`. |
 | Drafts | Turn on "Include draft pull requests", run: the draft is filed. |
 | Answering | Approve a PR as `kandev` (or a second reviewer): it stops matching on the next run. |
@@ -169,7 +169,7 @@ agents, `fork_workflow_step_id` set to another non-starting column,
 | Fork guard, save time | `watches.create` with `fork_workflow_step_id` set to a column that starts agents is refused with **422** and "starts an agent". |
 | Fork guard, run time | Make the **main** column start agents and clear the fork column: a fork PR is left out and counted (`skipped_forks: 1`); a same-repo PR is still filed. |
 | Checkout (needs a Kandev repository attached to the watch) | A same-repo task has the PR's head branch checked out; a fork task has the repository but **not** the fork's branch. |
-| Errors | Each refusal above arrives as its own status and message, never "plugin action unavailable". |
+| Errors | Each refusal above arrives as its own status and message, never "plugin action unavailable". That includes a malformed body (`labels` as a string) and a `change_requests.link` body without `reference`. `repos` accepts `"owner/name"` strings or the `{"owner","name"}` objects `watches.list` returns. (Needs a build with PR #26; rc.1 itself returns 503 for these.) |
 | Kinds | `watches.list {"kind":"review"}` and `{"kind":"issue"}` return disjoint sets; `{}` returns both. A watch's kind cannot be changed (422). |
 
 ### Cleanup
