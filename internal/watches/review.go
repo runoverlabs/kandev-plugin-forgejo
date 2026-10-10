@@ -86,6 +86,27 @@ func (p *Poller) WithReviews(source ReviewSource) *Poller {
 // autoStartAction is the workflow step action that launches an agent on entry.
 const autoStartAction = "auto_start_agent"
 
+// launchActions are the on_enter actions that can run an agent when a task
+// enters a step. A step carrying any of them is not a safe place for a fork's
+// task.
+var launchActions = map[string]struct{}{
+	autoStartAction:                  {},
+	"queue_run":                      {},
+	"queue_run_for_each_participant": {},
+	"run_code_review":                {},
+}
+
+// StartsAgent reports whether any of a step's on_enter action types can launch
+// an agent.
+func StartsAgent(actions []string) bool {
+	for _, action := range actions {
+		if _, launches := launchActions[action]; launches {
+			return true
+		}
+	}
+	return false
+}
+
 // DefaultReviewPrompt is the task description for a review watch with no
 // prompt of its own. It follows Kandev's own GitHub review watch.
 const DefaultReviewPrompt = `Review Pull Request #{{pr.number}}: {{pr.title}}
@@ -156,12 +177,7 @@ func (s *steps) autoStarts(ctx context.Context, host pluginsdk.Host, workflowID,
 	if !found {
 		return false, false
 	}
-	for _, action := range actions {
-		if action == autoStartAction {
-			return true, true
-		}
-	}
-	return false, true
+	return StartsAgent(actions), true
 }
 
 // place decides where a pull request's task lands.
@@ -255,6 +271,16 @@ func (p *Poller) pollReviews(ctx context.Context, host pluginsdk.Host, watch Wat
 				candidate.Repo.FullName(), candidate.Number, taskID, err))
 		}
 		result.Created++
+		if detail.Fork {
+			// The placement above only knows the step's own actions. Workflow
+			// automation can still move a card on (an on_enter chain, a rule),
+			// so read the task back and say so if it is not where we put it.
+			if landed, err := host.Tasks().Get(ctx, taskID); err == nil && landed != nil && landed.WorkflowStepID != "" && landed.WorkflowStepID != where.stepID {
+				failures = append(failures, fmt.Sprintf(
+					"%s#%d: the fork task %s was moved by workflow automation out of the column it was filed in; check that column's rules",
+					candidate.Repo.FullName(), candidate.Number, taskID))
+			}
+		}
 	}
 	return append(failures, p.cleanup(ctx, host, watch, result)...)
 }

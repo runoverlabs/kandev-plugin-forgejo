@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -329,7 +330,7 @@ func (e *Extension) unlinkChangeRequest(ctx context.Context, request *pluginsdk.
 		Number          int64  `json:"number"`
 	}
 	if err := json.Unmarshal(request.Body, &input); err != nil {
-		return nil, fmt.Errorf("source-control recipe: decode unlink body: %w", err)
+		return invalidBody("the unlink body must carry connection_scope, repository_id and number")
 	}
 	identity := ChangeRequestIdentity{
 		ConnectionScope: strings.TrimSpace(input.ConnectionScope),
@@ -356,11 +357,11 @@ func (e *Extension) linkChangeRequest(ctx context.Context, request *pluginsdk.Pl
 		Reference string `json:"reference"`
 	}
 	if err := json.Unmarshal(request.Body, &input); err != nil {
-		return nil, fmt.Errorf("source-control recipe: decode link body: %w", err)
+		return invalidBody("the link body must be {\"reference\": \"<url or owner/repo#number>\"}")
 	}
 	input.Reference = strings.TrimSpace(input.Reference)
 	if input.Reference == "" {
-		return nil, errors.New("source-control recipe: change-request reference is required")
+		return invalidBody("a change-request reference is required")
 	}
 	change, err := e.ChangeRequests.ResolveReference(ctx, request.Context.WorkspaceID, input.Reference)
 	if err != nil {
@@ -509,6 +510,18 @@ func (e *Extension) createChangeRequest(ctx context.Context, request *pluginsdk.
 		result["association_error"] = "task association could not be saved"
 	}
 	return jsonResponse(result)
+}
+
+// invalidBody answers a malformed request with a 422 and its reason. The host
+// replaces a Go error with "plugin action unavailable", which would leave a
+// caller guessing which field was wrong.
+func invalidBody(message string) (*pluginsdk.PluginActionResponse, error) {
+	response, err := jsonResponse(map[string]string{"error": message})
+	if err != nil {
+		return nil, err
+	}
+	response.Status = http.StatusUnprocessableEntity
+	return response, nil
 }
 
 func jsonResponse(value any) (*pluginsdk.PluginActionResponse, error) {

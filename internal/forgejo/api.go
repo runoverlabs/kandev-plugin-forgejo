@@ -150,12 +150,13 @@ type SearchReposResponse struct {
 // The endpoint returns issues and pull requests in one shape; `pull_request`
 // is non-nil only for pull requests.
 type IssueSearchResult struct {
-	Number     int64  `json:"number"`
-	Title      string `json:"title"`
-	State      string `json:"state"`
-	HTMLURL    string `json:"html_url"`
-	UpdatedAt  string `json:"updated_at"`
-	User       User   `json:"user"`
+	Number     int64   `json:"number"`
+	Title      string  `json:"title"`
+	State      string  `json:"state"`
+	HTMLURL    string  `json:"html_url"`
+	UpdatedAt  string  `json:"updated_at"`
+	User       User    `json:"user"`
+	Labels     []Label `json:"labels"`
 	Repository *struct {
 		ID       int64  `json:"id"`
 		Name     string `json:"name"`

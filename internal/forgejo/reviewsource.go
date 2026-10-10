@@ -64,6 +64,14 @@ func (s *ReviewSource) SearchReviewRequests(ctx context.Context, q watches.Revie
 			if !ok {
 				continue
 			}
+			// Same guard as for issues: an unknown label name filters nothing.
+			names := make([]string, 0, len(result.Labels))
+			for _, label := range result.Labels {
+				names = append(names, label.Name)
+			}
+			if !hasAllLabels(names, q.Labels) {
+				continue
+			}
 			if len(wanted) > 0 {
 				if _, listed := wanted[strings.ToLower(result.Repository.FullName)]; !listed {
 					continue

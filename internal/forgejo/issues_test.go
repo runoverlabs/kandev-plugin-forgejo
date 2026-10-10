@@ -224,3 +224,30 @@ func TestIssueSourceKeepsPagingWhenAFullPageIsMostlyPullRequests(t *testing.T) {
 	require.Contains(t, numbers, int64(999), "the issue on page two must not be dropped")
 	require.Len(t, issues, maxIssuePageLimit/5+1)
 }
+
+// The instance ignores a label name it does not know rather than matching
+// nothing: a watch labelled with a typo would file every issue.
+func TestListIssuesChecksLabelsItself(t *testing.T) {
+	t.Parallel()
+	api := newAPIServer(t)
+	api.handle(http.MethodGet, "/api/v1/repos/acme/app/issues", http.StatusOK, []map[string]any{
+		{"number": 1, "title": "bug", "labels": []map[string]any{{"name": "Bug"}}},
+		{"number": 2, "title": "unlabelled"},
+	})
+	connection, _ := newTestConnection(t, api, "token-1")
+	source := NewIssueSource(connection)
+	repo := watches.RepoRef{Owner: "acme", Name: "app"}
+
+	issues, err := source.ListIssues(context.Background(), repo, watches.IssueQuery{State: "open", Labels: []string{"bug"}})
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	require.EqualValues(t, 1, issues[0].Number)
+
+	issues, err = source.ListIssues(context.Background(), repo, watches.IssueQuery{State: "open", Labels: []string{"nolabel-xyz"}})
+	require.NoError(t, err)
+	require.Empty(t, issues)
+
+	issues, err = source.ListIssues(context.Background(), repo, watches.IssueQuery{State: "open"})
+	require.NoError(t, err)
+	require.Len(t, issues, 2, "no label filter means no check")
+}

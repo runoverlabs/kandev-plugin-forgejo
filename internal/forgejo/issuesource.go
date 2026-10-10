@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"kandev-plugin-forgejo/internal/watches"
 )
@@ -57,6 +58,12 @@ func (s *IssueSource) ListIssues(ctx context.Context, repo watches.RepoRef, quer
 			return nil, translateIssueError(repo, err)
 		}
 		for _, issue := range issues {
+			// The instance ignores a label name it does not know instead of
+			// matching nothing, so a typo'd label would match every issue.
+			// Check the labels the issue really carries.
+			if !hasAllLabels(issue.LabelNames(), query.Labels) {
+				continue
+			}
 			collected = append(collected, watches.Issue{
 				Number:    issue.Number,
 				Title:     issue.Title,
@@ -92,4 +99,23 @@ func translateIssueError(repo watches.RepoRef, err error) error {
 	default:
 		return fmt.Errorf("could not read issues for %s", repo.FullName())
 	}
+}
+
+// hasAllLabels reports whether have contains every name in want, ignoring case
+// and surrounding space. An empty want matches everything.
+func hasAllLabels(have, want []string) bool {
+	present := make(map[string]struct{}, len(have))
+	for _, name := range have {
+		present[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
+	}
+	for _, name := range want {
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" {
+			continue
+		}
+		if _, ok := present[name]; !ok {
+			return false
+		}
+	}
+	return true
 }
