@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Found by the first real-installation run of 0.4.0-rc.1:
+  - A watch labelled with a name no issue carries matched every issue, because
+    Forgejo and Gitea ignore an unknown label name instead of matching nothing.
+    Issue and review watches now check the labels each result really carries.
+  - A malformed watch body (a wrong type, invalid JSON) and a
+    `change_requests.link` or `.unlink` body with a missing or wrong field came
+    back as 503 "plugin action unavailable". They are now 422 with the reason.
+    `watches.create` and `watches.update` also accept `repos` as the
+    `{owner, name}` objects `watches.list` returns.
+  - The fork guard now also refuses a column whose on_enter actions include
+    `queue_run`, `queue_run_for_each_participant` or `run_code_review`, not only
+    `auto_start_agent`, and reports a fork task that workflow automation moved out
+    of the column it was filed in.
+
 ## 0.4.0-rc.1
 
 Release candidate for 0.4. Pull request actions in the review panel and as agent
