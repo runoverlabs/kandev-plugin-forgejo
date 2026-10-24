@@ -24,7 +24,7 @@ Read [`README.md`](README.md) first for the conventions every plan follows.
 
 - Registering the webhook on the instance through the API (see "Who registers
   the webhook"). The operator creates it by hand.
-- Organisation and system hooks in the first version (see decision 3).
+- Organisation and system hooks: [#28](https://github.com/runoverlabs/kandev-plugin-forgejo/issues/28).
 - Issue and issue-comment conditions. Issue watches cover discovery; add them
   later if someone asks.
 - Feeding these events into the plugin's own pollers (watches, #8). That needs a
@@ -146,9 +146,9 @@ In order. Nothing is parsed before the signature passes.
 5. Parse. A body that is not a JSON object, or lacks the fields the condition
    needs, is `malformed`.
 6. Repository. The payload's `repository.full_name` (case-insensitive) must equal
-   the configured repository, otherwise `rejected`: a correctly signed delivery
-   from another repository means the hook was put on the wrong repository, and a
-   401 shows up in Forgejo's delivery log where the operator will look.
+   the configured repository, otherwise `ignored`. The delivery is correctly
+   signed, so it is not an authentication failure; the hook was put on another
+   repository. The host's receipts list still shows it as ignored.
 7. Workspace switch off (`connection.set_enabled`): `ignored`.
 8. Filters: `ignored` on a miss, `accepted` with the normalized data on a match.
 
@@ -163,7 +163,9 @@ testable without HTTP, and means a slow instance cannot hold webhook deliveries.
 - `connection_revision`: the same digest plus the authenticated user's id, taken
   from the `Describe` call, which already probes the instance to validate the
   repository. Changing the instance or the account changes it and fences the old
-  bindings. Rotating the token for the same account does not (see decision 2).
+  bindings. Rotating the token for the same account deliberately does not: the
+  webhook secret does not depend on the token, so a rotation must not break
+  automations.
 
 `Describe` with a configuration: integration enabled, client configured, the
 repository reachable with the token (`GET /repos/{owner}/{repo}`), and the
@@ -238,7 +240,8 @@ Steps 2 to 4 can each be their own pull request.
   split, forks, drafts, tag pushes, branch deletions, `pending` statuses.
 - **Adapter** (plugin package): outcome per verification step in order (a bad
   signature on a body for another repository is `rejected` before anything is
-  parsed), `event_kind` always equals the key, disabled workspace, connection id
+  parsed), a delivery for another repository is `ignored`, `event_kind` always
+  equals the key, disabled workspace, connection id
   mismatch, `Describe` with and without config, and that the secret appears in
   no log line or response (a capturing logger, as the token tests do).
 - **Live contract test**: the instance signs and sends a real delivery and the
@@ -262,14 +265,22 @@ The issue's, restated against this design:
   by default). The README feature table and the changelog are updated.
 - No capability change, `min_kandev_version` unchanged.
 
-## Decisions that need an owner
+## Decisions
+
+Settled:
+
+- A correctly signed delivery for another repository is `ignored`, not
+  `rejected`.
+- `connection_revision` does not change when the token is rotated for the same
+  account.
+- Per-repository hooks first; organisation hooks are
+  [#28](https://github.com/runoverlabs/kandev-plugin-forgejo/issues/28).
+
+Still open:
 
 | # | Decision | Recommendation |
 | --- | --- | --- |
-| 1 | Should a delivery from the wrong repository be `rejected` (401, shows in Forgejo's delivery log) or `ignored` (200, silent) | `rejected`: it is a setup error, and the operator should see it |
-| 2 | Does `connection_revision` include something that changes with the token, so that rotating the token forces every binding to be reconfigured | No. Instance plus account id. Rotating a token should not break automations, and a webhook secret does not depend on the token |
-| 3 | Organisation hooks: one hook for every repository of an org | Later. They carry the same payloads, so it is a config field (`owner` instead of `repository`), but per-repository hooks first |
-| 4 | Pull request events from forks | Ignored unless `include_forks` is set |
+| 4 | Pull request events from forks. Kandev's GitHub `github_pr` trigger does not distinguish forks at all | Ignored unless `include_forks` is set |
 | 5 | `ci_result` source on hosts with Actions run events | Commit status only in the first version; revisit once the capture step shows what `workflow_run` carries |
 
 ## Risks
