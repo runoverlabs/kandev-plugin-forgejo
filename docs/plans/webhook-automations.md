@@ -11,7 +11,8 @@ Read [`README.md`](README.md) first for the conventions every plan follows.
 
 **In**
 
-- Three conditions: `push`, `pull_request`, `ci_result`.
+- Three conditions: `push`, `pull_request`, `ci_result`. The first two serve
+  Forgejo and Gitea; `ci_result` is **Forgejo only** (see "Host support").
 - Mandatory, fail-closed signature verification of each delivery.
 - Filters comparable to the GitHub triggers (repository, branches, events,
   authors, labels, drafts, check names, conclusions), plus fork handling.
@@ -108,7 +109,7 @@ nothing). Defaults are in brackets.
 | --- | --- |
 | `push` | `repository` (required, suggestions), `branches` (globs) |
 | `pull_request` | `repository` (required), `base_branches` (globs), `authors`, `labels`, booleans `on_opened` [true], `on_reopened`, `on_synchronized`, `on_closed`, `on_merged`, `on_review_requested`, `on_commented`, `exclude_draft` [true], `include_forks` [false] |
-| `ci_result` | `repository` (required), `branches` (globs), `contexts` (status context or check names), booleans `on_success`, `on_failure` [true], `on_error` [true] |
+| `ci_result` | `repository` (required), `branches` (globs), `workflows` (workflow file names, e.g. `ci.yml`), booleans `on_success`, `on_failure` [true], `include_forks` [false] |
 
 Matching rules, all in the neutral package:
 
@@ -120,12 +121,13 @@ Matching rules, all in the neutral package:
   A pull request from a fork is `ignored` unless `include_forks` is set: an
   automation that starts an agent on fork-controlled content must be an explicit
   choice, as in review watches.
-- `ci_result`: the commit-status event first. Every CI that reports to Forgejo,
-  Forgejo Actions included, posts a commit status, so this works at each host's
-  supported floor. `pending` is never a result and is `ignored`. Actions
-  `workflow_run` and `workflow_job` events exist only on newer releases; add
-  them later as a second input to the same condition, only once the capture
-  step shows their shape.
+- `ci_result`: Forgejo Actions run events, `action_run_success` and
+  `action_run_failure`. A run from a fork pull request
+  (`run.is_fork_pull_request`) is `ignored` unless `include_forks` is set, for
+  the same reason as pull requests.
+- Fork handling is a per-condition switch in the automation editor, off by
+  default, so an operator who trusts everyone who can open a pull request on
+  their instance can opt in.
 
 ### Verification
 
@@ -184,11 +186,47 @@ the other. Every payload carries `provider` (`forgejo` or `gitea`, for display),
   `title`, `author`, `base_branch`, `head_branch`, `head_sha`, `draft`, `fork`,
   `labels`, `requested_reviewer` (for `on_review_requested`), `comment` (`author`
   and `body`, for `on_commented`).
-- `ci_result`: `state`, `context`, `sha`, `branches`, `target_url`,
-  `description`.
+- `ci_result`: `state` (`success` or `failure`), `workflow`, `run_number`,
+  `title`, `sha`, `ref`, `event` (what triggered the run), `trigger_user`,
+  `fork`. Never the run's `event_payload`: it is the whole triggering event as a
+  string, unbounded, and already reachable through `{{webhook.*}}`.
 
 `data` is untrusted, like `webhook`: the host says so, and the docs should repeat
 it for anyone templating a commit message or PR title into a prompt.
+
+### Host support
+
+Read from each project's `modules/webhook/type.go` and `modules/structs/` at
+the tags named. Still to be confirmed by the capture step.
+
+| | Forgejo 7 to 11 | Forgejo 12 to 16 | Forgejo 17 | Gitea 1.25+ |
+| --- | --- | --- | --- | --- |
+| `push`, `pull_request` | yes | yes | yes | yes |
+| Commit status event | **no** | **no** | **no** | `status` |
+| Actions run events | none | `action_run_{success,failure,recover}` | `action_run_{success,failure}`, plus `workflow_run_*` and `workflow_job_*` per state | `workflow_run`, `workflow_job` (different payloads) |
+
+Consequences:
+
+- **Forgejo cannot report CI by webhook except through Actions run events.**
+  A third-party CI that posts commit statuses (Woodpecker, for instance) cannot
+  feed `ci_result` on Forgejo at all.
+- `action_run_success` and `action_run_failure` are the only CI events common to
+  Forgejo 12 through 17, so they are the first input. `action_run_recover` is
+  gone in 17 and is not used. The payload is `{action, run, prior_status,
+  last_run}`, with the repository inside `run.repository`, not at the top
+  level.
+- Forgejo 17's `workflow_run_*` and `workflow_job_*` events add cancelled,
+  skipped and per-job results. They are a later addition to the same condition,
+  once 17 is in the CI matrix.
+- **`ci_result` does not support Gitea.** Its run events have other names and
+  shapes. This follows the project's direction: target recent Forgejo, and stop
+  supporting Gitea for a feature where supporting it gets in the way. Push and
+  pull request payloads are shared, so those two conditions keep Gitea.
+- `Describe` reports `ci_result` as unavailable with a clear reason when the
+  instance is Gitea or a Forgejo older than 12. Flavor and version come from the
+  existing connection probe. This is the first behaviour that branches on
+  flavor, so `AGENTS.md` ("no behaviour branches on it") changes in the same
+  pull request.
 
 ### Packages
 
@@ -206,21 +244,28 @@ The provider package exposes something like
 
 ## Steps
 
+0. **CI matrix.** The `ci_result` events need Forgejo 12 or later; the matrix
+   has Forgejo 7 and 16. Add Forgejo 17 (and later the newest release each
+   quarter). Whether Forgejo 7 and Gitea 1.20 stay as floors for the rest of the
+   plugin is a separate decision, not made here.
 1. **Capture real deliveries.** Add webhook config to the live CI containers
    (`FORGEJO__webhook__ALLOWED_HOST_LIST=*`, and the `GITEA__` spelling) and a
    live test that runs an `httptest` receiver reachable from the container,
    creates a hook with a known secret, causes a push, a pull request open, sync,
-   label, review request, comment, merge and close, and a commit status, and
+   label, review request, comment, merge and close, and an Actions run that
+   succeeds and one that fails (Forgejo 16 and 17 need a runner, or a run
+   status set through the API if the capture step finds a way), and
    records each request's headers and body. Commit them as `testdata` fixtures,
    one directory per container (Gitea 1.20 and 1.27, Forgejo 7 and 16). Record in
    `docs/development.md`'s "Verified against" table which headers and event
-   types each version sends, and whether `workflow_run` exists. **Settle open
-   questions 3 and 6 of the issue here, before writing the decoders.**
+   types each version sends, and when exactly `action_run_success` fires (every
+   success, or only the first after a failure). **Settle the decoders' input
+   here, before writing them.**
 2. **Verifier and `push`, end to end.** Manifest entry, the neutral package,
    provider decoding, the adapter, `manifest_test.go`, docs and changelog. This is
    the smallest slice a user can try on a real Kandev.
 3. **`pull_request`.**
-4. **`ci_result`** from commit statuses.
+4. **`ci_result`** from Forgejo Actions run events.
 5. **Real-Kandev check** per [`testing-on-kandev.md`](../testing-on-kandev.md):
    build an automation on each condition, configure the binding, paste the secret
    into Forgejo, and see a task created. Then upgrade the plugin and confirm the
@@ -237,7 +282,8 @@ Steps 2 to 4 can each be their own pull request.
   suite fails.
 - **Decoding** against every captured fixture from step 1, per container.
 - **Filters** (neutral package): globs, empty lists, defaults, the merged/closed
-  split, forks, drafts, tag pushes, branch deletions, `pending` statuses.
+  split, forks (pull requests and runs), drafts, tag pushes, branch deletions,
+  workflow names.
 - **Adapter** (plugin package): outcome per verification step in order (a bad
   signature on a body for another repository is `rejected` before anything is
   parsed), a delivery for another repository is `ignored`, `event_kind` always
@@ -253,7 +299,8 @@ Steps 2 to 4 can each be their own pull request.
 The issue's, restated against this design:
 
 - `push`, `pull_request` and `ci_result` are selectable in the automation editor
-  with the filters above.
+  with the filters above; `ci_result` is unavailable, with its reason, on Gitea
+  and on Forgejo before 12.
 - Verification fails closed: no signature, a bad one, or an unknown connection is
   a 401, and nothing is parsed first.
 - A redelivered event does not start a second run (the host's body-hash dedup,
@@ -275,13 +322,11 @@ Settled:
   account.
 - Per-repository hooks first; organisation hooks are
   [#28](https://github.com/runoverlabs/kandev-plugin-forgejo/issues/28).
-
-Still open:
-
-| # | Decision | Recommendation |
-| --- | --- | --- |
-| 4 | Pull request events from forks. Kandev's GitHub `github_pr` trigger does not distinguish forks at all | Ignored unless `include_forks` is set |
-| 5 | `ci_result` source on hosts with Actions run events | Commit status only in the first version; revisit once the capture step shows what `workflow_run` carries |
+- Pull requests and Actions runs from forks are `ignored` unless the
+  condition's `include_forks` switch is on. Kandev's GitHub trigger does not
+  distinguish forks at all; we do.
+- `ci_result` uses Forgejo Actions run events, not commit statuses, and is
+  Forgejo only.
 
 ## Risks
 
@@ -291,6 +336,9 @@ Still open:
 - **Network reachability.** A Forgejo instance on the public internet cannot reach
   a Kandev on a laptop, and Forgejo's default `ALLOWED_HOST_LIST` refuses private
   addresses. Neither can be fixed from the plugin; the docs have to state it.
-- **Unverified provider claims.** Header names, the `_sync` event type split, the
-  status event shape and Gitea 1.20's coverage are taken from documentation and
-  the issue text. Step 1 exists to replace them with captures.
+- **Unverified provider claims.** Header names, the `_sync` event type split and
+  the run event payloads come from reading source, not from a delivery. Step 1
+  exists to replace them with captures.
+- **Run events need a runner to capture.** If a CI container cannot run a real
+  Forgejo Actions job, the `ci_result` fixtures need another way to produce a
+  finished run, or are captured once by hand on a real instance and committed.
