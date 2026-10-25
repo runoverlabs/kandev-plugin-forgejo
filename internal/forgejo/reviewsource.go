@@ -42,10 +42,7 @@ func (s *ReviewSource) SearchReviewRequests(ctx context.Context, q watches.Revie
 	if err != nil {
 		return nil, err
 	}
-	wanted := make(map[string]struct{}, len(q.Repos))
-	for _, repo := range q.Repos {
-		wanted[strings.ToLower(repo.FullName())] = struct{}{}
-	}
+	filter := newReviewFilter(q)
 
 	var found []watches.PullRequest
 	for page := 1; page <= maxReviewPages; page++ {
@@ -59,40 +56,60 @@ func (s *ReviewSource) SearchReviewRequests(ctx context.Context, q watches.Revie
 			return nil, translateReviewError("the review search", err)
 		}
 		for _, result := range results {
-			if result.Repository == nil {
-				continue
+			if pull, ok := filter.match(result); ok {
+				found = append(found, pull)
 			}
-			owner, name, ok := strings.Cut(result.Repository.FullName, "/")
-			if !ok {
-				continue
-			}
-			// Same guard as for issues: an unknown label name filters nothing.
-			names := make([]string, 0, len(result.Labels))
-			for _, label := range result.Labels {
-				names = append(names, label.Name)
-			}
-			if !hasAllLabels(names, q.Labels) {
-				continue
-			}
-			if len(wanted) > 0 {
-				if _, listed := wanted[strings.ToLower(result.Repository.FullName)]; !listed {
-					continue
-				}
-			}
-			found = append(found, watches.PullRequest{
-				Repo:      scm.RepoRef{Owner: owner, Name: name},
-				Number:    result.Number,
-				Title:     result.Title,
-				URL:       result.HTMLURL,
-				Author:    result.User.Login,
-				UpdatedAt: result.UpdatedAt,
-			})
 		}
 		if len(results) < rest.MaxIssuePageLimit {
 			break
 		}
 	}
 	return found, nil
+}
+
+// reviewFilter narrows the instance-wide search to what a watch asked for.
+type reviewFilter struct {
+	labels []string
+	wanted map[string]struct{} // lower-case full names; empty means every repository
+}
+
+func newReviewFilter(q watches.ReviewQuery) reviewFilter {
+	wanted := make(map[string]struct{}, len(q.Repos))
+	for _, repo := range q.Repos {
+		wanted[strings.ToLower(repo.FullName())] = struct{}{}
+	}
+	return reviewFilter{labels: q.Labels, wanted: wanted}
+}
+
+func (f reviewFilter) match(result rest.IssueSearchResult) (watches.PullRequest, bool) {
+	if result.Repository == nil {
+		return watches.PullRequest{}, false
+	}
+	owner, name, ok := strings.Cut(result.Repository.FullName, "/")
+	if !ok {
+		return watches.PullRequest{}, false
+	}
+	// Same guard as for issues: an unknown label name filters nothing.
+	names := make([]string, 0, len(result.Labels))
+	for _, label := range result.Labels {
+		names = append(names, label.Name)
+	}
+	if !hasAllLabels(names, f.labels) {
+		return watches.PullRequest{}, false
+	}
+	if len(f.wanted) > 0 {
+		if _, listed := f.wanted[strings.ToLower(result.Repository.FullName)]; !listed {
+			return watches.PullRequest{}, false
+		}
+	}
+	return watches.PullRequest{
+		Repo:      scm.RepoRef{Owner: owner, Name: name},
+		Number:    result.Number,
+		Title:     result.Title,
+		URL:       result.HTMLURL,
+		Author:    result.User.Login,
+		UpdatedAt: result.UpdatedAt,
+	}, true
 }
 
 // PullDetail reads one pull request for a task about to be filed.

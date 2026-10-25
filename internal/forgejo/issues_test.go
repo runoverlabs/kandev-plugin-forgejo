@@ -221,7 +221,7 @@ func TestIssueSourceKeepsPagingWhenAFullPageIsMostlyPullRequests(t *testing.T) {
 	require.EqualValues(t, 2, atomic.LoadInt32(&pages), "a full raw page means there may be more")
 	numbers := make([]int64, 0, len(issues))
 	for _, issue := range issues {
-		numbers = append(numbers, int64(issue.Number))
+		numbers = append(numbers, issue.Number)
 	}
 	require.Contains(t, numbers, int64(999), "the issue on page two must not be dropped")
 	require.Len(t, issues, rest.MaxIssuePageLimit/5+1)

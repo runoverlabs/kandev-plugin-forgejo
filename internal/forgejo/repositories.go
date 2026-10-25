@@ -218,18 +218,8 @@ func (r *Repositories) ResolveAttached(ctx context.Context, action pluginsdk.Ver
 // repository, re-reading it from the instance so identity and clone URL are
 // provider truth rather than stored display data.
 func (r *Repositories) resolveHostRepository(ctx context.Context, client *rest.Client, repository pluginsdk.Repository) (sourcecontrol.Repository, error) {
-	if id := strings.TrimSpace(repository.ProviderRepositoryID); id != "" {
-		parsed, err := strconv.ParseInt(id, 10, 64)
-		if err == nil && parsed > 0 {
-			repo, err := client.RepoByID(ctx, parsed)
-			if err == nil {
-				if converted, ok := r.toRepository(client, repo); ok {
-					return converted, nil
-				}
-			} else if !errors.Is(err, scm.ErrNotFound) {
-				return sourcecontrol.Repository{}, err
-			}
-		}
+	if converted, found, err := r.resolveByProviderID(ctx, client, repository.ProviderRepositoryID); found || err != nil {
+		return converted, err
 	}
 	// Fall back to the remote URL when Kandev has no provider id recorded,
 	// e.g. a repository added before this plugin was installed.
@@ -246,6 +236,25 @@ func (r *Repositories) resolveHostRepository(ctx context.Context, client *rest.C
 		return sourcecontrol.Repository{}, errors.New("forgejo: repository is missing required identity fields")
 	}
 	return converted, nil
+}
+
+// resolveByProviderID reads a repository by the provider id Kandev recorded.
+// It reports not found when there is no usable id, the instance no longer has
+// that repository, or the record it returns is missing identity fields.
+func (r *Repositories) resolveByProviderID(ctx context.Context, client *rest.Client, providerID string) (sourcecontrol.Repository, bool, error) {
+	parsed, err := strconv.ParseInt(strings.TrimSpace(providerID), 10, 64)
+	if err != nil || parsed <= 0 {
+		return sourcecontrol.Repository{}, false, nil
+	}
+	repo, err := client.RepoByID(ctx, parsed)
+	if errors.Is(err, scm.ErrNotFound) {
+		return sourcecontrol.Repository{}, false, nil
+	}
+	if err != nil {
+		return sourcecontrol.Repository{}, false, err
+	}
+	converted, ok := r.toRepository(client, repo)
+	return converted, ok, nil
 }
 
 // toRepository converts a provider repo into the credential-free descriptor
@@ -288,25 +297,9 @@ func parseRepositoryURL(scope, rawURL string) (string, string, bool) {
 			}
 		}
 	}
-	parsed, err := url.Parse(trimmed)
-	if err != nil || parsed.Host == "" {
+	path, ok := instancePath(scope, trimmed)
+	if !ok {
 		return "", "", false
-	}
-	scopeURL, err := url.Parse(scope)
-	if err != nil {
-		return "", "", false
-	}
-	if !strings.EqualFold(parsed.Hostname(), scopeURL.Hostname()) {
-		return "", "", false
-	}
-
-	path := strings.Trim(parsed.Path, "/")
-	// Drop any base path the instance is mounted under.
-	if base := strings.Trim(scopeURL.Path, "/"); base != "" {
-		if !strings.HasPrefix(path, base+"/") {
-			return "", "", false
-		}
-		path = strings.TrimPrefix(path, base+"/")
 	}
 	segments := strings.Split(path, "/")
 	if len(segments) < 2 {
@@ -318,4 +311,29 @@ func parseRepositoryURL(scope, rawURL string) (string, string, bool) {
 		return "", "", false
 	}
 	return owner, name, true
+}
+
+// instancePath is the path of rawURL below the instance at scope, with any base
+// path the instance is mounted under dropped. It reports false for a URL on any
+// other host or outside that base path.
+func instancePath(scope, rawURL string) (string, bool) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return "", false
+	}
+	scopeURL, err := url.Parse(scope)
+	if err != nil {
+		return "", false
+	}
+	if !strings.EqualFold(parsed.Hostname(), scopeURL.Hostname()) {
+		return "", false
+	}
+	path := strings.Trim(parsed.Path, "/")
+	if base := strings.Trim(scopeURL.Path, "/"); base != "" {
+		if !strings.HasPrefix(path, base+"/") {
+			return "", false
+		}
+		path = strings.TrimPrefix(path, base+"/")
+	}
+	return path, true
 }

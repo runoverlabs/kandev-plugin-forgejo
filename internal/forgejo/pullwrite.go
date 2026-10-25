@@ -70,13 +70,7 @@ func (a *PullActions) Merge(ctx context.Context, workspaceID, taskID string, req
 	if err != nil {
 		return sourcecontrol.MergeResult{}, err
 	}
-	if pull.Merged {
-		return sourcecontrol.MergeResult{}, &scm.WriteError{Status: 405, Reason: scm.ReasonAlreadyMerged}
-	}
-	if !strings.EqualFold(pull.State, "open") {
-		return sourcecontrol.MergeResult{}, &scm.WriteError{Status: 405, Reason: scm.ReasonNotMergeable}
-	}
-	if err := requireHead(pull, request.HeadSHA, true); err != nil {
+	if err := requireMergeable(pull, request.HeadSHA); err != nil {
 		return sourcecontrol.MergeResult{}, err
 	}
 
@@ -90,19 +84,7 @@ func (a *PullActions) Merge(ctx context.Context, workspaceID, taskID string, req
 		DeleteBranch:           request.DeleteBranch,
 		MergeWhenChecksSucceed: request.WhenChecksSucceed,
 	}
-	for attempt := 1; ; attempt++ {
-		err = client.MergePullRequest(ctx, owner, name, number, input)
-		var writeErr *scm.WriteError
-		if !errors.As(err, &writeErr) || writeErr.Reason != scm.ReasonChecking || attempt == mergeCheckingTries {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return sourcecontrol.MergeResult{}, ctx.Err()
-		case <-time.After(mergeCheckingWait):
-		}
-	}
-	if err != nil {
+	if err := submitMerge(ctx, client, owner, name, number, input); err != nil {
 		return sourcecontrol.MergeResult{}, err
 	}
 	outcome := sourcecontrol.MergeOutcomeMerged
@@ -110,6 +92,35 @@ func (a *PullActions) Merge(ctx context.Context, workspaceID, taskID string, req
 		outcome = sourcecontrol.MergeOutcomeScheduled
 	}
 	return sourcecontrol.MergeResult{Number: number, Outcome: outcome, Style: style}, nil
+}
+
+// requireMergeable refuses a merge of a pull request that is no longer open or
+// whose head moved.
+func requireMergeable(pull rest.PullRequest, headSHA string) error {
+	if pull.Merged {
+		return &scm.WriteError{Status: 405, Reason: scm.ReasonAlreadyMerged}
+	}
+	if !strings.EqualFold(pull.State, "open") {
+		return &scm.WriteError{Status: 405, Reason: scm.ReasonNotMergeable}
+	}
+	return requireHead(pull, headSHA, true)
+}
+
+// submitMerge sends the merge, retrying while the instance is still
+// computing mergeability.
+func submitMerge(ctx context.Context, client *rest.Client, owner, name string, number int64, input rest.MergeInput) error {
+	for attempt := 1; ; attempt++ {
+		err := client.MergePullRequest(ctx, owner, name, number, input)
+		var writeErr *scm.WriteError
+		if !errors.As(err, &writeErr) || writeErr.Reason != scm.ReasonChecking || attempt == mergeCheckingTries {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(mergeCheckingWait):
+		}
+	}
 }
 
 // mergeStyle picks the style to send. A style the repository reports as
@@ -161,35 +172,9 @@ func (a *PullActions) mergeStyle(ctx context.Context, target linked, requested s
 
 // Review submits a review as the token's account.
 func (a *PullActions) Review(ctx context.Context, workspaceID, taskID string, request sourcecontrol.ReviewRequest) (sourcecontrol.ReviewResult, error) {
-	var event string
-	switch request.Event {
-	case sourcecontrol.ReviewEventApprove:
-		event = rest.ReviewApprove
-	case sourcecontrol.ReviewEventRequestChanges:
-		event = rest.ReviewRequestChanges
-	case sourcecontrol.ReviewEventComment:
-		event = rest.ReviewComment
-	default:
-		return sourcecontrol.ReviewResult{}, scm.Invalid("The review event must be approve, request_changes or comment.")
-	}
-	body := strings.TrimSpace(request.Body)
-	if body == "" && event != rest.ReviewApprove && len(request.Comments) == 0 {
-		return sourcecontrol.ReviewResult{}, scm.Invalid("This review needs a body or inline comments.")
-	}
-	if len([]rune(body)) > sourcecontrol.MaxReviewBodyRunes {
-		return sourcecontrol.ReviewResult{}, scm.Invalid("The review body is too long.")
-	}
-	if len(request.Comments) > sourcecontrol.MaxReviewComments {
-		return sourcecontrol.ReviewResult{}, scm.Invalid("Too many inline comments.")
-	}
-	inline := make([]rest.InlineComment, 0, len(request.Comments))
-	for _, comment := range request.Comments {
-		text := strings.TrimSpace(comment.Body)
-		path := strings.TrimSpace(comment.Path)
-		if path == "" || text == "" || comment.Line <= 0 || len([]rune(text)) > sourcecontrol.MaxInlineCommentRune {
-			return sourcecontrol.ReviewResult{}, scm.Invalid("Each inline comment needs a path, a line and a body.")
-		}
-		inline = append(inline, rest.InlineComment{Path: path, Body: text, NewPosition: comment.Line})
+	input, err := reviewSubmission(request)
+	if err != nil {
+		return sourcecontrol.ReviewResult{}, err
 	}
 
 	target, err := a.resolveLinked(ctx, workspaceID, taskID, request.Number)
@@ -205,7 +190,6 @@ func (a *PullActions) Review(ctx context.Context, workspaceID, taskID string, re
 		return sourcecontrol.ReviewResult{}, err
 	}
 
-	input := rest.SubmitReviewInput{Event: event, Body: withAttribution(body), Comments: inline}
 	if strings.TrimSpace(request.HeadSHA) != "" {
 		input.CommitID = pull.Head.Sha
 	}
@@ -214,6 +198,48 @@ func (a *PullActions) Review(ctx context.Context, workspaceID, taskID string, re
 		return sourcecontrol.ReviewResult{}, err
 	}
 	return sourcecontrol.ReviewResult{Number: number, State: strings.ToUpper(review.State)}, nil
+}
+
+// reviewSubmission validates a review request and builds what is sent, all
+// but the commit it is pinned to.
+func reviewSubmission(request sourcecontrol.ReviewRequest) (rest.SubmitReviewInput, error) {
+	event, err := reviewEvent(request.Event)
+	if err != nil {
+		return rest.SubmitReviewInput{}, err
+	}
+	body := strings.TrimSpace(request.Body)
+	if body == "" && event != rest.ReviewApprove && len(request.Comments) == 0 {
+		return rest.SubmitReviewInput{}, scm.Invalid("This review needs a body or inline comments.")
+	}
+	if len([]rune(body)) > sourcecontrol.MaxReviewBodyRunes {
+		return rest.SubmitReviewInput{}, scm.Invalid("The review body is too long.")
+	}
+	if len(request.Comments) > sourcecontrol.MaxReviewComments {
+		return rest.SubmitReviewInput{}, scm.Invalid("Too many inline comments.")
+	}
+	inline := make([]rest.InlineComment, 0, len(request.Comments))
+	for _, comment := range request.Comments {
+		text := strings.TrimSpace(comment.Body)
+		path := strings.TrimSpace(comment.Path)
+		if path == "" || text == "" || comment.Line <= 0 || len([]rune(text)) > sourcecontrol.MaxInlineCommentRune {
+			return rest.SubmitReviewInput{}, scm.Invalid("Each inline comment needs a path, a line and a body.")
+		}
+		inline = append(inline, rest.InlineComment{Path: path, Body: text, NewPosition: comment.Line})
+	}
+	return rest.SubmitReviewInput{Event: event, Body: withAttribution(body), Comments: inline}, nil
+}
+
+var reviewEvents = map[string]string{
+	sourcecontrol.ReviewEventApprove:        rest.ReviewApprove,
+	sourcecontrol.ReviewEventRequestChanges: rest.ReviewRequestChanges,
+	sourcecontrol.ReviewEventComment:        rest.ReviewComment,
+}
+
+func reviewEvent(event string) (string, error) {
+	if mapped, ok := reviewEvents[event]; ok {
+		return mapped, nil
+	}
+	return "", scm.Invalid("The review event must be approve, request_changes or comment.")
 }
 
 // RequestReviewers adds and removes review requests.

@@ -225,41 +225,59 @@ func (c *Client) ciFromRuns(ctx context.Context, owner, name, ref string) (scm.C
 // The endpoint cannot filter, so the scan is bounded and a ref older than the
 // scan window reads as "no CI here" rather than stalling.
 func (c *Client) ciFromTasks(ctx context.Context, owner, name, ref string) (scm.CIStatus, bool, error) {
-	var matched []ActionTask
-	newestRun := int64(-1)
-	for page := 1; page <= actionTaskScanPages; page++ {
-		tasks, err := c.ActionTasks(ctx, owner, name, page, actionTaskScanLimit)
-		if err != nil {
-			if errors.Is(err, scm.ErrNotFound) {
-				return scm.CIStatus{}, false, nil
-			}
-			return scm.CIStatus{}, false, err
-		}
-		for _, task := range tasks {
-			if !taskMatchesRef(task, ref) {
-				continue
-			}
-			// Tasks arrive newest first, so the first match fixes the run
-			// whose jobs are reported; older runs for the same ref are
-			// history, not current state.
-			if newestRun < 0 {
-				newestRun = task.RunNumber
-			}
-			if task.RunNumber == newestRun {
-				matched = append(matched, task)
-			}
-		}
-		if len(tasks) < actionTaskScanLimit {
-			break
-		}
-		if newestRun >= 0 {
-			break
-		}
+	matched, err := c.newestRunTasks(ctx, owner, name, ref)
+	if err != nil {
+		return scm.CIStatus{}, false, err
 	}
 	if len(matched) == 0 {
 		return scm.CIStatus{}, false, nil
 	}
+	return tasksCI(ref, matched), true, nil
+}
 
+// newestRunTasks returns the scanned tasks of the newest run for ref, none when
+// the instance has no task list.
+func (c *Client) newestRunTasks(ctx context.Context, owner, name, ref string) ([]ActionTask, error) {
+	var matched []ActionTask
+	newestRun := int64(-1)
+	for page := 1; page <= actionTaskScanPages; page++ {
+		tasks, err := c.ActionTasks(ctx, owner, name, page, actionTaskScanLimit)
+		if errors.Is(err, scm.ErrNotFound) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		matched, newestRun = appendNewestRun(matched, newestRun, tasks, ref)
+		if len(tasks) < actionTaskScanLimit || newestRun >= 0 {
+			break
+		}
+	}
+	return matched, nil
+}
+
+// appendNewestRun adds a page's tasks for ref that belong to the newest run,
+// which is newestRun or, while that is -1, the run of the first match.
+func appendNewestRun(matched []ActionTask, newestRun int64, tasks []ActionTask, ref string) ([]ActionTask, int64) {
+	for _, task := range tasks {
+		if !taskMatchesRef(task, ref) {
+			continue
+		}
+		// Tasks arrive newest first, so the first match fixes the run
+		// whose jobs are reported; older runs for the same ref are
+		// history, not current state.
+		if newestRun < 0 {
+			newestRun = task.RunNumber
+		}
+		if task.RunNumber == newestRun {
+			matched = append(matched, task)
+		}
+	}
+	return matched, newestRun
+}
+
+// tasksCI rolls the tasks of one run up into a status.
+func tasksCI(ref string, matched []ActionTask) scm.CIStatus {
 	status := scm.CIStatus{
 		Ref:    ref,
 		SHA:    matched[0].HeadSHA,
@@ -279,7 +297,7 @@ func (c *Client) ciFromTasks(ctx context.Context, owner, name, ref string) (scm.
 		})
 	}
 	status.State = rollUpStates(states)
-	return status, true, nil
+	return status
 }
 
 // ciFromCommitStatus reads the combined commit status. This is the portable
