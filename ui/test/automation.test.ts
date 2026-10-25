@@ -327,4 +327,18 @@ describe("automation settings", () => {
     await t.settle();
     expect(t.calls.at(-1)?.input.body).toEqual({ template: "" });
   });
+
+  it("keeps the edited prompt when saving it fails", async () => {
+    const t = settings();
+    t.render();
+    await t.settle();
+    find(t.render(), (n) => n.type === "Textarea").props.onChange({ target: { value: "Too long {{pr.feedback}}" } });
+    t.host.api.invokeAction.mockRejectedValueOnce(new Error("Template is over 16 KiB."));
+    byTestId(t.render(), "forgejo-automation-save-template").props.onClick();
+    await t.settle();
+    expect(t.host.toast.error).toHaveBeenCalled();
+    const tree = t.render();
+    expect(find(tree, (n) => n.type === "Textarea").props.value).toBe("Too long {{pr.feedback}}");
+    expect(byTestId(tree, "forgejo-automation-save-template").props.disabled).toBe(false);
+  });
 });

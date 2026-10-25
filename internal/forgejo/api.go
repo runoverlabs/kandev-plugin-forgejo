@@ -376,7 +376,7 @@ func (c *Client) CombinedStatus(ctx context.Context, owner, name, ref string) (C
 	path := "/repos/" + pathSegment(owner) + "/" + pathSegment(name) + "/commits/" + pathSegment(ref) + "/status"
 	var combined CombinedStatus
 	seen := map[string]bool{}
-	total := -1
+	total, full := -1, false
 	for page := 1; page <= maxStatusPages; page++ {
 		query := url.Values{}
 		query.Set("page", strconv.Itoa(page))
@@ -391,6 +391,7 @@ func (c *Client) CombinedStatus(ctx context.Context, owner, name, ref string) (C
 		} else if len(batch.Statuses) > 0 {
 			combined.State = worseCommitState(combined.State, batch.State)
 		}
+		full = len(batch.Statuses) >= statusPageSize
 		for _, status := range batch.Statuses {
 			// A context updated between two reads moves to the first page and
 			// shifts the rest: it can come back twice.
@@ -403,6 +404,11 @@ func (c *Client) CombinedStatus(ctx context.Context, owner, name, ref string) (C
 			(total < 0 && len(batch.Statuses) < statusPageSize) {
 			break
 		}
+	}
+	if total < 0 && full {
+		// Uncounted and stopped at the page bound with a full page: there
+		// may be more, so the list must not read as complete.
+		total = len(combined.Statuses) + 1
 	}
 	combined.TotalCount = max(total, len(combined.Statuses))
 	return combined, nil

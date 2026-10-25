@@ -265,6 +265,30 @@ func TestObserveResolvesAConversationFromItsFirstComment(t *testing.T) {
 		"resolved from a reply, the web UI still shows the conversation open")
 }
 
+// Gitea 1.27 files a reply under the replier's pending review, so a
+// conversation can start in a review dismissed later and go on in a live one.
+// The dismissed review still decides whether the conversation is resolved.
+func TestObserveResolvesAConversationStartedInADismissedReview(t *testing.T) {
+	source, api := automationSourceFixture(t, nil)
+	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", 200, []map[string]any{
+		{"id": 1, "state": "REQUEST_CHANGES", "dismissed": true, "comments_count": 1, "user": map[string]any{"id": 4, "login": "bob"}},
+		{"id": 2, "state": "COMMENT", "comments_count": 1, "user": map[string]any{"id": 6, "login": "eve"}},
+	})
+	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/1/comments", 200, []map[string]any{
+		{"id": 11, "body": "off by one", "path": "a.go", "position": 4, "user": map[string]any{"id": 4, "login": "bob"},
+			"resolver": map[string]any{"id": 3, "login": "kandev"}},
+	})
+	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/2/comments", 200, []map[string]any{
+		{"id": 15, "body": "agreed", "path": "a.go", "position": 4, "user": map[string]any{"id": 6, "login": "eve"}},
+	})
+	obs, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
+	require.NoError(t, err)
+	require.Len(t, obs.Reviews, 2)
+	require.True(t, obs.Reviews[0].Dismissed)
+	require.Len(t, obs.Reviews[1].Comments, 1)
+	require.True(t, obs.Reviews[1].Comments[0].Resolved, "the reply is in a conversation resolved from its first comment")
+}
+
 func TestObserveReadsOnlyWhatIsAskedFor(t *testing.T) {
 	source, api := automationSourceFixture(t, nil)
 	obs, err := source.Observe(context.Background(), "ws-1", observedRef, prautomation.Reads{})
@@ -290,7 +314,7 @@ func TestObserveReadsOnlyWhatIsAskedFor(t *testing.T) {
 // The combined status pages, and its total_count and state describe the page
 // alone (Forgejo 16, Gitea 1.27): a failing check on a later page must count.
 func TestObserveReadsEveryPageOfTheCombinedStatus(t *testing.T) {
-	const contexts = 70
+	contexts := 70
 	serve := func(api *apiServer, total int) {
 		api.handleFunc(http.MethodGet, "/api/v1/repos/o/r/commits/abc1234/status", func(w http.ResponseWriter, r *http.Request) {
 			page, _ := strconv.Atoi(r.URL.Query().Get("page"))
@@ -304,7 +328,9 @@ func TestObserveReadsEveryPageOfTheCombinedStatus(t *testing.T) {
 				}
 				statuses = append(statuses, map[string]any{"id": i + 1, "status": state, "context": fmt.Sprintf("ci/%02d", i)})
 			}
-			w.Header().Set("X-Total-Count", strconv.Itoa(total))
+			if total >= 0 {
+				w.Header().Set("X-Total-Count", strconv.Itoa(total))
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"state": "success", "total_count": len(statuses), "statuses": statuses})
 		})
 	}
@@ -321,6 +347,19 @@ func TestObserveReadsEveryPageOfTheCombinedStatus(t *testing.T) {
 	serve(shortAPI, contexts+1)
 	_, err = short.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.ErrorIs(t, err, errStatusesCut)
+
+	// Uncounted (a proxy dropped X-Total-Count): a short last page ends the
+	// list, and reading up to the bound does not.
+	uncounted, uncountedAPI := automationSourceFixture(t, nil)
+	serve(uncountedAPI, -1)
+	obs, err = uncounted.Observe(context.Background(), "ws-1", observedRef, allReads)
+	require.NoError(t, err)
+	require.Equal(t, prautomation.CIFailure, obs.CI.State)
+	contexts = statusPageSize*maxStatusPages + 1
+	capped, cappedAPI := automationSourceFixture(t, nil)
+	serve(cappedAPI, -1)
+	_, err = capped.Observe(context.Background(), "ws-1", observedRef, allReads)
+	require.ErrorIs(t, err, errStatusesCut, "the failing check past the bound was never read")
 }
 
 func TestLinkedListsOnlyThisInstance(t *testing.T) {

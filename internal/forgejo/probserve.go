@@ -258,7 +258,9 @@ func (s *AutomationSource) Observe(ctx context.Context, _ string, ref prautomati
 // it read them all. They are fetched per review, newest first: the bound keeps
 // a long review history from costing a request per review, and the newest
 // reviews are the ones still open. Reviews past the bound are reported, so
-// auto-merge does not take an unread comment for a resolved one.
+// auto-merge does not take an unread comment for a resolved one. A dismissed
+// review's comments are read too: a conversation it started carries the
+// resolver for replies filed under other, live reviews.
 func observeReviewComments(ctx context.Context, client *Client, owner, name string, number int64, raw []Review, observed []prautomation.Review) (bool, error) {
 	byID := make(map[int64]int, len(observed))
 	for i, review := range observed {
@@ -275,7 +277,7 @@ func observeReviewComments(ctx context.Context, client *Client, owner, name stri
 	for i := len(raw) - 1; i >= 0; i-- {
 		review := raw[i]
 		index, ok := byID[review.ID]
-		if !ok || review.CommentsCount == 0 || review.Dismissed {
+		if !ok || review.CommentsCount == 0 {
 			continue
 		}
 		if fetched == maxReviewCommentFetch {

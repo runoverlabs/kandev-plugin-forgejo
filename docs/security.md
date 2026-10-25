@@ -126,12 +126,12 @@ capability set after upgrading.
   commit and sends that commit as `head_commit_id`, so a commit pushed in
   between is refused by the instance rather than merged unseen. It does not use
   the instance's scheduled merge, which on every supported host merges a head
-  pushed after scheduling. Each attempt is recorded in the audit trail as
-  `automation.merge` by `auto-merge`, and every switch change with the Kandev
-  user who made it.
+  pushed after scheduling. Each merge the instance answers is recorded in the
+  audit trail as `automation.merge` by `auto-merge`, and every switch and
+  workspace setting change with the Kandev user who made it.
 - **Outcome reports are bound.** The `pr` tool's `outcome` op only resolves the
   attempt in flight on the calling task, sent to the calling session; with none,
-  it is refused.
+  it is refused. Each report is audited as `agent.pr.outcome` with the session.
 
 ## Write authority
 

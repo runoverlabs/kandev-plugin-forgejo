@@ -278,8 +278,10 @@ export function createAutomationSettings(host: PluginHostApi): Component<{ works
       };
     }, [workspaceId]);
 
-    const save = async (patch: Record<string, unknown>, done?: string) => {
-      if (busy || !workspaceId) return;
+    // Resolves true once the settings are stored, so a caller keeps its draft
+    // when they are not.
+    const save = async (patch: Record<string, unknown>, done?: string): Promise<boolean> => {
+      if (busy || !workspaceId) return false;
       setBusy(true);
       try {
         const saved = await host.api.invokeAction<AutomationSettings>("automation.settings_set", {
@@ -289,8 +291,10 @@ export function createAutomationSettings(host: PluginHostApi): Component<{ works
         setSettings(saved);
         setError(null);
         if (done) host.toast.success(done);
+        return true;
       } catch (cause) {
         host.toast.error(failureMessage(cause));
+        return false;
       } finally {
         setBusy(false);
       }
@@ -364,9 +368,9 @@ export function createAutomationSettings(host: PluginHostApi): Component<{ works
             disabled: busy || template === null,
             "data-testid": "forgejo-automation-save-template",
             onClick: () =>
-              void save({ template: draft === current.default_template ? "" : draft }, "Auto-fix prompt saved").then(() =>
-                setTemplate(null),
-              ),
+              void save({ template: draft === current.default_template ? "" : draft }, "Auto-fix prompt saved").then((saved) => {
+                if (saved) setTemplate(null);
+              }),
           },
           "Save prompt",
         ),
@@ -377,7 +381,10 @@ export function createAutomationSettings(host: PluginHostApi): Component<{ works
             size: "sm",
             variant: "outline",
             disabled: busy || !current.template,
-            onClick: () => void save({ template: "" }, "Auto-fix prompt reset").then(() => setTemplate(null)),
+            onClick: () =>
+              void save({ template: "" }, "Auto-fix prompt reset").then((saved) => {
+                if (saved) setTemplate(null);
+              }),
           },
           "Reset to default",
         ),

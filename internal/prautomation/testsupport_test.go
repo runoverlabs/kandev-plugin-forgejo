@@ -23,6 +23,7 @@ type fakeState struct {
 	onGet func(key string)
 	// setErr, when set, fails every write.
 	setErr error
+	lists  int
 }
 
 func newFakeState() *fakeState { return &fakeState{entries: map[string]map[string]map[string]any{}} }
@@ -68,6 +69,7 @@ func (f *fakeState) DeleteState(_ context.Context, _, scopeID, key string) error
 func (f *fakeState) ListState(_ context.Context, _, scopeID string) ([]pluginsdk.StateEntry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lists++
 	var entries []pluginsdk.StateEntry
 	for key, value := range f.entries[scopeID] {
 		entries = append(entries, pluginsdk.StateEntry{Key: key, Value: value})
@@ -97,9 +99,15 @@ type fakeObserver struct {
 	err   error
 	calls int
 	reads Reads // of the last call
+	// onObserve, when set, runs before the observation is answered, outside
+	// the lock: a hook for what happens while the instance is being read.
+	onObserve func()
 }
 
 func (f *fakeObserver) Observe(_ context.Context, _ string, ref PullRef, reads Reads) (Observation, error) {
+	if f.onObserve != nil {
+		f.onObserve()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++

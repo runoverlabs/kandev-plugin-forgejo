@@ -229,6 +229,15 @@ func TestAutomationSettingsRoundTripAndValidate(t *testing.T) {
 	require.Equal(t, "official", body["trust"])
 	require.Equal(t, true, body["defaults"].(map[string]any)["auto_merge"])
 
+	entries := auditEntries(t, fixture, "workspace-1")
+	require.Equal(t, "default.auto_fix=false,default.auto_merge=true,default.on_review_requested=false,"+
+		"default.on_merged=false,default.on_closed=false,trust=official,template=custom", entries[0]["outcome"],
+		"turning on unattended merges is on the trail, the prompt's text is not")
+
+	response, err = fixture.runtime.HandleAction(ctx, pluginRequest(ActionAutomationSettingsSet, "workspace-1", `{"template":""}`))
+	require.NoError(t, err)
+	require.Equal(t, "template=default", auditEntries(t, fixture, "workspace-1")[0]["outcome"])
+
 	response, err = fixture.runtime.HandleAction(ctx, pluginRequest(ActionAutomationSettingsSet, "workspace-1", `{"trust":"friends"}`))
 	require.NoError(t, err)
 	require.Equal(t, http.StatusUnprocessableEntity, response.Status)
@@ -279,6 +288,10 @@ func TestAutomationLoopPromptsAndTakesTheOutcome(t *testing.T) {
 	record, _, _ = fixture.runtime.automation.Store().Get(ctx, "workspace-1", ref)
 	require.Nil(t, record.Attempt)
 	require.Equal(t, "needs a secret", record.LastSummary)
+	entry := auditEntries(t, fixture, "workspace-1")[0]
+	require.Equal(t, "agent.pr.outcome", entry["action"])
+	require.Equal(t, "blocked", entry["outcome"], "a hold on auto-merge names the session that asked for it")
+	require.EqualValues(t, 12, entry["number"])
 
 	result = fixture.invoke(t, ToolPR, map[string]any{"op": "outcome", "outcome": "blocked"})
 	require.True(t, result.IsError)
@@ -357,6 +370,23 @@ func TestAutomationMergerClassifiesRefusals(t *testing.T) {
 	require.NotContains(t, refused.Message, "secret")
 
 	entries := auditEntries(t, fixture, "workspace-1")
-	require.Equal(t, "automation.merge", entries[len(entries)-1]["action"])
-	require.Equal(t, "auto-merge", entries[len(entries)-1]["actor"])
+	require.Equal(t, "automation.merge", entries[0]["action"])
+	require.Equal(t, "auto-merge", entries[0]["actor"])
+	audited := len(entries)
+
+	// Retried every activeInterval: neither leaves an entry, or an outage would
+	// push every human write out of the trail.
+	fixture.route("POST", "/api/v1/repos/kandev/demo/pulls/12/merge", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_, _ = w.Write([]byte(`{"message":"Please try again later"}`))
+	})
+	require.ErrorAs(t, merger.Merge(ctx, "workspace-1", ref, agentSHA), &refused)
+	require.True(t, refused.Transient)
+	fixture.route("POST", "/api/v1/repos/kandev/demo/pulls/12/merge", func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	})
+	err := merger.Merge(ctx, "workspace-1", ref, agentSHA)
+	require.Error(t, err)
+	require.False(t, errors.As(err, &refused), "the instance never answered")
+	require.Len(t, auditEntries(t, fixture, "workspace-1"), audited)
 }

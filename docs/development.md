@@ -216,8 +216,8 @@ merge rows are why it does not use that feature.
 | `GET .../collaborators/{user}` | 204 / 404 to any collaborator, but says nothing about the level and misses owners and org members |
 | A review's `official` | `true` for a collaborator with write access, `false` for a read-only one, on all five, visible to any token that can read the pull request |
 | A review comment's `resolver` | Present (`null` until resolved) on all five. There is no API to resolve one. **Set only on the comment the conversation was resolved from** (Forgejo 16, Gitea 1.27); the web UI resolves from, and reads, the first comment |
-| A reply in a review conversation | Filed under the review that opened it, with the same `path` and `position`/`original_position` (Forgejo 16). Gitea 1.27 files it under the replier's pending review when there is one |
-| `GET .../commits/{sha}/status` | **Paged**: 30 contexts by default, 50 at most, newest first. `total_count` and `state` describe the page alone; `X-Total-Count` is the number of contexts (Forgejo 16, Gitea 1.27) |
+| A reply in a review conversation | Filed under the review that opened it, with the same `path` and `position`/`original_position` (Forgejo 16, 17, even when the replier has a pending review). Gitea 1.27 files it under the replier's pending review when there is one, so a conversation can start in a review dismissed later and go on in a live one; the dismissed review's first comment still carries the resolver |
+| `GET .../commits/{sha}/status` | **Paged**: 30 contexts by default, 50 at most, newest first. `total_count` and `state` describe the page alone; `X-Total-Count` is the number of contexts (Forgejo 16, Gitea 1.27). Without the header, a list that fills every page read counts as cut |
 | `comments_count` on a review | Present on all five |
 | Bot marker on users | None on any host: no `type` field. The Actions user (`-2`) and the ghost user (`-1`) have negative ids, read from source |
 | A team review request on the pull request | `requested_reviewers_teams` lists the team on Forgejo 11, 15, 17 and Gitea; **Forgejo 7 lists neither the team nor its members** (`requested_reviewers: [null]`) |

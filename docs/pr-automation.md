@@ -84,9 +84,12 @@ Then:
   - `blocked`: a change is needed, but something outside the task prevents it.
     Auto-merge holds off for an hour on that head.
 
-  Either way, the feedback in that round counts as handled.
+  Either way, the feedback in that round counts as handled. The report is in
+  the audit trail as `agent.pr.outcome` by the reporting session.
 - **The turn ends without a report.** The round is retried, no sooner than two
-  minutes after it was sent. The retry carries that round's feedback and
+  minutes after it was sent, and not while the session is running a turn: a
+  message queued ahead of the prompt runs first, so the turn that ended may not
+  have been the prompt's. The retry carries that round's feedback and
   anything new, not what an earlier outcome already handled.
   The plugin hears about the turn ending from Kandev at once, or notices within
   about two minutes of the session going idle. A session that has not started
@@ -183,7 +186,9 @@ not merged, and the panel shows the error.
   in between, the instance refuses it and the plugin checks the new head
   instead, so commits nobody evaluated are never merged.
 - The audit trail (`connection.audit`) records it as `automation.merge` by
-  `auto-merge`.
+  `auto-merge`. A merge the instance never answered, or answered with "try
+  again later", is retried without an entry, so an outage does not push
+  people's writes out of the trail.
 
 **If the instance refuses.** The plugin shows why (branch protection, missing
 permission) and does not try again until the pull request changes. **Retry

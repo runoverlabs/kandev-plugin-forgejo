@@ -106,7 +106,7 @@ Action bodies:
 | `automation.set` | `{"number","auto_fix","auto_merge","on_review_requested","on_merged","on_closed"}`, any subset, booleans (also needs `taskId`). Turning `auto_fix` on resets the rounds. Audited with the actor |
 | `automation.retry` | `{"number","what"}` (also needs `taskId`). `what` is `merge` (one more attempt after a refused merge) or `rounds` (start auto-fix's round count again). 409 before automation has looked at the pull request |
 | `automation.settings` | none. The workspace's `defaults`, `trust`, `template`, and the `default_template` |
-| `automation.settings_set` | `{"defaults":{…the five switches…},"trust","template"}`, any subset. `trust` is `everyone`, `official` or `none`; `template` up to 16 KiB, empty for the default |
+| `automation.settings_set` | `{"defaults":{…the five switches…},"trust","template"}`, any subset. `trust` is `everyone`, `official` or `none`; `template` up to 16 KiB, empty for the default. Audited with the fields set; the template only as `custom` or `default` |
 
 > **`DELETE /api/plugins/{id}` uninstalls immediately.** There is no
 > confirmation step and it removes the plugin's config, state, and secrets. It

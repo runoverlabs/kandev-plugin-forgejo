@@ -125,22 +125,29 @@ func hostMessagingError(err error) error {
 
 // automationMerger merges through the instance and audits the result: the
 // shared Forgejo account hides who merged, so the trail names automation.
+//
+// An attempt the instance never answered, or answered with "still checking",
+// is not audited: the loop retries those every activeInterval, and an entry
+// per retry would push the people's writes out of the bounded trail.
 type automationMerger struct {
 	runtime *Runtime
 }
 
 func (m automationMerger) Merge(ctx context.Context, workspaceID string, ref prautomation.PullRef, headSHA string) error {
 	err := m.runtime.automationSource.MergeLinked(ctx, ref, headSHA)
-	outcome := "merged"
-	if err != nil {
-		outcome = "failed"
-	}
-	m.runtime.audit(ctx, auditRecord{
-		Action: "automation.merge", Actor: "auto-merge", Workspace: workspaceID,
-		Task: ref.TaskID, Number: ref.Number, Outcome: outcome,
-	})
 	var writeErr *forgejo.WriteError
-	if err == nil || !errors.As(err, &writeErr) {
+	answered := err == nil || errors.As(err, &writeErr)
+	if answered && (writeErr == nil || writeErr.Reason != forgejo.ReasonChecking) {
+		outcome := "merged"
+		if err != nil {
+			outcome = "failed"
+		}
+		m.runtime.audit(ctx, auditRecord{
+			Action: "automation.merge", Actor: "auto-merge", Workspace: workspaceID,
+			Task: ref.TaskID, Number: ref.Number, Outcome: outcome,
+		})
+	}
+	if err == nil || writeErr == nil {
 		return err
 	}
 	switch writeErr.Reason {
@@ -474,9 +481,30 @@ func (r *Runtime) automationSettingsSet(ctx context.Context, request *pluginsdk.
 	if err := r.automation.Store().PutSettings(ctx, workspaceID, settings); err != nil {
 		return nil, err
 	}
+	// Every field the request set, the template only as custom or default:
+	// the trail never holds a body.
+	var changes []string
+	if defaults := input.Defaults; defaults != nil {
+		changes = append(changes,
+			fmt.Sprintf("default.auto_fix=%t", defaults.AutoFix),
+			fmt.Sprintf("default.auto_merge=%t", defaults.AutoMerge),
+			fmt.Sprintf("default.on_review_requested=%t", defaults.OnReviewRequested),
+			fmt.Sprintf("default.on_merged=%t", defaults.OnMerged),
+			fmt.Sprintf("default.on_closed=%t", defaults.OnClosed))
+	}
+	if input.Trust != nil {
+		changes = append(changes, "trust="+string(settings.Trust))
+	}
+	if input.Template != nil {
+		template := "custom"
+		if strings.TrimSpace(settings.Template) == "" {
+			template = "default"
+		}
+		changes = append(changes, "template="+template)
+	}
 	r.audit(ctx, auditRecord{
 		Action: request.ActionKey, Actor: request.Context.ActorID, Workspace: workspaceID,
-		Outcome: "trust=" + string(settings.Trust),
+		Outcome: strings.Join(changes, ","),
 	})
 	return jsonResponse(settingsView(settings.Normalize()))
 }
@@ -493,6 +521,16 @@ func (r *Runtime) prOutcome(ctx context.Context, request *pluginsdk.AgentToolReq
 	}
 	record, err := r.automation.Outcome(ctx, workspaceID, request.Context.TaskID, request.Context.SessionID,
 		argString(request.Arguments, "repo"), outcome, argString(request.Arguments, "body"))
+	// Audited like the writing ops: blocked holds auto-merge back, and the
+	// trail says which session asked for it.
+	audited := outcome
+	if err != nil {
+		audited = "refused"
+	}
+	r.audit(ctx, auditRecord{
+		Action: "agent.pr.outcome", Actor: "agent:" + request.Context.SessionID, Workspace: workspaceID,
+		Task: request.Context.TaskID, Number: record.Number, Outcome: audited,
+	})
 	switch {
 	case errors.Is(err, prautomation.ErrNoAttempt), errors.Is(err, prautomation.ErrAmbiguousAttempt):
 		return toolError(err.Error() + "."), nil

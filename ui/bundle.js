@@ -296,7 +296,7 @@ function createAutomationSettings(host) {
       };
     }, [workspaceId]);
     const save = async (patch, done) => {
-      if (busy || !workspaceId) return;
+      if (busy || !workspaceId) return false;
       setBusy(true);
       try {
         const saved = await host.api.invokeAction("automation.settings_set", {
@@ -306,8 +306,10 @@ function createAutomationSettings(host) {
         setSettings(saved);
         setError(null);
         if (done) host.toast.success(done);
+        return true;
       } catch (cause) {
         host.toast.error(failureMessage(cause));
+        return false;
       } finally {
         setBusy(false);
       }
@@ -378,9 +380,9 @@ function createAutomationSettings(host) {
             size: "sm",
             disabled: busy || template === null,
             "data-testid": "forgejo-automation-save-template",
-            onClick: () => void save({ template: draft === current.default_template ? "" : draft }, "Auto-fix prompt saved").then(
-              () => setTemplate(null)
-            )
+            onClick: () => void save({ template: draft === current.default_template ? "" : draft }, "Auto-fix prompt saved").then((saved) => {
+              if (saved) setTemplate(null);
+            })
           },
           "Save prompt"
         ),
@@ -391,7 +393,9 @@ function createAutomationSettings(host) {
             size: "sm",
             variant: "outline",
             disabled: busy || !current.template,
-            onClick: () => void save({ template: "" }, "Auto-fix prompt reset").then(() => setTemplate(null))
+            onClick: () => void save({ template: "" }, "Auto-fix prompt reset").then((saved) => {
+              if (saved) setTemplate(null);
+            })
           },
           "Reset to default"
         )

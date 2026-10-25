@@ -160,3 +160,67 @@ func TestAutoMergeWaitsForRequiredChecks(t *testing.T) {
 	h.evaluate()
 	require.Len(t, h.merger.calls, 1)
 }
+
+// Kandev queues a prompt behind a running turn, first in first out. A message
+// already queued ahead of it runs first, and its turn starts after the prompt
+// was sent: it ends while the prompt is still waiting, so the attempt reads
+// as ended without an outcome. The resend waits until the session is idle.
+func TestRetryWaitsWhileThePromptMayStillBeQueued(t *testing.T) {
+	h := newHarness(t)
+	h.switches(Switches{AutoFix: true})
+	h.setObs(failingCI)
+	session := &h.messenger.sessions[testRef.TaskID][0]
+	session.State = sessionRunning
+	first := h.evaluate().Attempt
+	require.NotNil(t, first)
+	h.engine.Tick(context.Background()) // builds the task index
+
+	h.engine.TurnCompleted(context.Background(), testRef.TaskID, "s-1", first.SentAt.Add(time.Second))
+	require.Equal(t, AttemptRetryable, h.record().Attempt.State)
+
+	h.advance(retryCooldown)
+	record := h.evaluate()
+	require.Len(t, h.messenger.sent, 1, "the session is running: the prompt may be what it runs")
+	require.Contains(t, record.Status, "once the agent's turn ends")
+
+	session.State = sessionWaitingForInput
+	record = h.evaluate()
+	require.Len(t, h.messenger.sent, 2)
+	require.Equal(t, 2, record.Rounds)
+}
+
+// A turn that starts while the instance is being read, before the prompt is
+// sent, is not the prompt's turn.
+func TestAttemptIsStampedWhenItIsSent(t *testing.T) {
+	h := newHarness(t)
+	h.switches(Switches{AutoFix: true})
+	h.setObs(failingCI)
+	started := h.now.Add(time.Second)
+	h.observer.onObserve = func() { h.advance(3 * time.Second) }
+	first := h.evaluate().Attempt
+	require.NotNil(t, first)
+	require.True(t, first.SentAt.After(started))
+	h.observer.onObserve = nil
+	h.engine.Tick(context.Background())
+
+	h.engine.TurnCompleted(context.Background(), testRef.TaskID, "s-1", started)
+	require.Equal(t, AttemptDispatched, h.record().Attempt.State)
+}
+
+// A record switched on from the panel is evaluated before the next tick
+// rebuilds the task index; its turn's event still counts. A hint reads the
+// task's records, not the workspace's whole state.
+func TestHintReachesARecordSwitchedOnSinceTheLastTick(t *testing.T) {
+	h := newHarness(t)
+	h.switches(Switches{AutoFix: true}) // no tick after the switch
+	h.setObs(failingCI)
+	first := h.evaluate().Attempt
+	require.NotNil(t, first)
+
+	h.state.mu.Lock()
+	lists := h.state.lists
+	h.state.mu.Unlock()
+	h.engine.TurnCompleted(context.Background(), testRef.TaskID, "s-1", first.SentAt)
+	require.Equal(t, AttemptRetryable, h.record().Attempt.State)
+	require.Equal(t, lists, h.state.lists)
+}

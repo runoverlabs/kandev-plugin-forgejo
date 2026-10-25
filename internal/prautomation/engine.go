@@ -101,7 +101,7 @@ type Engine struct {
 	locks keyedMutex
 
 	mu      sync.Mutex
-	tracked map[string]string // task id → workspace id, rebuilt every tick
+	tracked map[string]trackedTask // by task id, rebuilt every tick
 	running context.Context
 	cancel  context.CancelFunc
 	stopped chan struct{}
@@ -136,7 +136,7 @@ func NewEngine(config Config) *Engine {
 		now:        time.Now,
 		newID:      randomID,
 		logf:       config.Logf,
-		tracked:    map[string]string{},
+		tracked:    map[string]trackedTask{},
 	}
 	if engine.describe == nil {
 		engine.describe = func(error) string { return "The instance could not be read." }
@@ -220,7 +220,7 @@ func (e *Engine) Tick(ctx context.Context) {
 		e.logf("prautomation: list workspaces: %v", err)
 		return
 	}
-	tracked := map[string]string{}
+	tracked := map[string]trackedTask{}
 	for _, workspaceID := range workspaces {
 		if ctx.Err() != nil {
 			return
@@ -232,7 +232,7 @@ func (e *Engine) Tick(ctx context.Context) {
 	e.mu.Unlock()
 }
 
-func (e *Engine) tickWorkspace(ctx context.Context, workspaceID string, tracked map[string]string) {
+func (e *Engine) tickWorkspace(ctx context.Context, workspaceID string, tracked map[string]trackedTask) {
 	if e.gate != nil {
 		enabled, err := e.gate(ctx, workspaceID)
 		if err != nil || !enabled {
@@ -301,7 +301,7 @@ func (e *Engine) tickWorkspace(ctx context.Context, workspaceID string, tracked 
 	var due []Record
 	for _, record := range byKey {
 		if record.Switches.Any() || !record.Seeded {
-			tracked[record.TaskID] = workspaceID
+			tracked[record.TaskID] = tracked[record.TaskID].with(workspaceID, record.Ref())
 		}
 		if e.isDue(record, now) {
 			due = append(due, record)
@@ -659,6 +659,13 @@ func (r *evaluation) autoFix() {
 		r.status("Auto-fix: nothing new to fix.")
 		return
 	}
+	if retry && r.sessionBusy(record.Attempt.SessionID) {
+		// The turn that ended may not have been the prompt's: a message queued
+		// ahead of it runs first, and the prompt can still be queued or
+		// running. A resend now would stack on it.
+		r.status(fmt.Sprintf("Auto-fix round %d ended without an outcome; it is resent once the agent's turn ends.", record.Attempt.Round))
+		return
+	}
 	if record.HoldHead != "" {
 		if record.HoldHead == obs.HeadSHA && r.now.Before(record.HoldUntil) {
 			r.status("Auto-fix is waiting for the agent's change to show up.")
@@ -684,9 +691,6 @@ func (r *evaluation) autoFix() {
 		ID:    r.engine.newID(),
 		Round: record.Rounds + 1,
 		State: AttemptDispatched,
-		// Stamped before sending: a turn the prompt starts begins after this,
-		// and a turn that was already running when it was queued began before.
-		SentAt: r.now,
 	}
 	text, shown := RenderAutoFix(r.settings.EffectiveTemplate(), promptObservation(obs, r.settings.Trust), attempt, items, retry)
 	attempt.Signature, attempt.Keys = Signature(shown), itemKeys(shown)
@@ -695,6 +699,11 @@ func (r *evaluation) autoFix() {
 		return
 	}
 	attempt.SessionID = sessionID
+	// Stamped right before sending, not at the start of the evaluation: a
+	// turn the prompt starts begins after this, and a turn that was already
+	// running when it was queued began before. The observation's requests
+	// would otherwise leave a window for someone else's turn to start in.
+	attempt.SentAt = r.engine.now().UTC()
 
 	// The attempt is stored before the prompt is sent. The agent can report
 	// its outcome as soon as the prompt reaches it, and the report is matched
@@ -716,6 +725,21 @@ func (r *evaluation) autoFix() {
 	}
 	attempt.Dispatch = dispatch
 	r.status(fmt.Sprintf("Auto-fix round %d sent to the agent (%s).", attempt.Round, dispatch))
+}
+
+// sessionBusy reports whether a session is running a turn, or might be: a
+// session list that cannot be read counts as busy.
+func (r *evaluation) sessionBusy(sessionID string) bool {
+	sessions, err := r.loadSessions()
+	if err != nil {
+		return true
+	}
+	for _, session := range sessions {
+		if session.ID == sessionID {
+			return session.State == sessionRunning || session.State == sessionStarting
+		}
+	}
+	return false
 }
 
 // attemptEnded reports whether a dispatched attempt's turn is over without an
@@ -961,53 +985,70 @@ func (e *Engine) Outcome(ctx context.Context, workspaceID, taskID, sessionID, re
 // without an outcome becomes retryable at once instead of after idleGrace.
 // The event is a hint — delivery is best-effort — so nothing depends on it.
 func (e *Engine) TurnCompleted(ctx context.Context, taskID, sessionID string, startedAt time.Time) {
-	workspaceID, ok := e.workspaceOf(taskID)
-	if !ok {
-		return
-	}
-	records, err := e.store.List(ctx, workspaceID)
-	if err != nil {
-		return
-	}
-	for _, listed := range records {
-		// A turn matters to a record waiting on the agent: an attempt in
-		// flight, or a prompt queued for a session.
-		if listed.TaskID != taskID || (listed.Attempt == nil && len(listed.Pending) == 0) {
-			continue
+	e.hintRecords(ctx, taskID, func(record *Record) {
+		if attempt := record.Attempt; attempt != nil && attempt.State == AttemptDispatched &&
+			attempt.SessionID == sessionID && !startedAt.Before(attempt.SentAt) {
+			attempt.State = AttemptRetryable
 		}
-		e.update(ctx, workspaceID, listed.Ref(), func(record *Record) {
-			if attempt := record.Attempt; attempt != nil && attempt.State == AttemptDispatched &&
-				attempt.SessionID == sessionID && !startedAt.Before(attempt.SentAt) {
-				attempt.State = AttemptRetryable
-			}
-			record.NextDue = time.Time{}
-		})
-	}
+	})
 }
 
 // SessionChanged handles a session state change on a task: anything waiting
 // for a session is looked at on the next tick.
 func (e *Engine) SessionChanged(ctx context.Context, taskID string) {
-	workspaceID, ok := e.workspaceOf(taskID)
+	e.hintRecords(ctx, taskID, func(*Record) {})
+}
+
+// errNothingWaits leaves a record a hint has nothing to do for unwritten.
+var errNothingWaits = errors.New("prautomation: nothing waits on the agent")
+
+// hintRecords applies change to the task's records that wait on the agent (an
+// attempt in flight, or a prompt queued for a session) and makes them due.
+// The records come from the task index, so a hint reads only them.
+func (e *Engine) hintRecords(ctx context.Context, taskID string, change func(*Record)) {
+	e.mu.Lock()
+	task, ok := e.tracked[taskID]
+	e.mu.Unlock()
 	if !ok {
 		return
 	}
-	records, err := e.store.List(ctx, workspaceID)
-	if err != nil {
-		return
-	}
-	for _, listed := range records {
-		if listed.TaskID == taskID && (len(listed.Pending) > 0 || listed.Attempt != nil) {
-			e.update(ctx, workspaceID, listed.Ref(), func(record *Record) { record.NextDue = time.Time{} })
-		}
+	for _, ref := range task.refs {
+		_, _ = e.Update(ctx, task.workspaceID, ref, func(record *Record) error {
+			if record.Attempt == nil && len(record.Pending) == 0 {
+				return errNothingWaits
+			}
+			change(record)
+			record.NextDue = time.Time{}
+			return nil
+		})
 	}
 }
 
-func (e *Engine) workspaceOf(taskID string) (string, bool) {
+// trackedTask is a task with automation on: its workspace, which events do
+// not carry, and its records.
+type trackedTask struct {
+	workspaceID string
+	refs        []PullRef
+}
+
+func (t trackedTask) with(workspaceID string, ref PullRef) trackedTask {
+	for _, known := range t.refs {
+		if known == ref {
+			return t
+		}
+	}
+	return trackedTask{workspaceID: workspaceID, refs: append(t.refs[:len(t.refs):len(t.refs)], ref)}
+}
+
+// track adds a record switched on between ticks to the task index, so the
+// events of its first round are not dropped until the next tick rebuilds it.
+func (e *Engine) track(workspaceID string, record Record) {
+	if !record.Switches.Any() {
+		return
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	workspaceID, ok := e.tracked[taskID]
-	return workspaceID, ok
+	e.tracked[record.TaskID] = e.tracked[record.TaskID].with(workspaceID, record.Ref())
 }
 
 // Update applies change to one record under its lock and stores it. A change
@@ -1045,6 +1086,7 @@ func (e *Engine) modify(ctx context.Context, workspaceID string, ref PullRef, cr
 	if err := e.store.Put(ctx, workspaceID, record); err != nil {
 		return Record{}, err
 	}
+	e.track(workspaceID, record)
 	return record, nil
 }
 
