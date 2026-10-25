@@ -10,9 +10,9 @@ instance before they are encoded.
 | [Step 0: hotfixes](00-hotfixes.md) | Two bugs in the released 0.3.0 that should ship first as 0.3.1 |
 | [PR actions](pr-actions.md) | Merge, review, request reviewers, mergeability, diff and files, comments and labels: as agent-tool ops and as buttons in the review panel |
 | [Review watches and cleanup](review-watches.md) | Watches that file a task for each PR awaiting your review, plus cleanup of the tasks they create |
+| [Webhook automation conditions](webhook-automations.md) | Forgejo/Gitea push, pull request and CI webhooks as native automation conditions ([#7](https://github.com/runoverlabs/kandev-plugin-forgejo/issues/7)) |
 
-Deferred, not planned here: [#7](https://github.com/runoverlabs/kandev-plugin-forgejo/issues/7)
-(webhook receiver and native automation triggers) and
+Deferred, not planned here:
 [#8](https://github.com/runoverlabs/kandev-plugin-forgejo/issues/8) (CI auto-fix,
 auto-merge and PR lifecycle prompts).
 
@@ -28,8 +28,8 @@ Forgejo/Gitea API offers.
 - **Gitea facts** for `review_requested`, `reviewed` and similar search filters
   were checked against Gitea's published swagger. Where a plan says "verified from
   swagger" that is what it means.
-- **Forgejo facts** are mostly **unverified**. codeberg.org is not reachable from
-  the development sandbox. Anything about Forgejo 7 or 16, and anything a plan
+- **Forgejo facts** are mostly **unverified**. codeberg.org was not reachable from
+  the development sandbox when these plans were written (it is now). Anything about Forgejo 7 or 16, and anything a plan
   marks "assumed", must be pinned by a live test against the CI containers
   (Gitea 1.20 and 1.27, Forgejo 7 and 16) before it is encoded. This is the
   repo's own rule: verify a provider claim against a real instance first.
