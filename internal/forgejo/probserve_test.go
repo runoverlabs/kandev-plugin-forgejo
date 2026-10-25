@@ -3,6 +3,7 @@ package forgejo
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -144,6 +145,61 @@ func TestObserveUnsettledConflictIsUnknown(t *testing.T) {
 	obs, err := source.Observe(context.Background(), "ws-1", observedRef)
 	require.NoError(t, err)
 	require.Nil(t, obs.Mergeable)
+}
+
+func TestObserveFailsWhenAMergeGateCannotBeRead(t *testing.T) {
+	for _, path := range []string{
+		"/api/v1/repos/o/r/commits/abc1234/status",
+		"/api/v1/repos/o/r/branches/main",
+		"/api/v1/repos/o/r/pulls/7/reviews",
+		"/api/v1/repos/o/r/pulls/7/reviews/1/comments",
+		"/api/v1/repos/o/r/issues/7/comments",
+	} {
+		for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+			source, api := automationSourceFixture(t, nil)
+			api.handle(http.MethodGet, path, status, map[string]any{"message": "no"})
+			_, err := source.Observe(context.Background(), "ws-1", observedRef)
+			require.ErrorIs(t, err, ErrUnauthorized, "%s answering %d must not read as no CI or no objections", path, status)
+		}
+	}
+	source, api := automationSourceFixture(t, nil)
+	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", http.StatusNotFound, nil)
+	_, err := source.Observe(context.Background(), "ws-1", observedRef)
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestObserveSkipsTheCommentsOfAReviewDeletedMeanwhile(t *testing.T) {
+	source, api := automationSourceFixture(t, nil)
+	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/1/comments", http.StatusNotFound, nil)
+	obs, err := source.Observe(context.Background(), "ws-1", observedRef)
+	require.NoError(t, err)
+	require.Empty(t, obs.Reviews[0].Comments)
+}
+
+func TestObserveFetchesTheCommentsOfTheNewestReviews(t *testing.T) {
+	source, api := automationSourceFixture(t, nil)
+	const total = maxReviewCommentFetch + 5
+	var reviews []map[string]any
+	for id := 1; id <= total; id++ {
+		reviews = append(reviews, map[string]any{
+			"id": id, "state": "COMMENT", "comments_count": 1, "user": map[string]any{"id": 4, "login": "bob"},
+		})
+		api.handle(http.MethodGet, fmt.Sprintf("/api/v1/repos/o/r/pulls/7/reviews/%d/comments", id), 200, []map[string]any{
+			{"id": 100 + id, "body": "look", "path": "a.go", "user": map[string]any{"id": 4, "login": "bob"}},
+		})
+	}
+	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", 200, reviews)
+	obs, err := source.Observe(context.Background(), "ws-1", observedRef)
+	require.NoError(t, err)
+	require.Len(t, obs.Reviews, total)
+	for i, review := range obs.Reviews {
+		require.Equal(t, int64(i+1), review.ID, "reviews keep their order")
+		if i < total-maxReviewCommentFetch {
+			require.Empty(t, review.Comments, "review %d is among the oldest", review.ID)
+		} else {
+			require.Len(t, review.Comments, 1, "review %d is among the newest", review.ID)
+		}
+	}
 }
 
 func TestLinkedListsOnlyThisInstance(t *testing.T) {

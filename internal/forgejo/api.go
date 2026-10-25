@@ -341,14 +341,15 @@ func (c *Client) PullRequest(ctx context.Context, owner, name string, number int
 	return pull, nil
 }
 
-// Reviews returns submitted reviews for a pull request.
+// maxPullReviews bounds the reviews read for one pull request. The newest are
+// kept: a reviewer's latest verdict is the one that counts.
+const maxPullReviews = 100
+
+// Reviews returns a pull request's newest maxPullReviews reviews, oldest first.
 func (c *Client) Reviews(ctx context.Context, owner, name string, number int64) ([]Review, error) {
-	var reviews []Review
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", pathSegment(owner), pathSegment(name), number)
-	if err := c.get(ctx, path, nil, &reviews); err != nil {
-		return nil, err
-	}
-	return reviews, nil
+	reviews, _, err := pageNewest[Review](ctx, c, path, maxPullReviews)
+	return reviews, err
 }
 
 // CombinedStatus returns the roll-up commit status for a ref. A repository

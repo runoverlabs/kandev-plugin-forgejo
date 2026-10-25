@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -190,14 +191,34 @@ func (c *Client) write(ctx context.Context, method, path string, query url.Value
 }
 
 func (c *Client) send(ctx context.Context, method, prefix, path string, query url.Values, body, out any, classify bool) error {
+	_, err := c.exchange(ctx, method, prefix, path, query, body, out, classify)
+	return err
+}
+
+// getCounted is get for list endpoints, also returning the X-Total-Count
+// header, or -1 when the response has none.
+func (c *Client) getCounted(ctx context.Context, path string, query url.Values, out any) (int, error) {
+	header, err := c.exchange(ctx, http.MethodGet, apiV1, path, query, nil, out, false)
+	if err != nil {
+		return 0, err
+	}
+	total, err := strconv.Atoi(strings.TrimSpace(header.Get("X-Total-Count")))
+	if err != nil || total < 0 {
+		return -1, nil
+	}
+	return total, nil
+}
+
+// exchange is send, also returning the response headers on success.
+func (c *Client) exchange(ctx context.Context, method, prefix, path string, query url.Values, body, out any, classify bool) (http.Header, error) {
 	request, err := c.newRequest(ctx, method, prefix, path, query, body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
 		// Wrap without the URL's userinfo and without the token header.
-		return fmt.Errorf("forgejo: %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("forgejo: %s %s: %w", method, path, err)
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBytes))
@@ -206,31 +227,31 @@ func (c *Client) send(ctx context.Context, method, prefix, path string, query ur
 
 	switch {
 	case response.StatusCode == http.StatusNotFound, response.StatusCode == http.StatusGone:
-		return ErrNotFound
+		return nil, ErrNotFound
 	case response.StatusCode == http.StatusUnauthorized:
-		return ErrUnauthorized
+		return nil, ErrUnauthorized
 	case response.StatusCode == http.StatusForbidden && !classify:
-		return ErrUnauthorized
+		return nil, ErrUnauthorized
 	case response.StatusCode >= 400 && classify:
 		// The body is read only to classify and is never returned or logged.
 		raw, _ := io.ReadAll(io.LimitReader(response.Body, maxErrorBodyBytes))
-		return &WriteError{Status: response.StatusCode, Reason: classifyWrite(response.StatusCode, string(raw))}
+		return nil, &WriteError{Status: response.StatusCode, Reason: classifyWrite(response.StatusCode, string(raw))}
 	case response.StatusCode >= 400:
-		return &StatusError{Method: method, Path: path, Status: response.StatusCode}
+		return nil, &StatusError{Method: method, Path: path, Status: response.StatusCode}
 	}
 
 	if out == nil {
-		return nil
+		return response.Header, nil
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes))
 	if err := decoder.Decode(out); err != nil {
 		if classify && errors.Is(err, io.EOF) {
 			// A mutation may legitimately answer 200 or 204 with no body.
-			return nil
+			return response.Header, nil
 		}
-		return fmt.Errorf("forgejo: decode %s response: %w", path, err)
+		return nil, fmt.Errorf("forgejo: decode %s response: %w", path, err)
 	}
-	return nil
+	return response.Header, nil
 }
 
 // patch issues an authenticated PATCH against /api/v1<path>.

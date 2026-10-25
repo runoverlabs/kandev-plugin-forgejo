@@ -2,6 +2,7 @@ package forgejo
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,7 +51,6 @@ func (c *Client) UserTeams(ctx context.Context) ([]Team, error) {
 const (
 	maxUserTeams          = 200
 	maxObservedComments   = 300
-	maxObservedReviews    = 100
 	maxReviewCommentFetch = 20
 	operatorCacheLifetime = 10 * time.Minute
 )
@@ -166,88 +166,99 @@ func (s *AutomationSource) Observe(ctx context.Context, _ string, ref prautomati
 	obs.Operator = login
 	obs.OperatorRequested = operatorRequested(pull, owner, login, teams)
 
+	// Every read below feeds a merge gate, so none fails soft: a token that
+	// cannot see the checks or the reviews fails the observation instead of
+	// reading as no CI or no objections.
 	if sha := strings.TrimSpace(pull.Head.Sha); sha != "" {
 		combined, err := client.CombinedStatus(ctx, owner, name, sha)
-		switch {
-		case err == nil:
-			obs.CI = automationCI(combined)
-		case !softFailure(err):
+		if err != nil {
 			return prautomation.Observation{}, err
 		}
+		obs.CI = automationCI(combined)
 	}
 
 	if base := strings.TrimSpace(pull.Base.Ref); base != "" {
 		branch, err := client.BranchDetail(ctx, owner, name, base)
-		switch {
-		case err == nil:
-			required := int(branch.RequiredApprovals)
-			obs.RequiredApprovals = &required
-		case !softFailure(err):
+		if err != nil {
 			return prautomation.Observation{}, err
 		}
+		required := int(branch.RequiredApprovals)
+		obs.RequiredApprovals = &required
 	}
 
 	reviews, err := client.Reviews(ctx, owner, name, ref.Number)
-	if err != nil && !softFailure(err) {
+	if err != nil {
 		return prautomation.Observation{}, err
 	}
-	if len(reviews) > maxObservedReviews {
-		reviews = reviews[len(reviews)-maxObservedReviews:]
-	}
-	fetched := 0
 	for _, review := range reviews {
-		state := automationReviewState(review.State)
-		if state == "" {
-			continue
+		if state := automationReviewState(review.State); state != "" {
+			obs.Reviews = append(obs.Reviews, prautomation.Review{
+				ID:        review.ID,
+				Author:    review.User.Login,
+				Bot:       isBotUser(review.User),
+				State:     state,
+				Official:  review.Official,
+				Dismissed: review.Dismissed,
+				Body:      review.Body,
+			})
 		}
-		entry := prautomation.Review{
-			ID:        review.ID,
-			Author:    review.User.Login,
-			Bot:       isBotUser(review.User),
-			State:     state,
-			Official:  review.Official,
-			Dismissed: review.Dismissed,
-			Body:      review.Body,
-		}
-		// Comments are fetched per review, newest reviews last; the bound
-		// keeps a long review history from costing a request per review.
-		if review.CommentsCount > 0 && !review.Dismissed && fetched < maxReviewCommentFetch {
-			fetched++
-			comments, err := client.ReviewComments(ctx, owner, name, ref.Number, review.ID)
-			switch {
-			case err == nil:
-				for _, comment := range comments {
-					entry.Comments = append(entry.Comments, prautomation.InlineComment{
-						ID:       comment.ID,
-						Author:   comment.User.Login,
-						Bot:      isBotUser(comment.User),
-						Path:     comment.Path,
-						Body:     comment.Body,
-						Resolved: comment.Resolver != nil && comment.Resolver.ID != 0,
-					})
-				}
-			case !softFailure(err):
-				return prautomation.Observation{}, err
-			}
-		}
-		obs.Reviews = append(obs.Reviews, entry)
+	}
+	if err := observeReviewComments(ctx, client, owner, name, ref.Number, reviews, obs.Reviews); err != nil {
+		return prautomation.Observation{}, err
 	}
 
 	comments, _, err := client.IssueComments(ctx, owner, name, ref.Number, maxObservedComments)
-	switch {
-	case err == nil:
-		for _, comment := range comments {
-			obs.Comments = append(obs.Comments, prautomation.Comment{
-				ID:     comment.ID,
-				Author: comment.User.Login,
-				Bot:    isBotUser(comment.User),
-				Body:   comment.Body,
-			})
-		}
-	case !softFailure(err):
+	if err != nil {
 		return prautomation.Observation{}, err
 	}
+	for _, comment := range comments {
+		obs.Comments = append(obs.Comments, prautomation.Comment{
+			ID:     comment.ID,
+			Author: comment.User.Login,
+			Bot:    isBotUser(comment.User),
+			Body:   comment.Body,
+		})
+	}
 	return obs, nil
+}
+
+// observeReviewComments fills in the inline comments of the observed reviews,
+// which are in the order of the raw ones they came from. They are fetched per
+// review, newest first: the bound keeps a long review history from costing a
+// request per review, and the newest reviews are the ones still open.
+func observeReviewComments(ctx context.Context, client *Client, owner, name string, number int64, raw []Review, observed []prautomation.Review) error {
+	byID := make(map[int64]int, len(observed))
+	for i, review := range observed {
+		byID[review.ID] = i
+	}
+	fetched := 0
+	for i := len(raw) - 1; i >= 0 && fetched < maxReviewCommentFetch; i-- {
+		review := raw[i]
+		index, ok := byID[review.ID]
+		if !ok || review.CommentsCount == 0 || review.Dismissed {
+			continue
+		}
+		fetched++
+		comments, err := client.ReviewComments(ctx, owner, name, number, review.ID)
+		if errors.Is(err, ErrNotFound) {
+			// Deleted since the list was read: it has nothing left to say.
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for _, comment := range comments {
+			observed[index].Comments = append(observed[index].Comments, prautomation.InlineComment{
+				ID:       comment.ID,
+				Author:   comment.User.Login,
+				Bot:      isBotUser(comment.User),
+				Path:     comment.Path,
+				Body:     comment.Body,
+				Resolved: comment.Resolver != nil && comment.Resolver.ID != 0,
+			})
+		}
+	}
+	return nil
 }
 
 // MergeLinked merges a linked pull request with the repository's default style

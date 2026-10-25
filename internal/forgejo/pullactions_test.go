@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -197,6 +198,92 @@ func TestPullCommitsShortPageIsComplete(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, commits, 2)
 	require.False(t, truncated)
+}
+
+// serveList serves count items with ids 1..count, oldest first, as a list
+// endpoint does: paged at most pageCap per page (0: unpaged, every request gets
+// everything, as the issue comments endpoint answers), with X-Total-Count
+// unless uncounted.
+func serveList(api *apiServer, path string, count, pageCap int, uncounted bool) {
+	api.handleFunc(http.MethodGet, path, func(w http.ResponseWriter, r *http.Request) {
+		from, to := 0, count
+		if pageCap > 0 {
+			page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+			size, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			size = min(size, pageCap)
+			from, to = min((page-1)*size, count), min(page*size, count)
+		}
+		items := []map[string]any{}
+		for id := from + 1; id <= to; id++ {
+			items = append(items, map[string]any{"id": id})
+		}
+		if !uncounted {
+			w.Header().Set("X-Total-Count", strconv.Itoa(count))
+		}
+		_ = json.NewEncoder(w).Encode(items)
+	})
+}
+
+func ids[T any](items []T, id func(T) int64) []int64 {
+	out := make([]int64, 0, len(items))
+	for _, item := range items {
+		out = append(out, id(item))
+	}
+	return out
+}
+
+func span(from, to int64) []int64 {
+	var out []int64
+	for id := from; id <= to; id++ {
+		out = append(out, id)
+	}
+	return out
+}
+
+func TestPageNewestKeepsTheNewestOfAPagedList(t *testing.T) {
+	t.Parallel()
+	reviewID := func(r Review) int64 { return r.ID }
+	for name, tc := range map[string]struct {
+		count, pageCap int
+		uncounted      bool
+		want           []int64
+		requests       int
+	}{
+		"short":                {count: 3, pageCap: 50, want: span(1, 3), requests: 1},
+		"long":                 {count: 135, pageCap: 50, want: span(36, 135), requests: 3},
+		"host caps the page":   {count: 135, pageCap: 30, want: span(36, 135), requests: 5},
+		"exactly the limit":    {count: 100, pageCap: 50, want: span(1, 100), requests: 2},
+		"no count, walks on":   {count: 135, pageCap: 50, uncounted: true, want: span(36, 135), requests: 3},
+		"no count, one page":   {count: 20, pageCap: 50, uncounted: true, want: span(1, 20), requests: 1},
+		"many pages, bounded":  {count: 5000, pageCap: 50, want: span(4901, 5000), requests: 3},
+		"empty":                {count: 0, pageCap: 50, want: []int64{}, requests: 1},
+		"unpaged, all at once": {count: 135, want: span(36, 135), requests: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, api := newActionsClient(t)
+			serveList(api, pullBase+"/reviews", tc.count, tc.pageCap, tc.uncounted)
+			reviews, err := client.Reviews(context.Background(), "o", "r", 7)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, ids(reviews, reviewID))
+			require.Equal(t, tc.requests, api.count(http.MethodGet, pullBase+"/reviews"))
+		})
+	}
+}
+
+func TestIssueCommentsOfAnUnpagedListAreNotRepeated(t *testing.T) {
+	t.Parallel()
+	client, api := newActionsClient(t)
+	// Forgejo 7 to 17 and Gitea 1.27 answer every comment whatever the page.
+	serveList(api, "/api/v1/repos/o/r/issues/7/comments", 65, 0, false)
+	comments, truncated, err := client.IssueComments(context.Background(), "o", "r", 7, 300)
+	require.NoError(t, err)
+	require.Equal(t, span(1, 65), ids(comments, func(c IssueComment) int64 { return c.ID }))
+	require.False(t, truncated)
+
+	comments, truncated, err = client.IssueComments(context.Background(), "o", "r", 7, 50)
+	require.NoError(t, err)
+	require.Equal(t, span(16, 65), ids(comments, func(c IssueComment) int64 { return c.ID }), "the newest are kept")
+	require.True(t, truncated)
 }
 
 func TestPullDiffKeepsTheStart(t *testing.T) {

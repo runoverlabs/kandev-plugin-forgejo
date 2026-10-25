@@ -161,3 +161,16 @@ func TestRecentNotMergeableIsUnknownNotConflicts(t *testing.T) {
 	yes := true
 	require.Equal(t, &yes, actions.settledMergeable(PullRequest{Mergeable: &yes, UpdatedAt: "2026-10-09T12:04:59Z"}))
 }
+
+func TestDetailReviewsKeepTheNewest(t *testing.T) {
+	reviews := make([]Review, maxDetailReviews+10)
+	for i := range reviews {
+		reviews[i] = Review{ID: int64(i + 1)}
+	}
+	var truncated []string
+	out := detailReviews(reviews, &truncated)
+	require.Len(t, out, maxDetailReviews)
+	require.Equal(t, int64(11), out[0].ID)
+	require.Equal(t, int64(maxDetailReviews+10), out[len(out)-1].ID)
+	require.Equal(t, []string{truncatedReviews}, truncated)
+}

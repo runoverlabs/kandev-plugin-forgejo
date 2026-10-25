@@ -279,12 +279,12 @@ func mergeBlockers(state string, mergeable *bool, pipeline string, checksRequire
 }
 
 func detailReviews(reviews []Review, truncated *[]string) []sourcecontrol.DetailReview {
+	if len(reviews) > maxDetailReviews {
+		*truncated = append(*truncated, truncatedReviews)
+		reviews = reviews[len(reviews)-maxDetailReviews:]
+	}
 	out := make([]sourcecontrol.DetailReview, 0, len(reviews))
 	for _, review := range reviews {
-		if len(out) == maxDetailReviews {
-			*truncated = append(*truncated, truncatedReviews)
-			break
-		}
 		out = append(out, sourcecontrol.DetailReview{
 			ID:          review.ID,
 			Author:      strings.TrimSpace(review.User.Login),
