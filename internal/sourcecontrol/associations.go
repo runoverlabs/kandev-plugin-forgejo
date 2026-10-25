@@ -1,4 +1,4 @@
-package forgejo
+package sourcecontrol
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 
 	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/scm"
-	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )
@@ -27,7 +26,7 @@ type Associations struct {
 	hosts kandev.Provider
 }
 
-var _ sourcecontrol.AssociationStore = (*Associations)(nil)
+var _ AssociationStore = (*Associations)(nil)
 
 // NewAssociations returns the Host-state-backed association store.
 func NewAssociations(hosts kandev.Provider) *Associations {
@@ -36,7 +35,7 @@ func NewAssociations(hosts kandev.Provider) *Associations {
 
 // Link records an association. It is idempotent: linking the same pull request
 // to the same task twice writes the same key and leaves one entry.
-func (a *Associations) Link(ctx context.Context, taskID string, identity sourcecontrol.ChangeRequestIdentity) error {
+func (a *Associations) Link(ctx context.Context, taskID string, identity ChangeRequestIdentity) error {
 	host, workspaceID, err := a.resolveWorkspace(ctx, taskID)
 	if err != nil {
 		return err
@@ -54,7 +53,7 @@ func (a *Associations) Link(ctx context.Context, taskID string, identity sourcec
 }
 
 // Unlink removes an association. Removing a missing link is not an error.
-func (a *Associations) Unlink(ctx context.Context, taskID string, identity sourcecontrol.ChangeRequestIdentity) error {
+func (a *Associations) Unlink(ctx context.Context, taskID string, identity ChangeRequestIdentity) error {
 	host, workspaceID, err := a.resolveWorkspace(ctx, taskID)
 	if err != nil {
 		return err
@@ -66,7 +65,7 @@ func (a *Associations) Unlink(ctx context.Context, taskID string, identity sourc
 }
 
 // ListForWorkspace returns every association recorded in a workspace.
-func (a *Associations) ListForWorkspace(ctx context.Context, workspaceID string) ([]sourcecontrol.ChangeRequestIdentity, []string, error) {
+func (a *Associations) ListForWorkspace(ctx context.Context, workspaceID string) ([]ChangeRequestIdentity, []string, error) {
 	host := a.hosts()
 	if host == nil {
 		return nil, nil, scm.ErrNotConfigured
@@ -75,7 +74,7 @@ func (a *Associations) ListForWorkspace(ctx context.Context, workspaceID string)
 	if err != nil {
 		return nil, nil, fmt.Errorf("forgejo: list task associations: %w", err)
 	}
-	identities := make([]sourcecontrol.ChangeRequestIdentity, 0, len(entries))
+	identities := make([]ChangeRequestIdentity, 0, len(entries))
 	taskIDs := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if !strings.HasPrefix(entry.Key, associationKeyPrefix) {
@@ -94,12 +93,12 @@ func (a *Associations) ListForWorkspace(ctx context.Context, workspaceID string)
 }
 
 // ListForTask returns the associations recorded for one task.
-func (a *Associations) ListForTask(ctx context.Context, workspaceID, taskID string) ([]sourcecontrol.ChangeRequestIdentity, error) {
+func (a *Associations) ListForTask(ctx context.Context, workspaceID, taskID string) ([]ChangeRequestIdentity, error) {
 	identities, taskIDs, err := a.ListForWorkspace(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	filtered := make([]sourcecontrol.ChangeRequestIdentity, 0, len(identities))
+	filtered := make([]ChangeRequestIdentity, 0, len(identities))
 	for i := range identities {
 		if taskIDs[i] == taskID {
 			filtered = append(filtered, identities[i])
@@ -130,7 +129,7 @@ func (a *Associations) resolveWorkspace(ctx context.Context, taskID string) (plu
 }
 
 // associationKey builds the per-link state key from the immutable tuple.
-func associationKey(taskID string, identity sourcecontrol.ChangeRequestIdentity) string {
+func associationKey(taskID string, identity ChangeRequestIdentity) string {
 	return fmt.Sprintf("%s%s:%s:%d", associationKeyPrefix, sanitizeKeySegment(taskID),
 		sanitizeKeySegment(identity.RepositoryID), identity.Number)
 }
@@ -152,18 +151,18 @@ func sanitizeKeySegment(value string) string {
 
 // decodeAssociation reads a stored entry back into an identity. Host state
 // round-trips through JSON, so a number arrives as float64.
-func decodeAssociation(value map[string]any) (sourcecontrol.ChangeRequestIdentity, string, bool) {
+func decodeAssociation(value map[string]any) (ChangeRequestIdentity, string, bool) {
 	if value == nil {
-		return sourcecontrol.ChangeRequestIdentity{}, "", false
+		return ChangeRequestIdentity{}, "", false
 	}
 	scope, _ := value["connection_scope"].(string)
 	repositoryID, _ := value["repository_id"].(string)
 	taskID, _ := value["task_id"].(string)
 	number, ok := decodeNumber(value["number"])
 	if !ok || strings.TrimSpace(scope) == "" || strings.TrimSpace(repositoryID) == "" || strings.TrimSpace(taskID) == "" {
-		return sourcecontrol.ChangeRequestIdentity{}, "", false
+		return ChangeRequestIdentity{}, "", false
 	}
-	return sourcecontrol.ChangeRequestIdentity{
+	return ChangeRequestIdentity{
 		ConnectionScope: scope,
 		RepositoryID:    repositoryID,
 		Number:          number,

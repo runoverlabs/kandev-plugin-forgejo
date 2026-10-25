@@ -1,24 +1,24 @@
-package forgejo
+package sourcecontrol
 
 import (
 	"context"
 	"errors"
 	"testing"
 
+	"kandev-plugin-forgejo/internal/kandev/kandevtest"
 	"kandev-plugin-forgejo/internal/scm"
-	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"github.com/stretchr/testify/require"
 )
 
-func identity(scope, repositoryID string, number int64) sourcecontrol.ChangeRequestIdentity {
-	return sourcecontrol.ChangeRequestIdentity{ConnectionScope: scope, RepositoryID: repositoryID, Number: number}
+func identity(scope, repositoryID string, number int64) ChangeRequestIdentity {
+	return ChangeRequestIdentity{ConnectionScope: scope, RepositoryID: repositoryID, Number: number}
 }
 
-func hostWithTask(taskID, workspaceID string) *fakeHost {
-	host := newFakeHost(map[string]any{})
-	host.tasks[taskID] = &pluginsdk.Task{ID: taskID, WorkspaceID: workspaceID}
+func hostWithTask(taskID, workspaceID string) *kandevtest.Host {
+	host := kandevtest.NewHost(map[string]any{})
+	host.AddTask(pluginsdk.Task{ID: taskID, WorkspaceID: workspaceID})
 	return host
 }
 
@@ -78,7 +78,7 @@ func TestSeparateLinksUseSeparateKeys(t *testing.T) {
 func TestListForTaskFiltersByTask(t *testing.T) {
 	t.Parallel()
 	host := hostWithTask("task-1", "workspace-1")
-	host.tasks["task-2"] = &pluginsdk.Task{ID: "task-2", WorkspaceID: "workspace-1"}
+	host.AddTask(pluginsdk.Task{ID: "task-2", WorkspaceID: "workspace-1"})
 	associations := NewAssociations(func() pluginsdk.Host { return host })
 
 	require.NoError(t, associations.Link(context.Background(), "task-1", identity("s", "7", 1)))
@@ -109,14 +109,14 @@ func TestAssociationErrorsSurface(t *testing.T) {
 	host := hostWithTask("task-1", "workspace-1")
 	associations := NewAssociations(func() pluginsdk.Host { return host })
 
-	host.stateErr = errors.New("state unavailable")
+	host.StateErr = errors.New("state unavailable")
 	require.ErrorContains(t, associations.Link(context.Background(), "task-1", identity("s", "7", 1)), "store task association")
 
-	host.stateErr = nil
-	host.taskErr = errors.New("task unavailable")
+	host.StateErr = nil
+	host.TaskErr = errors.New("task unavailable")
 	require.ErrorContains(t, associations.Link(context.Background(), "task-1", identity("s", "7", 1)), "resolve task workspace")
 
-	host.taskErr = nil
+	host.TaskErr = nil
 	require.ErrorContains(t, associations.Link(context.Background(), "unknown-task", identity("s", "7", 1)), "has no workspace")
 	require.ErrorContains(t, associations.Link(context.Background(), "  ", identity("s", "7", 1)), "task id is required")
 

@@ -3,6 +3,7 @@ package forgejo
 import (
 	"context"
 	"encoding/json"
+	"kandev-plugin-forgejo/internal/sourcecontrol"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -206,4 +207,8 @@ func newTestConnection(t *testing.T, api *apiServer, token string) (*Connection,
 	host := newFakeHost(map[string]any{"base_url": api.url(), "api_token": token})
 	connection := NewConnection(func() pluginsdk.Host { return host })
 	return connection, host
+}
+
+func identity(scope, repositoryID string, number int64) sourcecontrol.ChangeRequestIdentity {
+	return sourcecontrol.ChangeRequestIdentity{ConnectionScope: scope, RepositoryID: repositoryID, Number: number}
 }

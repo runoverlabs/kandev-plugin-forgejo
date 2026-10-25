@@ -12,6 +12,7 @@ import (
 
 	"kandev-plugin-forgejo/internal/prautomation"
 	"kandev-plugin-forgejo/internal/scm"
+	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
 
 // Team is a team as the pull request and /user/teams report it.
@@ -72,7 +73,7 @@ const (
 // merge the plugin wraps into its Merger.
 type AutomationSource struct {
 	connection   *Connection
-	associations *Associations
+	associations *sourcecontrol.Associations
 	now          func() time.Time
 
 	mu       sync.Mutex
@@ -94,7 +95,7 @@ var (
 )
 
 // NewAutomationSource returns the automation adapter.
-func NewAutomationSource(connection *Connection, associations *Associations) *AutomationSource {
+func NewAutomationSource(connection *Connection, associations *sourcecontrol.Associations) *AutomationSource {
 	return &AutomationSource{connection: connection, associations: associations, now: time.Now}
 }
 

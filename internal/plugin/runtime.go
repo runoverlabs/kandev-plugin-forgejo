@@ -58,7 +58,7 @@ type Runtime struct {
 	// VerifiedActionContext the recipe's action path is built around.
 	repositories   *forgejo.Repositories
 	changeRequests *forgejo.ChangeRequests
-	associations   *forgejo.Associations
+	associations   *sourcecontrol.Associations
 	gitCredentials *forgejo.GitCredentials
 	pullActions    *forgejo.PullActions
 
@@ -94,7 +94,7 @@ func NewRuntime() *Runtime {
 
 	connection := forgejo.NewConnection(hosts)
 	repositories := forgejo.NewRepositories(connection, hosts, ProviderID)
-	associations := forgejo.NewAssociations(hosts)
+	associations := sourcecontrol.NewAssociations(hosts)
 
 	changeRequests := forgejo.NewChangeRequests(connection, repositories)
 

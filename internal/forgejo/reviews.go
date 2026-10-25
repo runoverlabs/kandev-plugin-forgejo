@@ -17,14 +17,14 @@ import (
 type Reviews struct {
 	connection   *Connection
 	repositories *Repositories
-	associations *Associations
+	associations *sourcecontrol.Associations
 	providerID   string
 }
 
 var _ sourcecontrol.ReviewReader = (*Reviews)(nil)
 
 // NewReviews returns the review adapter.
-func NewReviews(connection *Connection, repositories *Repositories, associations *Associations, providerID string) *Reviews {
+func NewReviews(connection *Connection, repositories *Repositories, associations *sourcecontrol.Associations, providerID string) *Reviews {
 	return &Reviews{connection: connection, repositories: repositories, associations: associations, providerID: providerID}
 }
 

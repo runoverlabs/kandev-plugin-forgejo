@@ -2,6 +2,7 @@ package forgejo
 
 import (
 	"context"
+	"kandev-plugin-forgejo/internal/sourcecontrol"
 	"net/http"
 	"testing"
 
@@ -117,7 +118,7 @@ func TestReviewKeyMatchesAcrossTaskAndWorkspaceRefresh(t *testing.T) {
 	connection, host := newTestConnection(t, api, "token")
 	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "workspace-1"}
 	repositories := NewRepositories(connection, func() pluginsdk.Host { return host }, "forgejo")
-	associations := NewAssociations(func() pluginsdk.Host { return host })
+	associations := sourcecontrol.NewAssociations(func() pluginsdk.Host { return host })
 	reviews := NewReviews(connection, repositories, associations, "forgejo")
 
 	require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.url(), "7", 42)))
@@ -152,7 +153,7 @@ func TestForTaskToleratesMissingStatusAndReviews(t *testing.T) {
 	connection, host := newTestConnection(t, api, "token")
 	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "workspace-1"}
 	repositories := NewRepositories(connection, func() pluginsdk.Host { return host }, "forgejo")
-	associations := NewAssociations(func() pluginsdk.Host { return host })
+	associations := sourcecontrol.NewAssociations(func() pluginsdk.Host { return host })
 	reviews := NewReviews(connection, repositories, associations, "forgejo")
 	require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.url(), "7", 42)))
 
@@ -173,7 +174,7 @@ func TestForTaskSkipsDeletedPullRequests(t *testing.T) {
 	connection, host := newTestConnection(t, api, "token")
 	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "workspace-1"}
 	repositories := NewRepositories(connection, func() pluginsdk.Host { return host }, "forgejo")
-	associations := NewAssociations(func() pluginsdk.Host { return host })
+	associations := sourcecontrol.NewAssociations(func() pluginsdk.Host { return host })
 	reviews := NewReviews(connection, repositories, associations, "forgejo")
 	require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.url(), "7", 42)))
 
@@ -189,7 +190,7 @@ func TestForTaskIgnoresOtherConnectionScopes(t *testing.T) {
 	connection, host := newTestConnection(t, api, "token")
 	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "workspace-1"}
 	repositories := NewRepositories(connection, func() pluginsdk.Host { return host }, "forgejo")
-	associations := NewAssociations(func() pluginsdk.Host { return host })
+	associations := sourcecontrol.NewAssociations(func() pluginsdk.Host { return host })
 	reviews := NewReviews(connection, repositories, associations, "forgejo")
 	require.NoError(t, associations.Link(context.Background(), "task-1", identity("https://other.example.com", "7", 42)))
 
@@ -205,7 +206,7 @@ func TestAssociationsDoesNotCallProvider(t *testing.T) {
 	connection, host := newTestConnection(t, api, "token")
 	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "workspace-1"}
 	repositories := NewRepositories(connection, func() pluginsdk.Host { return host }, "forgejo")
-	associations := NewAssociations(func() pluginsdk.Host { return host })
+	associations := sourcecontrol.NewAssociations(func() pluginsdk.Host { return host })
 	reviews := NewReviews(connection, repositories, associations, "forgejo")
 	require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.url(), "7", 42)))
 

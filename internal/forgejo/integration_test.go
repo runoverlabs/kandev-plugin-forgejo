@@ -42,7 +42,7 @@ func liveConfig(t *testing.T) (baseURL, token, owner, repo string) {
 	return baseURL, token, owner, repo
 }
 
-func liveAdapters(t *testing.T) (*Client, *Repositories, *Associations, *Reviews, *References, *fakeHost) {
+func liveAdapters(t *testing.T) (*Client, *Repositories, *sourcecontrol.Associations, *Reviews, *References, *fakeHost) {
 	t.Helper()
 	baseURL, token, _, _ := liveConfig(t)
 	host := newFakeHost(map[string]any{"base_url": baseURL, "api_token": token})
@@ -50,7 +50,7 @@ func liveAdapters(t *testing.T) (*Client, *Repositories, *Associations, *Reviews
 	client, err := connection.Client(context.Background())
 	require.NoError(t, err)
 	repositories := NewRepositories(connection, func() pluginsdk.Host { return host }, "forgejo")
-	associations := NewAssociations(func() pluginsdk.Host { return host })
+	associations := sourcecontrol.NewAssociations(func() pluginsdk.Host { return host })
 	reviews := NewReviews(connection, repositories, associations, "forgejo")
 	return client, repositories, associations, reviews, NewReferences(connection), host
 }

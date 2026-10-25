@@ -11,6 +11,7 @@ import (
 
 	"kandev-plugin-forgejo/internal/prautomation"
 	"kandev-plugin-forgejo/internal/scm"
+	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"github.com/stretchr/testify/require"
@@ -23,7 +24,7 @@ func automationSourceFixture(t *testing.T, pull map[string]any) (*AutomationSour
 	api := newAPIServer(t)
 	connection, host := newTestConnection(t, api, "token")
 	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "ws-1"}
-	associations := NewAssociations(func() pluginsdk.Host { return host })
+	associations := sourcecontrol.NewAssociations(func() pluginsdk.Host { return host })
 	require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.url(), "5", 7)))
 	require.NoError(t, associations.Link(context.Background(), "task-1", identity("https://elsewhere.example", "5", 8)))
 

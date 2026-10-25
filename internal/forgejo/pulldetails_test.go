@@ -15,14 +15,14 @@ import (
 
 // detailsFixture links PRs 7 and 8 of repository 5 to task-1 and serves a
 // complete set of responses for PR 7 on a protected base branch.
-func detailsFixture(t *testing.T) (*PullActions, *apiServer, *Associations) {
+func detailsFixture(t *testing.T) (*PullActions, *apiServer, *sourcecontrol.Associations) {
 	t.Helper()
 	api := newAPIServer(t)
 	connection, host := newTestConnection(t, api, "token")
 	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "ws-1"}
 	hosts := func() pluginsdk.Host { return host }
 	repositories := NewRepositories(connection, hosts, "forgejo")
-	associations := NewAssociations(hosts)
+	associations := sourcecontrol.NewAssociations(hosts)
 	actions := NewPullActions(connection, repositories, associations, "forgejo")
 	for _, number := range []int64{7, 8} {
 		require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.url(), "5", number)))

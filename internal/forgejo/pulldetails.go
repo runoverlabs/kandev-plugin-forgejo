@@ -27,7 +27,7 @@ const (
 type PullActions struct {
 	connection   *Connection
 	repositories *Repositories
-	associations *Associations
+	associations *sourcecontrol.Associations
 	providerID   string
 	// now is the clock; tests replace it.
 	now func() time.Time
@@ -36,7 +36,7 @@ type PullActions struct {
 var _ sourcecontrol.ChangeRequestDetailReader = (*PullActions)(nil)
 
 // NewPullActions returns the pull request action adapter.
-func NewPullActions(connection *Connection, repositories *Repositories, associations *Associations, providerID string) *PullActions {
+func NewPullActions(connection *Connection, repositories *Repositories, associations *sourcecontrol.Associations, providerID string) *PullActions {
 	return &PullActions{connection: connection, repositories: repositories, associations: associations, providerID: providerID, now: time.Now}
 }
 
