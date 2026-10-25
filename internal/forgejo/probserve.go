@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -186,6 +187,7 @@ func (s *AutomationSource) Observe(ctx context.Context, _ string, ref prautomati
 	// Every read below feeds a merge gate, so none fails soft: a token that
 	// cannot see the checks or the reviews fails the observation instead of
 	// reading as no CI or no objections.
+	var statuses []CommitStatus
 	if sha := strings.TrimSpace(pull.Head.Sha); sha != "" {
 		combined, err := client.CombinedStatus(ctx, owner, name, sha)
 		if err != nil {
@@ -195,6 +197,7 @@ func (s *AutomationSource) Observe(ctx context.Context, _ string, ref prautomati
 			return prautomation.Observation{}, errStatusesCut
 		}
 		obs.CI = automationCI(combined)
+		statuses = combined.Statuses
 	}
 
 	if base := strings.TrimSpace(pull.Base.Ref); base != "" {
@@ -204,6 +207,9 @@ func (s *AutomationSource) Observe(ctx context.Context, _ string, ref prautomati
 		}
 		required := int(branch.RequiredApprovals)
 		obs.RequiredApprovals = &required
+		if branch.EnableStatusCheck {
+			obs.CI.Missing = missingRequiredChecks(branch.StatusCheckContext, statuses)
+		}
 	}
 
 	reviews, truncated, err := client.NewestReviews(ctx, owner, name, ref.Number)
@@ -458,6 +464,97 @@ func automationCI(combined CombinedStatus) prautomation.CI {
 		ci.State = prautomation.CISuccess
 	}
 	return ci
+}
+
+// missingRequiredChecks lists the required context patterns no status on the
+// head matches. The instance holds such a pattern pending and refuses the
+// merge, so a check that has not reported yet is not a green build even when
+// every check that has is.
+func missingRequiredChecks(patterns []string, statuses []CommitStatus) []string {
+	var missing []string
+	for _, pattern := range patterns {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		matcher := contextGlob(pattern)
+		found := false
+		for _, status := range statuses {
+			if matcher != nil && matcher.MatchString(status.Context) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			missing = append(missing, pattern)
+		}
+	}
+	return missing
+}
+
+// contextGlob compiles a required context pattern as the instance does
+// (gobwas/glob without separators): "*" matches any run of characters, "/"
+// included, "?" one character, "[...]" a class ("[!...]" negated) and
+// "{a,b}" either alternative. A pattern it cannot compile matches nothing, so
+// auto-merge waits rather than guessing.
+func contextGlob(pattern string) *regexp.Regexp {
+	var b strings.Builder
+	b.WriteString("^")
+	depth := 0
+	runes := []rune(pattern)
+	for i := 0; i < len(runes); i++ {
+		switch c := runes[i]; c {
+		case '*':
+			b.WriteString(".*")
+		case '?':
+			b.WriteString(".")
+		case '[':
+			end := i + 1
+			for end < len(runes) && runes[end] != ']' {
+				end++
+			}
+			if end == len(runes) {
+				return nil
+			}
+			class := string(runes[i+1 : end])
+			if strings.HasPrefix(class, "!") {
+				class = "^" + class[1:]
+			}
+			b.WriteString("[" + strings.ReplaceAll(class, `\`, `\\`) + "]")
+			i = end
+		case '{':
+			depth++
+			b.WriteString("(?:")
+		case '}':
+			if depth == 0 {
+				return nil
+			}
+			depth--
+			b.WriteString(")")
+		case ',':
+			if depth > 0 {
+				b.WriteString("|")
+			} else {
+				b.WriteString(",")
+			}
+		case '\\':
+			if i+1 < len(runes) {
+				i++
+				b.WriteString(regexp.QuoteMeta(string(runes[i])))
+			}
+		default:
+			b.WriteString(regexp.QuoteMeta(string(c)))
+		}
+	}
+	if depth != 0 {
+		return nil
+	}
+	b.WriteString("$")
+	compiled, err := regexp.Compile(b.String())
+	if err != nil {
+		return nil
+	}
+	return compiled
 }
 
 func automationReviewState(state string) string {

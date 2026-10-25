@@ -28,7 +28,9 @@ its review panel:
 
 Workspace defaults live in **Settings → Integrations → Forgejo → Pull request
 automation**. They are copied onto a pull request the first time the plugin sees
-it linked; changing a default later does not touch pull requests already seen.
+it linked, or when someone first changes a switch on it in the panel, whichever
+comes first; changing a default later does not touch pull requests already
+seen.
 **A default never turns on auto-fix or auto-merge for a pull request from a
 fork** (see [Forks](#forks)).
 
@@ -109,6 +111,11 @@ it per workspace in the settings, with these placeholders:
 - `{{pr.repository}}`, `{{pr.head_branch}}`, `{{pr.base_branch}}`;
 - `{{attempt.round}}`.
 
+`{{pr.title}}` and `{{pr.head_branch}}` are the pull request author's text, and
+are substituted as they are, outside the part of the prompt marked as data.
+With the review feedback setting at **No review text**, the title is left out
+of the prompt, placeholder included.
+
 The outcome instructions are always appended and cannot be edited: the round
 bookkeeping depends on them. Each prompt starts with a line naming the round and
 an attempt id. Kandev treats two identical messages as one, and the id keeps
@@ -134,7 +141,9 @@ signal the plugin can rely on.
 **At the default, anyone who can comment on the pull request can put text in
 front of the agent.** On a repository open to outside contributors, choose
 Official reviewers. The prompt marks review text as data rather than
-instructions, but that is a mitigation, not a boundary.
+instructions, and with it the title, the branch names and the failing checks'
+names, which the author or CI the author's commit defines can choose. That is
+a mitigation, not a boundary.
 
 Whatever a narrower setting leaves out is counted, and the panel says how many
 comments were left out.
@@ -148,6 +157,9 @@ The plugin merges the pull request itself once all of these hold:
 - CI on the head has finished and nothing failed. A head with no checks at
   all passes once it has stayed that way for two minutes, so CI that has not
   reported yet after a push is not mistaken for a repository without CI;
+- when the base branch's protection requires status checks, every required
+  check (context names and patterns, as the instance matches them) has
+  reported on the head;
 - the instance reports the branch merges cleanly;
 - nobody's latest review requests changes;
 - official approvals reach the branch's required approvals;
@@ -213,8 +225,9 @@ them runs with your executor's environment. So:
   has looked at the pull request for the first time.
 - **The plugin never starts an agent for a fork's pull request.** Kandev starts
   a session that has never run when it receives a message, so for a fork the
-  plugin only prompts a session that is already running or idle. Until someone
-  starts the task, the panel says so and the prompt waits.
+  plugin only prompts a session an agent has already run in: running, idle, or
+  waiting for input after its turn. Until someone starts the task, the panel
+  says so and the prompt waits.
 
 ## After upgrading: re-approve the capabilities
 

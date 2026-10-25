@@ -354,6 +354,50 @@ func TestAutomationCIStates(t *testing.T) {
 	}}).State)
 }
 
+func TestObserveReportsRequiredChecksThatHaveNotReported(t *testing.T) {
+	source, api := automationSourceFixture(t, nil)
+	api.handle(http.MethodGet, "/api/v1/repos/o/r/branches/main", 200, map[string]any{
+		"name": "main", "enable_status_check": true,
+		"status_check_contexts": []string{"ci/lint", "ci/te?t", "deploy / *", "ci/deploy"},
+	})
+	obs, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
+	require.NoError(t, err)
+	require.Equal(t, []string{"deploy / *", "ci/deploy"}, obs.CI.Missing)
+
+	api.handle(http.MethodGet, "/api/v1/repos/o/r/branches/main", 200, map[string]any{
+		"name": "main", "status_check_contexts": []string{"ci/deploy"},
+	})
+	obs, err = source.Observe(context.Background(), "ws-1", observedRef, allReads)
+	require.NoError(t, err)
+	require.Empty(t, obs.CI.Missing, "contexts are required only while status checks are on")
+}
+
+func TestContextGlobMatchesAsTheInstanceDoes(t *testing.T) {
+	for _, tc := range []struct {
+		pattern, context string
+		match            bool
+	}{
+		{"ci/test", "ci/test", true},
+		{"ci/test", "ci/test2", false},
+		{"*", "CI / build (push)", true},
+		{"CI / *", "CI / build (push)", true},
+		{"ci/te?t", "ci/test", true},
+		{"ci/[a-c]x", "ci/bx", true},
+		{"ci/[!a-c]x", "ci/bx", false},
+		{"{lint,test}", "test", true},
+		{"{lint,test}", "build", false},
+		{"a.b", "axb", false},
+		{"ci/(x)+", "ci/(x)+", true},
+	} {
+		matcher := contextGlob(tc.pattern)
+		require.NotNil(t, matcher, tc.pattern)
+		require.Equal(t, tc.match, matcher.MatchString(tc.context), "%s ~ %s", tc.pattern, tc.context)
+	}
+	for _, broken := range []string{"{a,b", "a}", "[ab"} {
+		require.Nil(t, contextGlob(broken), broken)
+	}
+}
+
 // count reports how many requests reached method and path.
 func (a *apiServer) count(method, path string) int {
 	a.mu.Lock()

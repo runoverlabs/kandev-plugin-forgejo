@@ -21,6 +21,8 @@ type fakeState struct {
 	// onGet, when set, runs before a read of key, outside the lock: a hook to
 	// interleave a concurrent write.
 	onGet func(key string)
+	// setErr, when set, fails every write.
+	setErr error
 }
 
 func newFakeState() *fakeState { return &fakeState{entries: map[string]map[string]map[string]any{}} }
@@ -36,6 +38,9 @@ func (f *fakeState) GetState(_ context.Context, _, scopeID, key string) (map[str
 }
 
 func (f *fakeState) SetState(_ context.Context, _, scopeID, key string, value map[string]any) error {
+	if f.setErr != nil {
+		return f.setErr
+	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return err
@@ -71,10 +76,19 @@ func (f *fakeState) ListState(_ context.Context, _, scopeID string) ([]pluginsdk
 	return entries, nil
 }
 
-type fakeLinks struct{ refs map[string][]PullRef }
+type fakeLinks struct {
+	refs map[string][]PullRef
+	// afterLinked, when set, runs once the links have been read: a hook to
+	// link a pull request the caller's answer does not include.
+	afterLinked func()
+}
 
 func (f *fakeLinks) Linked(_ context.Context, workspaceID string) ([]PullRef, error) {
-	return f.refs[workspaceID], nil
+	refs := f.refs[workspaceID]
+	if f.afterLinked != nil {
+		f.afterLinked()
+	}
+	return refs, nil
 }
 
 type fakeObserver struct {
@@ -125,6 +139,8 @@ type fakeMessenger struct {
 	sendErr     error
 	status      string
 	sent        []sent
+	// onSend, when set, runs before a prompt is delivered.
+	onSend func()
 }
 
 func (f *fakeMessenger) Sessions(_ context.Context, taskID string) ([]Session, error) {
@@ -135,6 +151,9 @@ func (f *fakeMessenger) Sessions(_ context.Context, taskID string) ([]Session, e
 }
 
 func (f *fakeMessenger) Send(_ context.Context, taskID, sessionID, text string) (string, error) {
+	if f.onSend != nil {
+		f.onSend()
+	}
 	if f.sendErr != nil {
 		return "", f.sendErr
 	}

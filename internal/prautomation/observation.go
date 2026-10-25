@@ -34,6 +34,9 @@ type Check struct {
 type CI struct {
 	State   CIState `json:"state"`
 	Failing []Check `json:"failing,omitempty"`
+	// Missing names the checks branch protection requires that have not
+	// reported on the head. The instance refuses a merge until they have.
+	Missing []string `json:"missing,omitempty"`
 }
 
 // Review states, normalized by the adapter.

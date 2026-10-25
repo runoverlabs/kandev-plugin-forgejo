@@ -159,7 +159,15 @@ func (r *Record) ApplySwitches(next Switches) {
 		r.LastLifecycle = ""
 		r.ReviewBaselineSet = false
 	}
-	if !next.lifecycle() {
+	// A queued prompt whose switch is now off is not delivered.
+	kept := r.Pending[:0]
+	for _, pending := range r.Pending {
+		if next.wants(pending.Event) {
+			kept = append(kept, pending)
+		}
+	}
+	r.Pending = kept
+	if len(r.Pending) == 0 {
 		r.Pending = nil
 	}
 	r.Switches = next

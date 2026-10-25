@@ -28,9 +28,17 @@ func (s Switches) Any() bool {
 	return s.AutoFix || s.AutoMerge || s.OnReviewRequested || s.OnMerged || s.OnClosed
 }
 
-// lifecycle reports whether any lifecycle prompt is on.
-func (s Switches) lifecycle() bool {
-	return s.OnReviewRequested || s.OnMerged || s.OnClosed
+// wants reports whether the prompt for a lifecycle event is on.
+func (s Switches) wants(event string) bool {
+	switch event {
+	case EventReviewRequested:
+		return s.OnReviewRequested
+	case EventMerged:
+		return s.OnMerged
+	case EventClosed:
+		return s.OnClosed
+	}
+	return false
 }
 
 // Trust decides whose review text may reach the agent.

@@ -44,6 +44,8 @@ type Session struct {
 	ID        string
 	State     string
 	StartedAt string
+	// ACPSessionID is set once an agent has run in the session.
+	ACPSessionID string
 }
 
 // Messenger reaches a task's agent through Kandev.

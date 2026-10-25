@@ -176,6 +176,42 @@ func TestAutomationSetRefusesAForkWithoutConfirmation(t *testing.T) {
 	require.Equal(t, true, decodeBody(t, response)["auto_fix"])
 }
 
+// A human's first choice on a record the loop has not seeded yet lands on top
+// of the workspace defaults, as the loop would have seeded it.
+func TestAutomationSetOnAnUnseededRecordKeepsTheDefaults(t *testing.T) {
+	fixture, _ := automationFixture(t)
+	ctx := context.Background()
+	_, err := fixture.runtime.HandleAction(ctx, pluginRequest(ActionAutomationSettingsSet, "workspace-1",
+		`{"defaults":{"on_merged":true,"auto_merge":true}}`))
+	require.NoError(t, err)
+
+	response, err := fixture.runtime.HandleAction(ctx, taskAction(ActionAutomationSet, `{"number":12,"auto_fix":true}`))
+	require.NoError(t, err)
+	body := decodeBody(t, response)
+	require.Equal(t, true, body["auto_fix"])
+	require.Equal(t, true, body["on_merged"])
+	require.Equal(t, true, body["auto_merge"])
+	require.Equal(t, true, body["seeded"])
+}
+
+func TestAutomationSetOnAnUnseededForkTakesNoAutomationDefaults(t *testing.T) {
+	fixture, _ := automationFixture(t)
+	ctx := context.Background()
+	fixture.json("GET", "/api/v1/repos/kandev/demo/pulls/12",
+		`{"number":12,"title":"Add thing","state":"open","mergeable":true,
+		  "head":{"ref":"feature","sha":"`+agentSHA+`","repo_id":78},"base":{"ref":"main","repo_id":77},"user":{"login":"bot"}}`)
+	_, err := fixture.runtime.HandleAction(ctx, pluginRequest(ActionAutomationSettingsSet, "workspace-1",
+		`{"defaults":{"on_merged":true,"auto_merge":true}}`))
+	require.NoError(t, err)
+
+	response, err := fixture.runtime.HandleAction(ctx, taskAction(ActionAutomationSet, `{"number":12,"on_closed":true}`))
+	require.NoError(t, err)
+	body := decodeBody(t, response)
+	require.Equal(t, true, body["on_merged"])
+	require.Equal(t, true, body["on_closed"])
+	require.Equal(t, false, body["auto_merge"], "a fork never takes auto-merge from the defaults")
+}
+
 func TestAutomationSettingsRoundTripAndValidate(t *testing.T) {
 	fixture, _ := automationFixture(t)
 	ctx := context.Background()
@@ -230,8 +266,11 @@ func TestAutomationLoopPromptsAndTakesTheOutcome(t *testing.T) {
 			"started_at": record.Attempt.SentAt.Add(time.Second).Format(time.RFC3339Nano),
 		},
 	}))
-	record, _, _ = fixture.runtime.automation.Store().Get(ctx, "workspace-1", ref)
-	require.Equal(t, prautomation.AttemptRetryable, record.Attempt.State)
+	// The hint runs off the delivery path.
+	require.Eventually(t, func() bool {
+		record, _, _ = fixture.runtime.automation.Store().Get(ctx, "workspace-1", ref)
+		return record.Attempt.State == prautomation.AttemptRetryable
+	}, 5*time.Second, 10*time.Millisecond)
 
 	result := fixture.invoke(t, ToolPR, map[string]any{"op": "outcome", "outcome": "blocked", "body": "needs a secret"})
 	require.False(t, result.IsError, result.Text)

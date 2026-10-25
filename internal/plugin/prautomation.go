@@ -85,7 +85,9 @@ func (m automationMessenger) Sessions(ctx context.Context, taskID string) ([]pra
 		if session.TaskID != "" && session.TaskID != taskID {
 			continue
 		}
-		out = append(out, prautomation.Session{ID: session.ID, State: session.State, StartedAt: session.StartedAt})
+		out = append(out, prautomation.Session{
+			ID: session.ID, State: session.State, StartedAt: session.StartedAt, ACPSessionID: session.ACPSessionID,
+		})
 	}
 	return out, nil
 }
@@ -152,8 +154,9 @@ func (m automationMerger) Merge(ctx context.Context, workspaceID string, ref pra
 }
 
 // OnEvent receives the bus events the manifest subscribes to. It only marks
-// records due; the host waits on it, so it does no provider work.
-func (r *Runtime) OnEvent(ctx context.Context, event *pluginsdk.Event) error {
+// records due, and off the delivery path: the host waits on it, and marking a
+// record waits for any evaluation holding it.
+func (r *Runtime) OnEvent(_ context.Context, event *pluginsdk.Event) error {
 	if event == nil || r.automation == nil {
 		return nil
 	}
@@ -168,9 +171,9 @@ func (r *Runtime) OnEvent(ctx context.Context, event *pluginsdk.Event) error {
 		if raw, ok := event.Payload["started_at"].(string); ok {
 			startedAt, _ = time.Parse(time.RFC3339Nano, raw)
 		}
-		r.automation.TurnCompleted(ctx, taskID, sessionID, startedAt)
+		r.automation.Hint(func(ctx context.Context) { r.automation.TurnCompleted(ctx, taskID, sessionID, startedAt) })
 	case event.EventType == eventSessionStateChanged || strings.HasPrefix(event.EventType, eventSessionStateChanged+"."):
-		r.automation.SessionChanged(ctx, taskID)
+		r.automation.Hint(func(ctx context.Context) { r.automation.SessionChanged(ctx, taskID) })
 	}
 	return nil
 }
@@ -231,9 +234,20 @@ func (r *Runtime) handleAutomationAction(ctx context.Context, request *pluginsdk
 		// Auto-fix and auto-merge run an agent on a fork author's code and
 		// comments. That takes a human's confirmation, checked here and not
 		// only in the panel, which may not know yet that it is a fork.
+		var fork *bool
+		isFork := func() (bool, error) {
+			if fork == nil {
+				value, err := r.automationFork(ctx, workspaceID, ref)
+				if err != nil {
+					return false, err
+				}
+				fork = &value
+			}
+			return *fork, nil
+		}
 		enabling := (input.AutoFix != nil && *input.AutoFix) || (input.AutoMerge != nil && *input.AutoMerge)
 		if enabling && !input.ConfirmFork {
-			fork, err := r.automationFork(ctx, workspaceID, ref)
+			fork, err := isFork()
 			if err != nil {
 				return pullFailure(err)
 			}
@@ -241,18 +255,38 @@ func (r *Runtime) handleAutomationAction(ctx context.Context, request *pluginsdk
 				return domainResponse(http.StatusConflict, "This pull request comes from a fork. Confirm the warning in the panel to turn this on.")
 			}
 		}
+		// The defaults an unseeded record takes, as the loop would seed it: a
+		// fork never takes auto-fix or auto-merge from them.
+		settings, err := r.automation.Store().Settings(ctx, workspaceID)
+		if err != nil {
+			return nil, err
+		}
+		defaults := settings.Defaults
+		if defaults.AutoFix || defaults.AutoMerge {
+			fork, err := isFork()
+			if err != nil {
+				return pullFailure(err)
+			}
+			if fork {
+				defaults.AutoFix, defaults.AutoMerge = false, false
+			}
+		}
 		var changes []string
 		// Upsert: when the loop has not seen this link yet, a human's choice
-		// does not wait for it, and the record starts from what they set.
+		// does not wait for it. An unseeded record starts from the defaults,
+		// with what they set on top.
 		record, err := r.automation.Upsert(ctx, workspaceID, ref, func(record *prautomation.Record, created bool) error {
 			if created {
 				changes = append(changes, "created")
 			}
-			next := record.Switches
+			next, fresh := record.Switches, !record.Seeded
+			if fresh {
+				next = defaults
+			}
 			apply := func(name string, value *bool, field *bool) {
 				// A new record logs every switch it was given, off ones too:
 				// "created" alone would not say a human refused one.
-				if value != nil && (created || *value != *field) {
+				if value != nil && (fresh || *value != *field) {
 					*field = *value
 					changes = append(changes, fmt.Sprintf("%s=%t", name, *value))
 				}

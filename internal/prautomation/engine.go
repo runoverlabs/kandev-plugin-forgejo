@@ -56,6 +56,10 @@ const (
 	// workspace, so a large board cannot hammer the instance.
 	budgetPerWorkspace = 20
 	maxSummaryBytes    = 4096
+	// hintTimeout bounds an event hint, most of it spent waiting for a record
+	// an evaluation holds. The hint only brings work forward; the loop does it
+	// anyway.
+	hintTimeout = 30 * time.Second
 )
 
 // Session states, as the Host reports them.
@@ -98,8 +102,10 @@ type Engine struct {
 
 	mu      sync.Mutex
 	tracked map[string]string // task id → workspace id, rebuilt every tick
+	running context.Context
 	cancel  context.CancelFunc
 	stopped chan struct{}
+	hints   sync.WaitGroup
 }
 
 // Config wires an Engine.
@@ -153,7 +159,7 @@ func (e *Engine) Start() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
-	e.cancel, e.stopped = cancel, stopped
+	e.running, e.cancel, e.stopped = ctx, cancel, stopped
 	go func() {
 		defer close(stopped)
 		ticker := time.NewTicker(e.tick)
@@ -173,13 +179,34 @@ func (e *Engine) Start() {
 func (e *Engine) Stop() {
 	e.mu.Lock()
 	cancel, stopped := e.cancel, e.stopped
-	e.cancel, e.stopped = nil, nil
+	e.running, e.cancel, e.stopped = nil, nil, nil
 	e.mu.Unlock()
 	if cancel == nil {
 		return
 	}
 	cancel()
 	<-stopped
+	e.hints.Wait()
+}
+
+// Hint runs an event handler off the caller's path, bounded by hintTimeout
+// and the engine's lifetime. The host waits on event delivery with a short
+// deadline and drops events when its queue backs up, while a handler can wait
+// on a record an evaluation holds across provider requests. A hint while the
+// engine is stopped is dropped: nothing would act on it.
+func (e *Engine) Hint(handle func(ctx context.Context)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.running == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(e.running, hintTimeout)
+	e.hints.Add(1)
+	go func() {
+		defer e.hints.Done()
+		defer cancel()
+		handle(ctx)
+	}()
 }
 
 // Tick runs one pass over every workspace. Exported so tests drive the loop
@@ -214,14 +241,17 @@ func (e *Engine) tickWorkspace(ctx context.Context, workspaceID string, tracked 
 			return
 		}
 	}
-	links, err := e.links.Linked(ctx, workspaceID)
-	if err != nil {
-		e.logf("prautomation: list links in %s: %v", workspaceID, err)
-		return
-	}
+	// Records before links: a record the panel creates for a pull request
+	// linked after the links were read must not be taken for an unlinked one.
+	// In this order such a record is not in the list, so it is left alone.
 	records, err := e.store.List(ctx, workspaceID)
 	if err != nil {
 		e.logf("prautomation: list records in %s: %v", workspaceID, err)
+		return
+	}
+	links, err := e.links.Linked(ctx, workspaceID)
+	if err != nil {
+		e.logf("prautomation: list links in %s: %v", workspaceID, err)
 		return
 	}
 	byKey := make(map[string]Record, len(records))
@@ -301,7 +331,10 @@ func (e *Engine) isDue(record Record, now time.Time) bool {
 // Evaluate observes one pull request and acts on it. It is exported for the
 // panel's refresh and for tests.
 func (e *Engine) Evaluate(ctx context.Context, workspaceID string, ref PullRef) {
-	unlock := e.locks.lock(recordKey(ref))
+	unlock, err := e.locks.lock(ctx, recordKey(ref))
+	if err != nil {
+		return
+	}
 	defer unlock()
 
 	record, found, err := e.store.Get(ctx, workspaceID, ref)
@@ -359,10 +392,14 @@ func (e *Engine) Evaluate(ctx context.Context, workspaceID string, ref PullRef) 
 }
 
 func (e *Engine) save(ctx context.Context, workspaceID string, record *Record) {
-	record.UpdatedAt = e.now().UTC()
-	if err := e.store.Put(ctx, workspaceID, *record); err != nil {
+	if err := e.put(ctx, workspaceID, record); err != nil {
 		e.logf("prautomation: save record: %v", err)
 	}
+}
+
+func (e *Engine) put(ctx context.Context, workspaceID string, record *Record) error {
+	record.UpdatedAt = e.now().UTC()
+	return e.store.Put(ctx, workspaceID, *record)
 }
 
 // evaluation is one Evaluate's working set.
@@ -468,7 +505,7 @@ func (r *evaluation) deliverPending() {
 	for len(r.record.Pending) > 0 {
 		pending := r.record.Pending[0]
 		text := lifecycleText(pending, r.obs, *r.record)
-		if _, ok := r.send(text, ""); !ok {
+		if !r.send(text, "") {
 			return
 		}
 		r.record.Pending = r.record.Pending[1:]
@@ -478,31 +515,40 @@ func (r *evaluation) deliverPending() {
 	}
 }
 
-// send delivers text to the best session and reports the dispatch status.
-// preferred is tried first when it can take a prompt.
-func (r *evaluation) send(text, preferred string) (Dispatch, bool) {
+// send delivers text to the best session. preferred is tried first when it
+// can take a prompt.
+func (r *evaluation) send(text, preferred string) bool {
+	sessionID, ok := r.target(preferred)
+	if !ok {
+		return false
+	}
+	_, ok = r.deliver(sessionID, text)
+	return ok
+}
+
+// target picks the session a prompt goes to.
+func (r *evaluation) target(preferred string) (string, bool) {
 	sessions, err := r.loadSessions()
 	if err != nil {
 		r.sendFailed(err)
-		return Dispatch{}, false
+		return "", false
 	}
 	sessionID, why := pickSession(sessions, preferred, r.record.Fork)
 	if sessionID == "" {
 		r.status(why)
-		return Dispatch{}, false
+		return "", false
 	}
+	return sessionID, true
+}
+
+// deliver sends text to a session and returns the Host's dispatch status.
+func (r *evaluation) deliver(sessionID, text string) (string, bool) {
 	status, err := r.engine.messenger.Send(r.ctx, r.record.TaskID, sessionID, text)
 	if err != nil {
 		r.sendFailed(err)
-		return Dispatch{}, false
+		return "", false
 	}
-	return Dispatch{SessionID: sessionID, Status: status}, true
-}
-
-// Dispatch is where a prompt went.
-type Dispatch struct {
-	SessionID string
-	Status    string
+	return status, true
 }
 
 func (r *evaluation) sendFailed(err error) {
@@ -522,30 +568,24 @@ func (r *evaluation) sendFailed(err error) {
 // pickSession chooses the session to prompt: preferred when it can take a
 // prompt, otherwise the most recently started session that can.
 //
-// A fork's task is held to sessions that are already running or idle. Kandev
+// A fork's task is held to sessions an agent has already run in. Kandev
 // starts a never-launched session when it is messaged, and for a fork that
 // would run its author's code with nobody having pressed start.
 func pickSession(sessions []Session, preferred string, fork bool) (string, string) {
-	promptable := func(state string) bool {
-		switch state {
-		case sessionStarting, sessionRunning, sessionIdle:
-			return true
-		case sessionCreated, sessionWaitingForInput:
-			return !fork
-		}
-		return false
-	}
 	var candidates []Session
 	held := false
 	for _, session := range sessions {
-		if promptable(session.State) {
-			if session.ID == preferred && preferred != "" {
-				return session.ID, ""
-			}
-			candidates = append(candidates, session)
-		} else if fork && (session.State == sessionCreated || session.State == sessionWaitingForInput) {
-			held = true
+		if !promptable(session) {
+			continue
 		}
+		if fork && !launched(session) {
+			held = true
+			continue
+		}
+		if session.ID == preferred && preferred != "" {
+			return session.ID, ""
+		}
+		candidates = append(candidates, session)
 	}
 	if len(candidates) == 0 {
 		if held {
@@ -555,6 +595,28 @@ func pickSession(sessions []Session, preferred string, fork bool) (string, strin
 	}
 	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].StartedAt > candidates[j].StartedAt })
 	return candidates[0].ID, ""
+}
+
+func promptable(session Session) bool {
+	switch session.State {
+	case sessionCreated, sessionStarting, sessionRunning, sessionWaitingForInput, sessionIdle:
+		return true
+	}
+	return false
+}
+
+// launched reports whether an agent has run in the session. WAITING_FOR_INPUT
+// is both a never-launched session and one whose agent finished its turn;
+// Kandev tells them apart by an execution the Host does not list, and an
+// agent that ran has an ACP session id.
+func launched(session Session) bool {
+	switch session.State {
+	case sessionStarting, sessionRunning, sessionIdle:
+		return true
+	case sessionWaitingForInput:
+		return session.ACPSessionID != ""
+	}
+	return false
 }
 
 // autoFix sends the agent new feedback, one attempt at a time.
@@ -626,16 +688,34 @@ func (r *evaluation) autoFix() {
 		// and a turn that was already running when it was queued began before.
 		SentAt: r.now,
 	}
-	text, shown := RenderAutoFix(r.settings.EffectiveTemplate(), obs, attempt, items, retry)
+	text, shown := RenderAutoFix(r.settings.EffectiveTemplate(), promptObservation(obs, r.settings.Trust), attempt, items, retry)
 	attempt.Signature, attempt.Keys = Signature(shown), itemKeys(shown)
-	dispatch, ok := r.send(text, preferred)
+	sessionID, ok := r.target(preferred)
 	if !ok {
 		return
 	}
-	attempt.SessionID, attempt.Dispatch = dispatch.SessionID, dispatch.Status
-	record.Attempt = &attempt
-	record.Rounds++
-	r.status(fmt.Sprintf("Auto-fix round %d sent to the agent (%s).", attempt.Round, dispatch.Status))
+	attempt.SessionID = sessionID
+
+	// The attempt is stored before the prompt is sent. The agent can report
+	// its outcome as soon as the prompt reaches it, and the report is matched
+	// against the stored attempt; and a prompt is never out without a stored
+	// attempt, which a failed write would otherwise lead to a second one
+	// stacked on.
+	previous, rounds := record.Attempt, record.Rounds
+	record.Attempt, record.Rounds = &attempt, rounds+1
+	if err := r.engine.put(r.ctx, r.workspaceID, record); err != nil {
+		record.Attempt, record.Rounds = previous, rounds
+		record.Error = "Kandev's state could not be written; auto-fix will try again."
+		r.engine.logf("prautomation: save attempt: %v", err)
+		return
+	}
+	dispatch, ok := r.deliver(sessionID, text)
+	if !ok {
+		record.Attempt, record.Rounds = previous, rounds
+		return
+	}
+	attempt.Dispatch = dispatch
+	r.status(fmt.Sprintf("Auto-fix round %d sent to the agent (%s).", attempt.Round, dispatch))
 }
 
 // attemptEnded reports whether a dispatched attempt's turn is over without an
@@ -708,6 +788,8 @@ func (r *evaluation) mergeBlocker() string {
 		return "waiting for CI."
 	case obs.CI.State == CIFailure:
 		return "CI is failing."
+	case len(obs.CI.Missing) > 0:
+		return "waiting for required checks to report: " + strings.Join(obs.CI.Missing, ", ") + "."
 	case obs.CI.State == CINone && r.now.Sub(record.HeadSeenAt) < noCIGrace:
 		return "waiting for CI to report on the new head."
 	case obs.Mergeable == nil:
@@ -769,6 +851,9 @@ func reviewVerdicts(reviews []Review) (changes, approvals int) {
 // not retried on its own until this changes.
 func mergeSignature(obs Observation) string {
 	items := []Item{{Key: "head:" + obs.HeadSHA}, {Key: "ci:" + string(obs.CI.State)}}
+	for _, missing := range obs.CI.Missing {
+		items = append(items, Item{Key: "missing:" + missing})
+	}
 	for _, review := range obs.Reviews {
 		items = append(items, Item{Key: fmt.Sprintf("review:%d:%s:%t", review.ID, review.State, review.Dismissed)})
 	}
@@ -838,7 +923,10 @@ func (e *Engine) Outcome(ctx context.Context, workspaceID, taskID, sessionID, re
 	}
 
 	ref := matches[0].Ref()
-	unlock := e.locks.lock(recordKey(ref))
+	unlock, err := e.locks.lock(ctx, recordKey(ref))
+	if err != nil {
+		return Record{}, err
+	}
 	defer unlock()
 	record, found, err := e.store.Get(ctx, workspaceID, ref)
 	if err != nil {
@@ -882,7 +970,9 @@ func (e *Engine) TurnCompleted(ctx context.Context, taskID, sessionID string, st
 		return
 	}
 	for _, listed := range records {
-		if listed.TaskID != taskID {
+		// A turn matters to a record waiting on the agent: an attempt in
+		// flight, or a prompt queued for a session.
+		if listed.TaskID != taskID || (listed.Attempt == nil && len(listed.Pending) == 0) {
 			continue
 		}
 		e.update(ctx, workspaceID, listed.Ref(), func(record *Record) {
@@ -933,7 +1023,10 @@ func (e *Engine) Upsert(ctx context.Context, workspaceID string, ref PullRef, ch
 }
 
 func (e *Engine) modify(ctx context.Context, workspaceID string, ref PullRef, create bool, change func(*Record, bool) error) (Record, error) {
-	unlock := e.locks.lock(recordKey(ref))
+	unlock, err := e.locks.lock(ctx, recordKey(ref))
+	if err != nil {
+		return Record{}, err
+	}
 	defer unlock()
 	record, found, err := e.store.Get(ctx, workspaceID, ref)
 	if err != nil {
@@ -956,7 +1049,10 @@ func (e *Engine) modify(ctx context.Context, workspaceID string, ref PullRef, cr
 }
 
 func (e *Engine) remove(ctx context.Context, workspaceID string, ref PullRef) error {
-	unlock := e.locks.lock(recordKey(ref))
+	unlock, err := e.locks.lock(ctx, recordKey(ref))
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	return e.store.Delete(ctx, workspaceID, ref)
 }
@@ -1002,31 +1098,33 @@ func randomID() string {
 // keyedMutex serializes read-modify-write cycles on one record: the loop, the
 // panel's actions, the agent's outcome and event hints all write records, and
 // the Host state API has no compare-and-swap.
+//
+// A lock is a one-slot channel rather than a sync.Mutex so that waiting for it
+// gives up with the caller's context: an evaluation holds it across provider
+// requests, and an event hint must not wait on that past its deadline.
 type keyedMutex struct {
 	mu    sync.Mutex
 	locks map[string]*keyedLock
 }
 
 type keyedLock struct {
-	mu   sync.Mutex
+	slot chan struct{}
 	refs int
 }
 
-func (k *keyedMutex) lock(key string) func() {
+func (k *keyedMutex) lock(ctx context.Context, key string) (func(), error) {
 	k.mu.Lock()
 	if k.locks == nil {
 		k.locks = map[string]*keyedLock{}
 	}
 	entry := k.locks[key]
 	if entry == nil {
-		entry = &keyedLock{}
+		entry = &keyedLock{slot: make(chan struct{}, 1)}
 		k.locks[key] = entry
 	}
 	entry.refs++
 	k.mu.Unlock()
-	entry.mu.Lock()
-	return func() {
-		entry.mu.Unlock()
+	release := func() {
 		k.mu.Lock()
 		entry.refs--
 		if entry.refs == 0 {
@@ -1034,4 +1132,14 @@ func (k *keyedMutex) lock(key string) func() {
 		}
 		k.mu.Unlock()
 	}
+	select {
+	case entry.slot <- struct{}{}:
+	case <-ctx.Done():
+		release()
+		return nil, ctx.Err()
+	}
+	return func() {
+		<-entry.slot
+		release()
+	}, nil
 }
