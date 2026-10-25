@@ -56,6 +56,10 @@ and reviews as that account, and would otherwise be prompted by its own replies.
 Comments from the instance's bots (the Actions user, a deleted account) only
 come along with something else.
 
+On a long pull request the newest feedback is read: the last 100 reviews, the
+inline comments of the 20 newest reviews that have any, and the last 300
+conversation comments.
+
 Only feedback that is **new since the last round** is sent. A failing check on
 a new head commit counts as new, as on GitHub, so a fix that did not work is
 reported again.
@@ -75,10 +79,12 @@ Then:
 
   Either way, the feedback in that round counts as handled.
 - **The turn ends without a report.** The round is retried, no sooner than two
-  minutes after it was sent, and the retry carries the whole current feedback.
+  minutes after it was sent. The retry carries that round's feedback and
+  anything new, not what an earlier outcome already handled.
   The plugin hears about the turn ending from Kandev at once, or notices within
   about two minutes of the session going idle.
-- **At most 10 rounds per pull request.** Then auto-fix pauses. **Reset rounds**
+- **At most 10 rounds per pull request.** Then auto-fix pauses, and a round
+  that ended without a report is no longer waited on. **Reset rounds**
   in the panel, or turning auto-fix off and on, starts again.
 
 **Which session.** The round goes to the session the last round went to if it
@@ -139,8 +145,13 @@ The plugin merges the pull request itself once all of these hold:
 - nobody's latest review requests changes;
 - official approvals reach the branch's required approvals;
 - no inline review comment is unresolved;
-- no auto-fix round is in flight, and the agent has not reported `blocked` on
-  this head within the hour.
+- no auto-fix round is in flight, the agent has not reported `blocked` on
+  this head within the hour, and after `action_taken` its change has shown up
+  as a new head commit, or two minutes have passed.
+
+Every gate is read from the instance on each check. If one cannot be read (the
+token is refused the commit status or the reviews, say), the pull request is
+not merged, and the panel shows the error.
 
 **The merge.**
 

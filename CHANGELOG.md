@@ -46,6 +46,11 @@
   plugin upgrade or reinstall, and after editing a condition, its webhook
   answers 401 until you click "Configure webhook" again and paste the new secret
   into the Forgejo webhook.
+- On a long pull request the review panel shows the newest 50 reviews and
+  conversation comments, and its approval count reads the newest 100 reviews.
+  It used to read only the first page of reviews, the oldest, and could miss a
+  recent verdict.
+- Watches serve every workspace. They used to stop at the first 200.
 - Release binaries are built with Go 1.26.10, which fixes GO-2026-6809
   (compromised intermediate certificates trusted by `crypto/x509`).
 - **Breaking: Gitea's supported floor is now 1.27**, its current release (was
