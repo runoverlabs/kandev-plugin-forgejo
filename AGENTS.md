@@ -263,6 +263,10 @@ that way and easy to get wrong:
   it never fires when checks were already green or the repository has no CI,
   and on every host it merges a head pushed after scheduling. A plain merge
   with `head_commit_id` is refused (409) when the head moved.
+- **An issue's conversation comments are not paged** (Forgejo 7 to 17, Gitea
+  1.27): `page` and `limit` are ignored and every request returns them all, so
+  walking pages repeats the list. Reviews are paged. Both send
+  `X-Total-Count`, which `pageNewest` uses to keep the newest entries.
 - A non-admin token gets 403 from `collaborators/{user}/permission` for anyone
   but itself. A review's `official` flag is the trust signal every token sees.
 - The per-repository issues endpoint takes **`q`**, not `keyword` — and
