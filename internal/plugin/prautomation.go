@@ -76,21 +76,40 @@ func (m automationMessenger) Sessions(ctx context.Context, taskID string) ([]pra
 	if host == nil {
 		return nil, prautomation.ErrNoHost
 	}
-	sessions, _, err := host.Sessions().List(ctx, pluginsdk.SessionFilter{TaskIDs: []string{taskID}}, pluginsdk.Page{Limit: 50})
-	if err != nil {
-		return nil, hostMessagingError(err)
-	}
-	out := make([]prautomation.Session, 0, len(sessions))
-	for _, session := range sessions {
-		if session.TaskID != "" && session.TaskID != taskID {
-			continue
+	// Every page: an attempt's session missing from the list reads as ended,
+	// and its prompt would be sent again while the agent still runs it.
+	var out []prautomation.Session
+	page := pluginsdk.Page{Limit: sessionPageLimit}
+	for range maxSessionPages {
+		sessions, info, err := host.Sessions().List(ctx, pluginsdk.SessionFilter{TaskIDs: []string{taskID}}, page)
+		if err != nil {
+			return nil, hostMessagingError(err)
 		}
-		out = append(out, prautomation.Session{
-			ID: session.ID, State: session.State, StartedAt: session.StartedAt, ACPSessionID: session.ACPSessionID,
-		})
+		for _, session := range sessions {
+			if session.TaskID != "" && session.TaskID != taskID {
+				continue
+			}
+			out = append(out, prautomation.Session{
+				ID: session.ID, State: session.State, StartedAt: session.StartedAt, ACPSessionID: session.ACPSessionID,
+			})
+		}
+		if info == nil || !info.HasMore || info.NextCursor == "" || info.NextCursor == page.Cursor {
+			return out, nil
+		}
+		page.Cursor = info.NextCursor
 	}
-	return out, nil
+	return nil, errTooManySessions
 }
+
+// The Host caps a page at 200. A task with more sessions than the pages
+// below hold fails the read, which the engine treats as busy rather than
+// guessing from part of the list.
+const (
+	sessionPageLimit = 200
+	maxSessionPages  = 25
+)
+
+var errTooManySessions = errors.New("kandev-plugin-forgejo: too many sessions on the task to read")
 
 func (m automationMessenger) Send(ctx context.Context, taskID, sessionID, text string) (string, error) {
 	host := m.hosts()
@@ -110,13 +129,17 @@ func (m automationMessenger) Send(ctx context.Context, taskID, sessionID, text s
 // hostMessagingError maps the Host's refusals onto the engine's vocabulary.
 // PermissionDenied is what every gated call returns while the capability set
 // awaits re-approval after an upgrade.
+//
+// Aborted is not a refusal: the Host also returns it after the prompt was
+// queued ("task manager changed before message dispatch"), so it is left
+// ambiguous and the engine keeps its attempt.
 func hostMessagingError(err error) error {
 	switch status.Code(err) {
 	case codes.PermissionDenied:
 		return fmt.Errorf("%w: %v", prautomation.ErrNotApproved, err)
 	case codes.NotFound:
 		return fmt.Errorf("%w: %v", prautomation.ErrNoSession, err)
-	case codes.FailedPrecondition, codes.Aborted:
+	case codes.FailedPrecondition:
 		return fmt.Errorf("%w: %v", prautomation.ErrTaskInactive, err)
 	default:
 		return err
@@ -126,9 +149,10 @@ func hostMessagingError(err error) error {
 // automationMerger merges through the instance and audits the result: the
 // shared Forgejo account hides who merged, so the trail names automation.
 //
-// An attempt the instance never answered, or answered with "still checking",
-// is not audited: the loop retries those every activeInterval, and an entry
-// per retry would push the people's writes out of the bounded trail.
+// An attempt the instance never answered, or refused for a transient reason
+// (still checking, the head moved, already merged), is not audited: the loop
+// retries those, an entry per retry would push the people's writes out of the
+// bounded trail, and "failed" would misreport a merge someone else made.
 type automationMerger struct {
 	runtime *Runtime
 }
@@ -137,7 +161,7 @@ func (m automationMerger) Merge(ctx context.Context, workspaceID string, ref pra
 	err := m.runtime.automationSource.MergeLinked(ctx, ref, headSHA)
 	var writeErr *forgejo.WriteError
 	answered := err == nil || errors.As(err, &writeErr)
-	if answered && (writeErr == nil || writeErr.Reason != forgejo.ReasonChecking) {
+	if answered && (writeErr == nil || !transientMergeReason(writeErr.Reason)) {
 		outcome := "merged"
 		if err != nil {
 			outcome = "failed"
@@ -150,14 +174,20 @@ func (m automationMerger) Merge(ctx context.Context, workspaceID string, ref pra
 	if err == nil || writeErr == nil {
 		return err
 	}
-	switch writeErr.Reason {
-	case forgejo.ReasonChecking, forgejo.ReasonHeadChanged, forgejo.ReasonAlreadyMerged:
-		// The next observation explains these: mergeability is computed, the
-		// new head is evaluated afresh, the merge is seen.
-		return &prautomation.MergeError{Transient: true, Message: writeReasonMessage(writeErr.Reason)}
-	default:
-		return &prautomation.MergeError{Message: writeReasonMessage(writeErr.Reason)}
+	return &prautomation.MergeError{
+		Transient: transientMergeReason(writeErr.Reason), Message: writeReasonMessage(writeErr.Reason),
 	}
+}
+
+// transientMergeReason reports a refusal the next observation explains:
+// mergeability is computed, the new head is evaluated afresh, the merge is
+// seen.
+func transientMergeReason(reason forgejo.Reason) bool {
+	switch reason {
+	case forgejo.ReasonChecking, forgejo.ReasonHeadChanged, forgejo.ReasonAlreadyMerged:
+		return true
+	}
+	return false
 }
 
 // OnEvent receives the bus events the manifest subscribes to. It only marks
@@ -394,14 +424,25 @@ func (r *Runtime) automationView(ctx context.Context, workspaceID string, record
 		return nil, err
 	}
 	enabled, _ := r.integrationEnabled(ctx, workspaceID)
+	// An unseeded record shows the switches it is about to take, which a
+	// change from the panel keeps: showing them off would let one toggle turn
+	// on defaults nobody saw. A fork never takes auto-fix or auto-merge from
+	// them.
+	switches := record.Switches
+	if !record.Seeded {
+		switches = settings.Defaults
+		if record.Fork {
+			switches.AutoFix, switches.AutoMerge = false, false
+		}
+	}
 	view := map[string]any{
 		"number":              record.Number,
 		"seeded":              record.Seeded,
-		"auto_fix":            record.AutoFix,
-		"auto_merge":          record.AutoMerge,
-		"on_review_requested": record.OnReviewRequested,
-		"on_merged":           record.OnMerged,
-		"on_closed":           record.OnClosed,
+		"auto_fix":            switches.AutoFix,
+		"auto_merge":          switches.AutoMerge,
+		"on_review_requested": switches.OnReviewRequested,
+		"on_merged":           switches.OnMerged,
+		"on_closed":           switches.OnClosed,
 		"fork":                record.Fork,
 		"rounds":              record.Rounds,
 		"max_rounds":          prautomation.MaxRounds,

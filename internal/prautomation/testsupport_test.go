@@ -24,6 +24,7 @@ type fakeState struct {
 	// setErr, when set, fails every write.
 	setErr error
 	lists  int
+	gets   map[string]int // key → reads
 }
 
 func newFakeState() *fakeState { return &fakeState{entries: map[string]map[string]map[string]any{}} }
@@ -34,6 +35,10 @@ func (f *fakeState) GetState(_ context.Context, _, scopeID, key string) (map[str
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.gets == nil {
+		f.gets = map[string]int{}
+	}
+	f.gets[key]++
 	value, ok := f.entries[scopeID][key]
 	return value, ok, nil
 }

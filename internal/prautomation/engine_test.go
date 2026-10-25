@@ -383,9 +383,12 @@ func TestPickSessionPrefersTheAttemptsSessionThenTheNewest(t *testing.T) {
 	require.Equal(t, "old", id)
 	id, _ = pickSession(sessions, "dead", false)
 	require.Equal(t, "new", id)
-	id, why := pickSession([]Session{{ID: "x", State: "COMPLETED"}}, "", false)
+	id, why := pickSession([]Session{{ID: "x", State: "CANCELLED"}}, "", false)
 	require.Empty(t, id)
 	require.NotEmpty(t, why)
+	// Kandev prompts a completed session, resuming its agent.
+	id, _ = pickSession([]Session{{ID: "done", State: sessionCompleted}}, "", true)
+	require.Equal(t, "done", id)
 }
 
 func TestOutcomeBinding(t *testing.T) {
@@ -452,6 +455,11 @@ func TestAutoMergeGates(t *testing.T) {
 			o.Reviews = []Review{{ID: 1, Author: "bob", State: ReviewApproved, Official: true},
 				{ID: 2, Author: "eve", State: ReviewApproved, Official: false}}
 		}, "1 of 2 required approvals"},
+		{"operator approval", func(o *Observation, _ *Record) {
+			one := 1
+			o.RequiredApprovals = &one
+			o.Reviews = []Review{{ID: 1, Author: "Kandev-Bot", State: ReviewApproved, Official: true}}
+		}, "0 of 1 required approvals"},
 		{"unresolved", func(o *Observation, _ *Record) {
 			o.Reviews = []Review{{ID: 1, Author: "bob", State: ReviewCommented,
 				Comments: []InlineComment{{ID: 5, Author: "bob", Body: "hm"}}}}
@@ -561,6 +569,26 @@ func TestAutoMergeWaitsForTheChangeTheAgentReported(t *testing.T) {
 	require.Equal(t, []mergeCall{{ref: testRef, head: "dddddddddddd"}}, h.merger.calls)
 }
 
+func TestTurningAutoFixOffReleasesTheMergeHoldsItsReportsSet(t *testing.T) {
+	h := newHarness(t)
+	h.switches(Switches{AutoFix: true, AutoMerge: true})
+	h.setObs(failingCI)
+	h.evaluate()
+	_, err := h.engine.Outcome(context.Background(), testWorkspace, testRef.TaskID, "s-1", "", OutcomeBlocked, "needs a secret")
+	require.NoError(t, err)
+	h.setObs(func(o *Observation) { o.CI = CI{State: CISuccess} })
+	require.Contains(t, h.evaluate().Status, "blocked")
+
+	_, err = h.engine.Update(context.Background(), testWorkspace, testRef, func(r *Record) error {
+		r.ApplySwitches(Switches{AutoMerge: true})
+		return nil
+	})
+	require.NoError(t, err)
+	record := h.evaluate()
+	require.Empty(t, record.BlockedHead)
+	require.Len(t, h.merger.calls, 1, "auto-merge no longer waits on auto-fix's report")
+}
+
 func TestAutoMergeHoldForTheAgentsChangeExpires(t *testing.T) {
 	h := newHarness(t)
 	h.switches(Switches{AutoMerge: true, AutoFix: true})
@@ -664,8 +692,10 @@ func TestTickBudget(t *testing.T) {
 	}
 	h.links.refs[testWorkspace] = refs
 	h.settings(Settings{Defaults: Switches{OnMerged: true}})
+	h.state.gets = nil
 	h.engine.Tick(context.Background())
 	require.Equal(t, budgetPerWorkspace, h.observer.calls)
+	require.Equal(t, 1, h.state.gets[settingsKey], "a tick reads the workspace settings once")
 }
 
 func TestAutoMergeWaitsBeforeTakingNoChecksForNoCI(t *testing.T) {
@@ -771,5 +801,5 @@ func TestOversizedFeedbackLeavesTheRestForTheNextRound(t *testing.T) {
 	require.NoError(t, err)
 	record = h.evaluate()
 	require.Len(t, h.messenger.sent, 2, "what did not fit is still new")
-	require.NotContains(t, record.Attempt.Keys, "comment:1")
+	require.NotContains(t, record.Attempt.Keys, textKey("comment", 1, strings.Repeat("x", maxItemRunes)))
 }

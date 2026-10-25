@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -43,7 +45,8 @@ type automationSessions struct {
 	host *automationHost
 }
 
-func (s automationSessions) List(_ context.Context, filter pluginsdk.SessionFilter, _ pluginsdk.Page) ([]pluginsdk.Session, *pluginsdk.PageInfo, error) {
+// List pages as the Host does: the cursor is an offset.
+func (s automationSessions) List(_ context.Context, filter pluginsdk.SessionFilter, page pluginsdk.Page) ([]pluginsdk.Session, *pluginsdk.PageInfo, error) {
 	s.host.mu.Lock()
 	defer s.host.mu.Unlock()
 	var out []pluginsdk.Session
@@ -54,7 +57,16 @@ func (s automationSessions) List(_ context.Context, filter pluginsdk.SessionFilt
 			}
 		}
 	}
-	return out, &pluginsdk.PageInfo{}, nil
+	offset, _ := strconv.Atoi(page.Cursor)
+	limit := int(page.Limit)
+	if limit <= 0 || limit > 200 {
+		limit = 200
+	}
+	out = out[min(offset, len(out)):]
+	if len(out) <= limit {
+		return out, &pluginsdk.PageInfo{}, nil
+	}
+	return out[:limit], &pluginsdk.PageInfo{NextCursor: strconv.Itoa(offset + limit), HasMore: true}, nil
 }
 
 type automationMessages struct {
@@ -185,9 +197,18 @@ func TestAutomationSetOnAnUnseededRecordKeepsTheDefaults(t *testing.T) {
 		`{"defaults":{"on_merged":true,"auto_merge":true}}`))
 	require.NoError(t, err)
 
-	response, err := fixture.runtime.HandleAction(ctx, taskAction(ActionAutomationSet, `{"number":12,"auto_fix":true}`))
+	// The panel shows what a change will keep, before any change.
+	response, err := fixture.runtime.HandleAction(ctx, taskAction(ActionAutomationGet, `{"number":12}`))
 	require.NoError(t, err)
 	body := decodeBody(t, response)
+	require.Equal(t, false, body["seeded"])
+	require.Equal(t, true, body["auto_merge"])
+	require.Equal(t, true, body["on_merged"])
+	require.Equal(t, false, body["auto_fix"])
+
+	response, err = fixture.runtime.HandleAction(ctx, taskAction(ActionAutomationSet, `{"number":12,"auto_fix":true}`))
+	require.NoError(t, err)
+	body = decodeBody(t, response)
 	require.Equal(t, true, body["auto_fix"])
 	require.Equal(t, true, body["on_merged"])
 	require.Equal(t, true, body["auto_merge"])
@@ -204,9 +225,15 @@ func TestAutomationSetOnAnUnseededForkTakesNoAutomationDefaults(t *testing.T) {
 		`{"defaults":{"on_merged":true,"auto_merge":true}}`))
 	require.NoError(t, err)
 
-	response, err := fixture.runtime.HandleAction(ctx, taskAction(ActionAutomationSet, `{"number":12,"on_closed":true}`))
+	response, err := fixture.runtime.HandleAction(ctx, taskAction(ActionAutomationGet, `{"number":12}`))
 	require.NoError(t, err)
 	body := decodeBody(t, response)
+	require.Equal(t, true, body["on_merged"])
+	require.Equal(t, false, body["auto_merge"], "the panel does not show a default a fork will not take")
+
+	response, err = fixture.runtime.HandleAction(ctx, taskAction(ActionAutomationSet, `{"number":12,"on_closed":true}`))
+	require.NoError(t, err)
+	body = decodeBody(t, response)
 	require.Equal(t, true, body["on_merged"])
 	require.Equal(t, true, body["on_closed"])
 	require.Equal(t, false, body["auto_merge"], "a fork never takes auto-merge from the defaults")
@@ -330,15 +357,29 @@ func TestAutomationReportsMissingApproval(t *testing.T) {
 	require.EqualValues(t, 0, body["rounds"])
 }
 
+func TestAutomationMessengerReadsEverySessionPage(t *testing.T) {
+	host := &automationHost{}
+	for i := range 450 {
+		host.sessions = append(host.sessions, pluginsdk.Session{ID: fmt.Sprintf("s-%d", i), TaskID: "task-1", State: "IDLE"})
+	}
+	messenger := automationMessenger{hosts: func() pluginsdk.Host { return host }}
+	sessions, err := messenger.Sessions(context.Background(), "task-1")
+	require.NoError(t, err)
+	require.Len(t, sessions, 450)
+	require.Equal(t, "s-449", sessions[449].ID)
+}
+
 func TestHostMessagingErrorMapping(t *testing.T) {
 	for code, want := range map[codes.Code]error{
 		codes.PermissionDenied:   prautomation.ErrNotApproved,
 		codes.NotFound:           prautomation.ErrNoSession,
 		codes.FailedPrecondition: prautomation.ErrTaskInactive,
-		codes.Aborted:            prautomation.ErrTaskInactive,
 	} {
 		require.ErrorIs(t, hostMessagingError(status.Error(code, "x")), want, code.String())
 	}
+	// Aborted can come after the prompt was queued: not a refusal.
+	aborted := status.Error(codes.Aborted, "task manager changed before message dispatch")
+	require.Equal(t, aborted, hostMessagingError(aborted))
 	plain := errors.New("boom")
 	require.Equal(t, plain, hostMessagingError(plain))
 }
@@ -369,9 +410,12 @@ func TestAutomationMergerClassifiesRefusals(t *testing.T) {
 	require.False(t, refused.Transient)
 	require.NotContains(t, refused.Message, "secret")
 
+	// Only the refusal that stands is audited: the moved head is retried.
 	entries := auditEntries(t, fixture, "workspace-1")
+	require.Len(t, entries, 1)
 	require.Equal(t, "automation.merge", entries[0]["action"])
 	require.Equal(t, "auto-merge", entries[0]["actor"])
+	require.Equal(t, "failed", entries[0]["outcome"])
 	audited := len(entries)
 
 	// Retried every activeInterval: neither leaves an entry, or an outage would

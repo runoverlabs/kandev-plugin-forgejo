@@ -30,12 +30,31 @@ func reviewObservation() Observation {
 	return obs
 }
 
+// keys lists the snapshot's keys without the text digest of a review or
+// comment, which TestSnapshotKeysAnEditedCommentAfresh covers.
 func keys(snapshot Snapshot) []string {
 	var out []string
 	for _, item := range snapshot.Items {
-		out = append(out, item.Key)
+		key := item.Key
+		if item.Kind == KindReview || item.Kind == KindInline || item.Kind == KindComment {
+			key = key[:strings.LastIndex(key, ":")]
+		}
+		out = append(out, key)
 	}
 	return out
+}
+
+func TestSnapshotKeysAnEditedCommentAfresh(t *testing.T) {
+	obs := reviewObservation()
+	before := BuildSnapshot(obs, TrustEveryone)
+	checkpoint := mergeCheckpoint(nil, before.Items)
+
+	obs.Reviews[0].Body = "fix the tests, and the lint too"
+	obs.Comments[0].Body = "  please also update the docs  "
+	after := BuildSnapshot(obs, TrustEveryone)
+	fresh := Delta(after.Items, checkpoint)
+	require.Equal(t, []string{"review:1"}, keys(Snapshot{Items: fresh}),
+		"an edited request is new; whitespace alone is not an edit")
 }
 
 func TestSnapshotTrustLevels(t *testing.T) {

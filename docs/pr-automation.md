@@ -30,7 +30,8 @@ Workspace defaults live in **Settings → Integrations → Forgejo → Pull requ
 automation**. They are copied onto a pull request the first time the plugin sees
 it linked, or when someone first changes a switch on it in the panel, whichever
 comes first; changing a default later does not touch pull requests already
-seen.
+seen. Until then the panel shows the defaults the pull request will take, and
+says so.
 **A default never turns on auto-fix or auto-merge for a pull request from a
 fork** (see [Forks](#forks)).
 
@@ -69,7 +70,7 @@ is left for the next round, never cut in the middle.
 
 Only feedback that is **new since the last round** is sent. A failing check on
 a new head commit counts as new, as on GitHub, so a fix that did not work is
-reported again.
+reported again. So does a review or comment whose text was edited.
 
 The prompt goes to the task's agent with the [auto-fix prompt](#the-prompt).
 Then:
@@ -97,10 +98,13 @@ Then:
   the round is retried the same way.
 - **At most 10 rounds per pull request.** Then auto-fix pauses, and a round
   that ended without a report is no longer waited on. **Reset rounds**
-  in the panel, or turning auto-fix off and on, starts again.
+  in the panel, or turning auto-fix off and on, starts again. Turning auto-fix
+  off also drops what the agent last reported, so auto-merge no longer waits
+  on it.
 
 **Which session.** The round goes to the session the last round went to if it
 can still take a prompt, otherwise to the task's most recently started session.
+A completed session can: Kandev resumes its agent.
 A busy session queues it behind the current turn. If the task has no session,
 the plugin waits for one.
 
@@ -165,7 +169,9 @@ The plugin merges the pull request itself once all of these hold:
   reported on the head;
 - the instance reports the branch merges cleanly;
 - nobody's latest review requests changes;
-- official approvals reach the branch's required approvals;
+- official approvals reach the branch's required approvals. An approval from
+  the plugin's own account does not count: agents review as that account, so
+  it could be an agent approving its own work;
 - no review conversation is unresolved;
 - every check and every review was read. A pull request with more than 100
   reviews, or more than 20 with inline comments, is not merged automatically:
@@ -186,8 +192,9 @@ not merged, and the panel shows the error.
   in between, the instance refuses it and the plugin checks the new head
   instead, so commits nobody evaluated are never merged.
 - The audit trail (`connection.audit`) records it as `automation.merge` by
-  `auto-merge`. A merge the instance never answered, or answered with "try
-  again later", is retried without an entry, so an outage does not push
+  `auto-merge`. A merge the instance never answered, answered with "try
+  again later", or refused because the head moved or the pull request was
+  already merged, is retried without an entry, so an outage does not push
   people's writes out of the trail.
 
 **If the instance refuses.** The plugin shows why (branch protection, missing
@@ -230,8 +237,8 @@ them runs with your executor's environment. So:
   has looked at the pull request for the first time.
 - **The plugin never starts an agent for a fork's pull request.** Kandev starts
   a session that has never run when it receives a message, so for a fork the
-  plugin only prompts a session an agent has already run in: running, idle, or
-  waiting for input after its turn. Until someone starts the task, the panel
+  plugin only prompts a session an agent has already run in: running, idle,
+  completed, or waiting for input after its turn. Until someone starts the task, the panel
   says so and the prompt waits.
 
 ## After upgrading: re-approve the capabilities

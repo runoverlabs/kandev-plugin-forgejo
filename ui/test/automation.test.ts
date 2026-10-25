@@ -239,6 +239,18 @@ describe("automation section", () => {
     expect(rendered).toContain("has not approved");
   });
 
+  it("says when the switches are the workspace defaults a pull request has not taken yet", async () => {
+    const t = section({ seeded: false, auto_merge: true });
+    t.render();
+    await t.settle();
+    expect(text(t.render())).toContain("the switches show the workspace defaults");
+
+    const seeded = section({});
+    seeded.render();
+    await seeded.settle();
+    expect(text(seeded.render())).not.toContain("workspace defaults");
+  });
+
   it("reports a failed load instead of rendering switches", async () => {
     const t = section({}, {
       "automation.get": () => {

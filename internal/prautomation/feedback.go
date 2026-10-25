@@ -44,7 +44,8 @@ type Snapshot struct {
 //
 // A failing check and a conflict are keyed to the head commit: the same check
 // failing again after the agent pushed is new feedback, as it is on GitHub,
-// where every run has its own id. Reviews and comments are keyed by their id.
+// where every run has its own id. Reviews and comments are keyed by their id
+// and their text: an edited request is feedback the agent has not seen.
 // The operator's own words are never feedback — the agent posts as that
 // account, and counting them would loop it on its own replies.
 func BuildSnapshot(obs Observation, trust Trust) Snapshot {
@@ -94,7 +95,7 @@ func BuildSnapshot(obs Observation, trust Trust) Snapshot {
 			(review.State == ReviewCommented && strings.TrimSpace(review.Body) != "") {
 			if admit(review.Official) {
 				snapshot.Items = append(snapshot.Items, Item{
-					Key:    fmt.Sprintf("review:%d", review.ID),
+					Key:    textKey("review", review.ID, review.Body),
 					Kind:   KindReview,
 					Author: review.Author,
 					Bot:    review.Bot,
@@ -116,7 +117,7 @@ func BuildSnapshot(obs Observation, trust Trust) Snapshot {
 				continue
 			}
 			snapshot.Items = append(snapshot.Items, Item{
-				Key:    fmt.Sprintf("inline:%d", comment.ID),
+				Key:    textKey("inline", comment.ID, comment.Body),
 				Kind:   KindInline,
 				Author: comment.Author,
 				Bot:    comment.Bot,
@@ -134,7 +135,7 @@ func BuildSnapshot(obs Observation, trust Trust) Snapshot {
 			continue
 		}
 		snapshot.Items = append(snapshot.Items, Item{
-			Key:    fmt.Sprintf("comment:%d", comment.ID),
+			Key:    textKey("comment", comment.ID, comment.Body),
 			Kind:   KindComment,
 			Author: comment.Author,
 			Bot:    comment.Bot,
@@ -142,6 +143,12 @@ func BuildSnapshot(obs Observation, trust Trust) Snapshot {
 		})
 	}
 	return snapshot
+}
+
+// textKey keys a review or comment by its id and a digest of its text.
+func textKey(kind string, id int64, body string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(body)))
+	return fmt.Sprintf("%s:%d:%s", kind, id, hex.EncodeToString(sum[:6]))
 }
 
 // Delta returns the items whose keys are not in the checkpoint.

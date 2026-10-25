@@ -209,6 +209,9 @@ function createAutomationSection(host) {
     if (!current.integration_enabled) {
       lines.push("Paused: the Forgejo integration is off for this workspace.");
     }
+    if (!current.seeded) {
+      lines.push("Automation has not looked at this pull request yet: the switches show the workspace defaults it will take.");
+    }
     if (current.status) lines.push(current.status);
     if (current.auto_fix) {
       lines.push(`Auto-fix rounds: ${current.rounds} of ${current.max_rounds}.`);

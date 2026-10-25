@@ -63,7 +63,7 @@ var (
 	// ErrNotApproved: the operator has not approved the capabilities sending
 	// needs (after an upgrade, every gated call is refused until they do).
 	ErrNotApproved = errors.New("prautomation: capability approval needed")
-	// ErrTaskInactive: the task is archived or managed by another owner.
+	// ErrTaskInactive: the task is archived or otherwise no longer active.
 	ErrTaskInactive = errors.New("prautomation: task no longer takes prompts")
 )
 

@@ -69,6 +69,7 @@ const (
 	sessionRunning         = "RUNNING"
 	sessionWaitingForInput = "WAITING_FOR_INPUT"
 	sessionIdle            = "IDLE"
+	sessionCompleted       = "COMPLETED"
 )
 
 // Errors the outcome report can fail with. Their text is shown to the agent.
@@ -329,7 +330,7 @@ func (e *Engine) tickWorkspace(ctx context.Context, workspaceID string, tracked 
 		if ctx.Err() != nil {
 			return
 		}
-		e.Evaluate(ctx, workspaceID, record.Ref())
+		e.evaluate(ctx, workspaceID, record.Ref(), &settings)
 	}
 }
 
@@ -345,6 +346,12 @@ func (e *Engine) isDue(record Record, now time.Time) bool {
 // Evaluate observes one pull request and acts on it. It is exported for the
 // panel's refresh and for tests.
 func (e *Engine) Evaluate(ctx context.Context, workspaceID string, ref PullRef) {
+	e.evaluate(ctx, workspaceID, ref, nil)
+}
+
+// evaluate is Evaluate with the workspace settings a tick has already read;
+// nil reads them.
+func (e *Engine) evaluate(ctx context.Context, workspaceID string, ref PullRef, loaded *Settings) {
 	unlock, err := e.locks.lock(ctx, recordKey(ref))
 	if err != nil {
 		return
@@ -355,8 +362,10 @@ func (e *Engine) Evaluate(ctx context.Context, workspaceID string, ref PullRef) 
 	if err != nil || !found {
 		return
 	}
-	settings, err := e.store.Settings(ctx, workspaceID)
-	if err != nil {
+	var settings Settings
+	if loaded != nil {
+		settings = *loaded
+	} else if settings, err = e.store.Settings(ctx, workspaceID); err != nil {
 		return
 	}
 	now := e.now().UTC()
@@ -579,7 +588,7 @@ func (r *evaluation) sendFailed(err error) {
 	case errors.Is(err, ErrNoSession):
 		r.status("Waiting for a session on the task.")
 	case errors.Is(err, ErrTaskInactive):
-		r.status("The task no longer takes prompts (archived or managed elsewhere).")
+		r.status("The task no longer takes prompts (archived or inactive).")
 	default:
 		r.record.Error = "Kandev did not accept the prompt; it will be retried."
 		r.engine.logf("prautomation: send: %v", err)
@@ -618,9 +627,11 @@ func pickSession(sessions []Session, preferred string, fork bool) (string, strin
 	return candidates[0].ID, ""
 }
 
+// promptable mirrors Messages().Send, which refuses only FAILED and CANCELLED
+// sessions: a COMPLETED one is prompted, resumed if its agent process is gone.
 func promptable(session Session) bool {
 	switch session.State {
-	case sessionCreated, sessionStarting, sessionRunning, sessionWaitingForInput, sessionIdle:
+	case sessionCreated, sessionStarting, sessionRunning, sessionWaitingForInput, sessionIdle, sessionCompleted:
 		return true
 	}
 	return false
@@ -632,7 +643,7 @@ func promptable(session Session) bool {
 // agent that ran has an ACP session id.
 func launched(session Session) bool {
 	switch session.State {
-	case sessionStarting, sessionRunning, sessionIdle:
+	case sessionStarting, sessionRunning, sessionIdle, sessionCompleted:
 		return true
 	case sessionWaitingForInput:
 		return session.ACPSessionID != ""
@@ -787,7 +798,7 @@ func (r *evaluation) attemptEnded(attempt Attempt) bool {
 			return false
 		case sessionCreated:
 			return r.now.Sub(attempt.SentAt) > startGrace
-		case sessionIdle, sessionWaitingForInput:
+		case sessionIdle, sessionWaitingForInput, sessionCompleted:
 			return r.now.Sub(attempt.SentAt) > idleGrace
 		default:
 			return true
@@ -860,7 +871,7 @@ func (r *evaluation) mergeBlocker() string {
 	if obs.ReviewsIncomplete {
 		return "the pull request has more reviews than automation reads; merge it by hand."
 	}
-	changes, approvals := reviewVerdicts(obs.Reviews)
+	changes, approvals := reviewVerdicts(obs.Reviews, obs.Operator)
 	if changes > 0 {
 		return "changes are requested."
 	}
@@ -880,19 +891,24 @@ func (r *evaluation) mergeBlocker() string {
 // reviewVerdicts reads each reviewer's latest decisive review: how many
 // request changes, and how many official reviewers approve. Reviews arrive
 // oldest first from the instance.
-func reviewVerdicts(reviews []Review) (changes, approvals int) {
+//
+// The operator's approval is not counted: agents post as that account, so it
+// could be an agent approving its own work. Its request for changes still
+// holds the merge back.
+func reviewVerdicts(reviews []Review, operator string) (changes, approvals int) {
+	operator = strings.ToLower(strings.TrimSpace(operator))
 	latest := map[string]Review{}
 	for _, review := range reviews {
 		if review.Dismissed || (review.State != ReviewApproved && review.State != ReviewChangesRequested) {
 			continue
 		}
-		latest[strings.ToLower(review.Author)] = review
+		latest[strings.ToLower(strings.TrimSpace(review.Author))] = review
 	}
-	for _, review := range latest {
+	for author, review := range latest {
 		switch {
 		case review.State == ReviewChangesRequested:
 			changes++
-		case review.Official:
+		case review.Official && (operator == "" || author != operator):
 			approvals++
 		}
 	}

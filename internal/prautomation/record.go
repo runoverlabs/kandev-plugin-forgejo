@@ -135,7 +135,7 @@ type PullRef struct {
 
 // ApplySwitches sets the switches as a human chose them, with the side effects
 // each change has: turning auto-fix on starts the round count again and clears
-// a pause; turning the review-requested prompt on takes a new baseline so a
+// a pause; turning it off drops the attempt and what the agent reported; turning the review-requested prompt on takes a new baseline so a
 // request already open does not fire.
 func (r *Record) ApplySwitches(next Switches) {
 	if next.AutoFix && !r.AutoFix {
@@ -143,7 +143,11 @@ func (r *Record) ApplySwitches(next Switches) {
 		r.Exhausted = false
 	}
 	if !next.AutoFix {
+		// What the agent reported for auto-fix goes with it: auto-merge would
+		// otherwise keep waiting on a report the panel no longer shows.
 		r.Attempt = nil
+		r.HoldHead, r.HoldUntil = "", time.Time{}
+		r.BlockedHead, r.BlockedUntil = "", time.Time{}
 	}
 	if next.OnReviewRequested && !r.OnReviewRequested {
 		r.ReviewBaselineSet = false
