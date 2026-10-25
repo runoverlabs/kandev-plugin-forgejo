@@ -244,19 +244,20 @@ The provider package exposes something like
 
 ## Steps
 
-0. **CI matrix.** The `ci_result` events need Forgejo 12 or later; the matrix
-   has Forgejo 7 and 16. Add Forgejo 17 (and later the newest release each
-   quarter). Whether Forgejo 7 and Gitea 1.20 stay as floors for the rest of the
-   plugin is a separate decision, not made here.
+0. **CI matrix.** Done separately on `chore/raise-host-floor`: the matrix is
+   now Forgejo 7, 11, 15 and 17 and Gitea 1.27, and the README has a table of
+   each feature's minimum release. `ci_result` gets the row "Forgejo 12, not
+   Gitea"; 12 falls between two LTS releases, so it is read from source and
+   tested on 15 and 17.
 1. **Capture real deliveries.** Add webhook config to the live CI containers
    (`FORGEJO__webhook__ALLOWED_HOST_LIST=*`, and the `GITEA__` spelling) and a
    live test that runs an `httptest` receiver reachable from the container,
    creates a hook with a known secret, causes a push, a pull request open, sync,
    label, review request, comment, merge and close, and an Actions run that
-   succeeds and one that fails (Forgejo 16 and 17 need a runner, or a run
+   succeeds and one that fails (Forgejo 15 and 17 need a runner, or a run
    status set through the API if the capture step finds a way), and
    records each request's headers and body. Commit them as `testdata` fixtures,
-   one directory per container (Gitea 1.20 and 1.27, Forgejo 7 and 16). Record in
+   one directory per container (Forgejo 7, 11, 15 and 17, Gitea 1.27). Record in
    `docs/development.md`'s "Verified against" table which headers and event
    types each version sends, and when exactly `action_run_success` fires (every
    success, or only the first after a failure). **Settle the decoders' input
@@ -305,7 +306,8 @@ The issue's, restated against this design:
   a 401, and nothing is parsed first.
 - A redelivered event does not start a second run (the host's body-hash dedup,
   covered by the step 5 check).
-- Fixture-based unit tests for all four containers and a live contract test.
+- Fixture-based unit tests for every container in the matrix and a live
+  contract test.
 - `docs/automations.md` (new) covers setup, the event to tick, the
   reconfigure-after-upgrade rule, the placeholders, and the network caveats
   (the instance must reach Kandev; `ALLOWED_HOST_LIST` blocks private addresses
