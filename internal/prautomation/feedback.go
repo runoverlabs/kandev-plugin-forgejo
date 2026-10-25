@@ -49,9 +49,48 @@ type Snapshot struct {
 // The operator's own words are never feedback — the agent posts as that
 // account, and counting them would loop it on its own replies.
 func BuildSnapshot(obs Observation, trust Trust) Snapshot {
-	var snapshot Snapshot
+	snapshot := Snapshot{Items: blockingItems(obs)}
+	filter := newFeedbackFilter(obs, trust)
+	for _, review := range obs.Reviews {
+		if review.Dismissed || filter.own(review.Author) {
+			continue
+		}
+		if reviewIsFeedback(review) {
+			snapshot.add(reviewItem(review), filter.admit(review.Official))
+		}
+		for _, comment := range review.Comments {
+			if comment.Resolved || filter.own(comment.Author) || strings.TrimSpace(comment.Body) == "" {
+				continue
+			}
+			// By its author, not its review: a reply in a thread is stored
+			// under the review that opened it, whoever wrote the reply.
+			snapshot.add(inlineItem(comment), filter.admitAuthor(comment.Author))
+		}
+	}
+	for _, comment := range obs.Comments {
+		if filter.own(comment.Author) || strings.TrimSpace(comment.Body) == "" {
+			continue
+		}
+		snapshot.add(commentItem(comment), filter.admitAuthor(comment.Author))
+	}
+	return snapshot
+}
+
+// add appends item when the trust level admits it, and counts it as ignored
+// otherwise.
+func (s *Snapshot) add(item Item, admitted bool) {
+	if !admitted {
+		s.Ignored++
+		return
+	}
+	s.Items = append(s.Items, item)
+}
+
+// blockingItems are the failing checks and the conflict on the head.
+func blockingItems(obs Observation) []Item {
+	var items []Item
 	for _, check := range obs.CI.Failing {
-		snapshot.Items = append(snapshot.Items, Item{
+		items = append(items, Item{
 			Key:   fmt.Sprintf("check:%s@%s", check.Name, obs.HeadSHA),
 			Kind:  KindCheck,
 			Name:  check.Name,
@@ -60,89 +99,90 @@ func BuildSnapshot(obs Observation, trust Trust) Snapshot {
 		})
 	}
 	if obs.Mergeable != nil && !*obs.Mergeable {
-		snapshot.Items = append(snapshot.Items, Item{
+		items = append(items, Item{
 			Key:  "conflict@" + obs.HeadSHA,
 			Kind: KindConflict,
 		})
 	}
+	return items
+}
 
-	operator := strings.ToLower(strings.TrimSpace(obs.Operator))
-	own := func(author string) bool {
-		return operator != "" && strings.ToLower(strings.TrimSpace(author)) == operator
+func reviewIsFeedback(review Review) bool {
+	return review.State == ReviewChangesRequested ||
+		(review.State == ReviewCommented && strings.TrimSpace(review.Body) != "")
+}
+
+func reviewItem(review Review) Item {
+	return Item{
+		Key:    textKey("review", review.ID, review.Body),
+		Kind:   KindReview,
+		Author: review.Author,
+		Bot:    review.Bot,
+		State:  review.State,
+		Body:   review.Body,
 	}
+}
+
+func inlineItem(comment InlineComment) Item {
+	return Item{
+		Key:    textKey("inline", comment.ID, comment.Body),
+		Kind:   KindInline,
+		Author: comment.Author,
+		Bot:    comment.Bot,
+		Path:   comment.Path,
+		Body:   comment.Body,
+	}
+}
+
+func commentItem(comment Comment) Item {
+	return Item{
+		Key:    textKey("comment", comment.ID, comment.Body),
+		Kind:   KindComment,
+		Author: comment.Author,
+		Bot:    comment.Bot,
+		Body:   comment.Body,
+	}
+}
+
+// feedbackFilter decides whose words are feedback on one observation.
+type feedbackFilter struct {
+	operator        string
+	trust           Trust
+	officialAuthors map[string]bool
+}
+
+func newFeedbackFilter(obs Observation, trust Trust) feedbackFilter {
 	officialAuthors := map[string]bool{}
 	for _, review := range obs.Reviews {
 		if review.Official && !review.Dismissed {
 			officialAuthors[strings.ToLower(review.Author)] = true
 		}
 	}
-	admit := func(official bool) bool {
-		switch trust {
-		case TrustNone:
-			return false
-		case TrustOfficial:
-			return official
-		default:
-			return true
-		}
+	return feedbackFilter{
+		operator:        strings.ToLower(strings.TrimSpace(obs.Operator)),
+		trust:           trust,
+		officialAuthors: officialAuthors,
 	}
+}
 
-	for _, review := range obs.Reviews {
-		if review.Dismissed || own(review.Author) {
-			continue
-		}
-		if review.State == ReviewChangesRequested ||
-			(review.State == ReviewCommented && strings.TrimSpace(review.Body) != "") {
-			if admit(review.Official) {
-				snapshot.Items = append(snapshot.Items, Item{
-					Key:    textKey("review", review.ID, review.Body),
-					Kind:   KindReview,
-					Author: review.Author,
-					Bot:    review.Bot,
-					State:  review.State,
-					Body:   review.Body,
-				})
-			} else {
-				snapshot.Ignored++
-			}
-		}
-		for _, comment := range review.Comments {
-			if comment.Resolved || own(comment.Author) || strings.TrimSpace(comment.Body) == "" {
-				continue
-			}
-			// By its author, not its review: a reply in a thread is stored
-			// under the review that opened it, whoever wrote the reply.
-			if !admit(officialAuthors[strings.ToLower(comment.Author)]) {
-				snapshot.Ignored++
-				continue
-			}
-			snapshot.Items = append(snapshot.Items, Item{
-				Key:    textKey("inline", comment.ID, comment.Body),
-				Kind:   KindInline,
-				Author: comment.Author,
-				Bot:    comment.Bot,
-				Path:   comment.Path,
-				Body:   comment.Body,
-			})
-		}
+func (f feedbackFilter) own(author string) bool {
+	return f.operator != "" && strings.ToLower(strings.TrimSpace(author)) == f.operator
+}
+
+func (f feedbackFilter) admit(official bool) bool {
+	switch f.trust {
+	case TrustNone:
+		return false
+	case TrustOfficial:
+		return official
+	default:
+		return true
 	}
-	for _, comment := range obs.Comments {
-		if own(comment.Author) || strings.TrimSpace(comment.Body) == "" {
-			continue
-		}
-		if !admit(officialAuthors[strings.ToLower(comment.Author)]) {
-			snapshot.Ignored++
-			continue
-		}
-		snapshot.Items = append(snapshot.Items, Item{
-			Key:    textKey("comment", comment.ID, comment.Body),
-			Kind:   KindComment,
-			Author: comment.Author,
-			Bot:    comment.Bot,
-			Body:   comment.Body,
-		})
-	}
-	return snapshot
+}
+
+// admitAuthor admits a comment by whether its author left an official review.
+func (f feedbackFilter) admitAuthor(author string) bool {
+	return f.admit(f.officialAuthors[strings.ToLower(author)])
 }
 
 // textKey keys a review or comment by its id and a digest of its text.
