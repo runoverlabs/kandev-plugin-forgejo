@@ -33,8 +33,10 @@ The switch is not decorative. The choice is stored per workspace on the backend,
 which honors it: while an integration is off, repository, branch, review and
 association reads return nothing, so the native pickers render empty instead of
 showing a provider the operator turned off, and pull-request create, link and
-unlink refuse outright rather than silently doing nothing. Turning it back on
-restores everything. A workspace with no stored choice is enabled — installing
+unlink refuse outright rather than silently doing nothing. Webhook deliveries
+for the workspace's [automation conditions](automations.md) are ignored, and the
+editor shows those conditions unavailable. Turning it back on restores
+everything. A workspace with no stored choice is enabled — installing
 the plugin is the opt-in.
 
 Disabling is not uninstalling: config, credentials and stored task links all

@@ -64,6 +64,9 @@ type Runtime struct {
 	// arrives (see SetHost).
 	watchStore  *watches.Store
 	watchPoller *watches.Poller
+
+	// The account and version behind the automation conditions' Describe.
+	automationCache automationCache
 }
 
 var (

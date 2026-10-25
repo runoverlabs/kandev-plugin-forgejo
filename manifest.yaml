@@ -232,6 +232,75 @@ agent_tools:
       idempotent_hint: false
       open_world_hint: true
 
+# Webhook automation conditions (docs/automations.md). The host renders the
+# editor, owns each binding's URL and signing secret, and hands the plugin a
+# delivery to verify; no capability is involved. Each condition needs its own
+# Forgejo webhook. Changing a condition's key, fields or config_version strands
+# every trigger saved against it, so treat them as frozen.
+#
+# An absent boolean is false: the editor renders it off, so the plugin reads it
+# the same way. default_config is the only place a default exists
+# (internal/automations.Defaults, which manifest_test.go compares).
+automation_conditions:
+  - key: "push"
+    access: "public"
+    config_version: 1
+    label: "Forgejo push"
+    description: "A push to a branch of a Forgejo or Gitea repository. Tag pushes and branch deletions do not fire."
+    verification_headers: ["x-forgejo-signature", "x-gitea-signature", "x-hub-signature-256", "x-forgejo-event", "x-gitea-event"]
+    config_schema:
+      type: object
+      additionalProperties: false
+      required: ["repository"]
+      properties:
+        repository: { type: string, title: "Repository (owner/name)" }
+        branches: { type: array, items: { type: string }, title: "Branches (globs, one per line; empty for all)" }
+    default_config: {}
+  - key: "pull_request"
+    access: "public"
+    config_version: 1
+    label: "Forgejo pull request"
+    description: "A pull request opened, updated, closed, merged, commented on or given a review request in a Forgejo or Gitea repository."
+    verification_headers: ["x-forgejo-signature", "x-gitea-signature", "x-hub-signature-256", "x-forgejo-event", "x-gitea-event"]
+    config_schema:
+      type: object
+      additionalProperties: false
+      required: ["repository"]
+      properties:
+        repository: { type: string, title: "Repository (owner/name)" }
+        base_branches: { type: array, items: { type: string }, title: "Base branches (globs; empty for all)" }
+        authors: { type: array, items: { type: string }, title: "Authors (logins; empty for all)" }
+        labels: { type: array, items: { type: string }, title: "Labels (any of; empty for all)" }
+        on_opened: { type: boolean, title: "When opened" }
+        on_reopened: { type: boolean, title: "When reopened" }
+        on_synchronized: { type: boolean, title: "When new commits are pushed" }
+        on_closed: { type: boolean, title: "When closed without merging" }
+        on_merged: { type: boolean, title: "When merged" }
+        on_review_requested: { type: boolean, title: "When a review is requested" }
+        on_commented: { type: boolean, title: "When commented on (Forgejo 11+, Gitea)" }
+        exclude_draft: { type: boolean, title: "Skip drafts" }
+        include_forks: { type: boolean, title: "Include pull requests from forks" }
+    default_config: { on_opened: true, exclude_draft: true }
+  - key: "ci_result"
+    access: "public"
+    config_version: 1
+    label: "Forgejo CI result"
+    description: "A Forgejo Actions run finished. Needs Forgejo 12 or later; Gitea is not supported."
+    verification_headers: ["x-forgejo-signature", "x-gitea-signature", "x-hub-signature-256", "x-forgejo-event", "x-gitea-event"]
+    config_schema:
+      type: object
+      additionalProperties: false
+      required: ["repository"]
+      properties:
+        repository: { type: string, title: "Repository (owner/name)" }
+        branches: { type: array, items: { type: string }, title: "Branches (globs; a pull request run uses its head branch)" }
+        workflows: { type: array, items: { type: string }, title: "Workflow files (e.g. ci.yml; empty for all)" }
+        on_success: { type: boolean, title: "When the run succeeds" }
+        on_failure: { type: boolean, title: "When the run fails" }
+        on_cancelled: { type: boolean, title: "When the run is cancelled" }
+        include_forks: { type: boolean, title: "Include runs for pull requests from forks" }
+    default_config: { on_failure: true }
+
 repository_providers: ["forgejo"]
 
 reference_sources:

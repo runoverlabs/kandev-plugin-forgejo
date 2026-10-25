@@ -13,8 +13,10 @@ import (
 // fields Forgejo and Gitea both populate. The README's "Verified against"
 // table records which releases that has been checked on.
 
-// User is the subset of a Forgejo user this plugin displays.
+// User is the subset of a Forgejo user this plugin reads. ID is immutable;
+// Login can be renamed.
 type User struct {
+	ID    int64  `json:"id"`
 	Login string `json:"login"`
 }
 
@@ -189,9 +191,10 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 	return payload.Version, nil
 }
 
-// Flavor names the software serving this instance, for display only. No
-// behavior branches on it: the plugin targets the REST v1 surface both hosts
-// share.
+// Flavor names the software serving this instance. Only one behaviour
+// branches on it, the ci_result automation condition (see
+// SupportsActionRunWebhooks); everything else targets the REST v1 surface both
+// hosts share.
 type Flavor string
 
 const (

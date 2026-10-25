@@ -78,6 +78,43 @@ prints which Actions endpoints the instance serves, which is the table under
 "What CI data you get, by version". Run the suite against Forgejo and Gitea
 containers before releasing; CI does this across the supported range.
 
+### Webhook deliveries
+
+`TestLiveWebhookDeliveries` (`internal/forgejo/webhooks_live_test.go`) creates
+its own repository, adds a webhook pointing at a listener in the test process,
+causes every event the automation conditions use, and runs each delivery through
+the verifier and the decoder. The instance must be able to reach the listener:
+run the container on the host network (`--network host`, which also changes the
+port to the instance's own `HTTP_PORT`) and open its allow-list with
+`FORGEJO__webhook__ALLOWED_HOST_LIST=loopback` (`GITEA__…` on Gitea). Without
+that the hook fails on the instance's side and the test times out naming the
+missing deliveries. `KANDEV_FORGEJO_WEBHOOK_HOST` overrides the address the hook
+points at, for a container that cannot use the host network.
+
+Optional inputs: `KANDEV_FORGEJO_REVIEWER_TOKEN` adds a pull request from a fork,
+and `KANDEV_FORGEJO_RUNNER_LABEL` names the label of an Actions runner registered
+on the instance, in which case the test also adds a workflow and waits for run
+events (Forgejo 12+). CI registers no runner.
+
+**Re-capturing the fixtures.** `internal/forgejo/testdata/webhooks/<host>/`
+holds one real delivery per scenario from each CI container, and
+`TestDecodeCapturedWebhooks` runs them on every `go test`. Re-capture when a
+release enters the matrix: start the container as above, register a runner
+(`<binary> actions generate-runner-token` on the instance, then
+`act_runner register --no-interactive --instance <url> --token <t> --labels host:host`
+and `act_runner daemon`, with the binary from the `gitea/act_runner` image; host
+mode needs no container runtime), and run
+
+```sh
+KANDEV_FORGEJO_RUNNER_LABEL=host \
+KANDEV_FORGEJO_CAPTURE_DIR=$PWD/internal/forgejo/testdata/webhooks/forgejo-17 \
+go test ./internal/forgejo -run TestLiveWebhookDeliveries -v
+```
+
+with the usual `KANDEV_FORGEJO_*` variables and the reviewer token. The
+directory name is the host and its major release; `TestDecodeCapturedWebhooks`
+expects one per CI container.
+
 ## Verified against
 
 Provider behaviour the PR-actions work relies on, probed with throwaway
@@ -133,6 +170,24 @@ Review watches, probed the same way on 2026-10-09 (`TestLiveReviewRequestedSearc
 Still unverified for review watches: a team request, AGit-flow head identity
 (handled by failing closed), and the response when the token lacks `read:issue`.
 
+Webhook deliveries, captured from Forgejo 7.0.16, 11.0.16, 15.0.10 and 17.0.0
+and Gitea 1.27.3 on 2026-10-25 (`TestLiveWebhookDeliveries`; the fixtures in
+`internal/forgejo/testdata/webhooks/` pin them):
+
+| Fact | Result |
+|---|---|
+| Signature and event headers | `X-Gitea-Signature`, `X-Gitea-Event`, `X-Gitea-Event-Type` and `X-Hub-Signature-256` (`sha256=` prefixed) on all five; Forgejo adds `X-Forgejo-Signature`, `X-Forgejo-Event`, `X-Forgejo-Event-Type`. Signatures are lower-case hex |
+| Pull request sub-events | `X-*-Event: pull_request` for opened, synchronized, labels, review requests, closed and merged; the payload's `action` tells them apart (`opened`, `synchronized`, `label_updated`, `review_requested`, `closed` with `merged`, `reopened`). A review is `pull_request_approved` |
+| Comment on a pull request | `X-*-Event: issue_comment`, `is_pull: true`. **Forgejo 7 sends no `pull_request` object** with it; the others do |
+| `draft` in a pull request payload | **Absent on Forgejo 7**; set from the `WIP:` prefix on the others |
+| Fork pull request | `head.repo_id` differs from `base.repo_id` on all five |
+| Branch deletion | A `delete` event only; no push with a zero `after` on any |
+| `action_run_success` | Fires for **every** successful run (Forgejo 15 and 17), `prior_status: running` |
+| Cancelled run | Forgejo 17 sends `action_run_failure` with `run.status: cancelled` (seen when a newer push cancelled a run) |
+| Run payload | `{action, run, prior_status}`; the repository is `run.repository`, the number `run.index_in_repo`, `trigger_user` an object. `run.prettyref` is the branch or tag name for a push and `#N` for a pull request, so the branch is read from `run.event_payload` |
+| A fork pull request's run | `is_fork_pull_request: true`, ran without approval for a collaborator's fork |
+| Test delivery (`POST .../hooks/{id}/tests`) | A signed push to the default branch, the same body each time |
+
 Token scopes and branch protection, probed on all four on 2026-10-09:
 
 | Fact | Result |
@@ -151,11 +206,12 @@ user; `TestLivePullRequestActions`, `TestLiveReviewerFlow` and
 
 | Path | Contents |
 | --- | --- |
-| `manifest.yaml` | The declarative host contract: actions, provider ownership, reference source, capabilities, config schema. |
+| `manifest.yaml` | The declarative host contract: actions, provider ownership, reference source, capabilities, automation conditions, config schema. |
 | `internal/sourcecontrol/` | The provider-neutral source-control recipe — the Kandev boundary. Adapted from `kandev-plugin-template`. |
-| `internal/forgejo/` | Concrete Forgejo/Gitea adapters: REST client, repositories, pull requests, reviews, references, associations, and the Actions/CI resolution chain. |
+| `internal/forgejo/` | Concrete Forgejo/Gitea adapters: REST client, repositories, pull requests, reviews, references, associations, the Actions/CI resolution chain, and webhook signature checking and decoding (`webhooks.go`, with captured deliveries in `testdata/webhooks/`). |
+| `internal/automations/` | The provider-neutral half of the automation conditions: the condition keys and settings, the event model, the filters, and the normalized `{{data.*}}` payload. |
 | `internal/watches/` | The provider-neutral watch half: the watch model (issue and review kinds), the dedup ledger, the poll loop, review placement and fork rules, and cleanup. Reaches Forgejo only through the `IssueSource` and `ReviewSource` ports. |
-| `internal/plugin/` | Wires the adapters into the extension, owns the connection and watch actions, and serves the agent tools. |
+| `internal/plugin/` | Wires the adapters into the extension, owns the connection and watch actions, serves the agent tools, and implements the automation adapter (`DescribeAutomationCondition`, `VerifyAutomationWebhook`). |
 | `ui/src/` | The browser half: the recipe registration plus the Forgejo icon, reference parsing, detail adapter, connection panel, and the issue-watch panel. |
 | `server/` | The `pluginsdk.Serve` entry point Kandev spawns. |
 
@@ -181,7 +237,7 @@ this plugin draws itself.
 
 ### Ports in the neutral package, adapters in the provider package
 
-`internal/sourcecontrol` and `internal/watches` declare narrow interfaces and
+`internal/sourcecontrol`, `internal/watches` and `internal/automations` declare narrow interfaces and
 own the decisions; `internal/forgejo` implements them and owns every URL,
 pagination token, authentication detail and error mapping.
 
@@ -194,7 +250,9 @@ and the REST client testable against an `httptest` server with no Kandev host.
 
 Forgejo is a hard fork of Gitea and both serve `/api/v1`. The client restricts
 itself to endpoints and fields that exist on both, so one plugin serves either.
-Flavor detection exists for display only — **no behaviour branches on it**.
+Flavor detection is for display, with one exception: the CI result automation
+condition needs Forgejo Actions run events, which only Forgejo 12+ sends, so it
+reports itself unavailable on Gitea and older Forgejo.
 
 Where the hosts genuinely diverge, the code resolves through a chain and takes
 the first surface that answers rather than assuming a shape: `ci` walks
