@@ -36,6 +36,10 @@ const (
 	// turn.completed event usually says so sooner; this is the fallback when
 	// an event is lost.
 	idleGrace = 2 * time.Minute
+	// startGrace: Kandev starts a never-launched session when it is messaged.
+	// One still CREATED this long after the prompt never started; the launch
+	// is best-effort and its failure is not reported.
+	startGrace = 5 * time.Minute
 	// retryCooldown: the least time between an auto-fix round and its resend
 	// after the turn ended without an outcome. Without it an agent that never
 	// reports (the tool unavailable, say) would use up every round in a few
@@ -310,7 +314,16 @@ func (e *Engine) Evaluate(ctx context.Context, workspaceID string, ref PullRef) 
 	}
 	now := e.now().UTC()
 
-	obs, err := e.observer.Observe(ctx, workspaceID, ref)
+	// An unseeded record is about to take the workspace defaults.
+	switches := record.Switches
+	if !record.Seeded {
+		switches = settings.Defaults
+	}
+	reads := Reads{
+		Feedback:      switches.AutoFix || switches.AutoMerge,
+		ReviewRequest: switches.OnReviewRequested,
+	}
+	obs, err := e.observer.Observe(ctx, workspaceID, ref, reads)
 	if err != nil {
 		record.Error = e.describe(err)
 		record.Status = "Could not read the pull request."
@@ -389,8 +402,7 @@ func (r *evaluation) lifecycle() {
 	}
 	if record.LastState == "" {
 		record.LastState = state
-		record.ReviewRequested = obs.OperatorRequested
-		record.ReviewBaselineSet = true
+		r.reviewRequest(state)
 		switch state {
 		case StateMerged:
 			record.LastLifecycle = EventMerged
@@ -399,13 +411,7 @@ func (r *evaluation) lifecycle() {
 		}
 		return
 	}
-
-	if record.OnReviewRequested && record.ReviewBaselineSet && state == StateOpen &&
-		obs.OperatorRequested && !record.ReviewRequested {
-		r.queue(EventReviewRequested)
-	}
-	record.ReviewRequested = obs.OperatorRequested
-	record.ReviewBaselineSet = true
+	r.reviewRequest(state)
 
 	switch state {
 	case StateMerged:
@@ -429,6 +435,22 @@ func (r *evaluation) lifecycle() {
 		}
 	}
 	record.LastState = state
+}
+
+// reviewRequest follows the operator's review request and prompts when a new
+// one appears. It is only read while the prompt is on and the pull request is
+// open: a closed one reports no request, which is not the request going away,
+// and a request still pending after a reopen must not prompt twice.
+func (r *evaluation) reviewRequest(state PullState) {
+	record, obs := r.record, r.obs
+	if !record.OnReviewRequested || state != StateOpen {
+		return
+	}
+	if record.ReviewBaselineSet && obs.OperatorRequested && !record.ReviewRequested {
+		r.queue(EventReviewRequested)
+	}
+	record.ReviewRequested = obs.OperatorRequested
+	record.ReviewBaselineSet = true
 }
 
 func (r *evaluation) queue(event string) {
@@ -597,16 +619,15 @@ func (r *evaluation) autoFix() {
 		preferred = record.Attempt.SessionID
 	}
 	attempt := Attempt{
-		ID:        r.engine.newID(),
-		Round:     record.Rounds + 1,
-		State:     AttemptDispatched,
-		Signature: Signature(items),
-		Keys:      itemKeys(items),
+		ID:    r.engine.newID(),
+		Round: record.Rounds + 1,
+		State: AttemptDispatched,
 		// Stamped before sending: a turn the prompt starts begins after this,
 		// and a turn that was already running when it was queued began before.
 		SentAt: r.now,
 	}
-	text := RenderAutoFix(r.settings.EffectiveTemplate(), obs, attempt, items, retry)
+	text, shown := RenderAutoFix(r.settings.EffectiveTemplate(), obs, attempt, items, retry)
+	attempt.Signature, attempt.Keys = Signature(shown), itemKeys(shown)
 	dispatch, ok := r.send(text, preferred)
 	if !ok {
 		return
@@ -618,8 +639,8 @@ func (r *evaluation) autoFix() {
 }
 
 // attemptEnded reports whether a dispatched attempt's turn is over without an
-// outcome: its session is gone, or idle for longer than idleGrace since the
-// prompt was sent.
+// outcome: its session is gone, idle for longer than idleGrace since the
+// prompt was sent, or still not started after startGrace.
 func (r *evaluation) attemptEnded(attempt Attempt) bool {
 	sessions, err := r.loadSessions()
 	if err != nil {
@@ -630,8 +651,10 @@ func (r *evaluation) attemptEnded(attempt Attempt) bool {
 			continue
 		}
 		switch session.State {
-		case sessionRunning, sessionStarting, sessionCreated:
+		case sessionRunning, sessionStarting:
 			return false
+		case sessionCreated:
+			return r.now.Sub(attempt.SentAt) > startGrace
 		case sessionIdle, sessionWaitingForInput:
 			return r.now.Sub(attempt.SentAt) > idleGrace
 		default:
@@ -699,6 +722,9 @@ func (r *evaluation) mergeBlocker() string {
 		return "waiting for the agent's change to show up."
 	case record.BlockedHead == obs.HeadSHA && r.now.Before(record.BlockedUntil):
 		return "the agent reported that a change is needed but blocked."
+	}
+	if obs.ReviewsIncomplete {
+		return "the pull request has more reviews than automation reads; merge it by hand."
 	}
 	changes, approvals := reviewVerdicts(obs.Reviews)
 	if changes > 0 {

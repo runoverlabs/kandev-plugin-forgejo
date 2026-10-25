@@ -347,20 +347,85 @@ const maxPullReviews = 100
 
 // Reviews returns a pull request's newest maxPullReviews reviews, oldest first.
 func (c *Client) Reviews(ctx context.Context, owner, name string, number int64) ([]Review, error) {
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", pathSegment(owner), pathSegment(name), number)
-	reviews, _, err := pageNewest[Review](ctx, c, path, maxPullReviews)
+	reviews, _, err := c.NewestReviews(ctx, owner, name, number)
 	return reviews, err
 }
 
-// CombinedStatus returns the roll-up commit status for a ref. A repository
-// with no CI configured returns an empty status list rather than an error.
+// NewestReviews is Reviews that also reports whether older reviews were left
+// out.
+func (c *Client) NewestReviews(ctx context.Context, owner, name string, number int64) ([]Review, bool, error) {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", pathSegment(owner), pathSegment(name), number)
+	return pageNewest[Review](ctx, c, path, maxPullReviews)
+}
+
+// Combined status paging: every supported host caps a page at 50 contexts.
+const (
+	statusPageSize = 50
+	maxStatusPages = 5
+)
+
+// CombinedStatus returns the latest status of every context on a ref, and their
+// roll-up. A repository with no CI configured returns an empty status list
+// rather than an error.
+//
+// The endpoint pages, newest contexts first (30 by default, 50 at most), and
+// its total_count and state describe the page alone (Forgejo 16, Gitea 1.27).
+// X-Total-Count holds the number of contexts. TotalCount is set from it, so a
+// caller that must see every check can tell a cut list from a complete one.
 func (c *Client) CombinedStatus(ctx context.Context, owner, name, ref string) (CombinedStatus, error) {
-	var status CombinedStatus
 	path := "/repos/" + pathSegment(owner) + "/" + pathSegment(name) + "/commits/" + pathSegment(ref) + "/status"
-	if err := c.get(ctx, path, nil, &status); err != nil {
-		return CombinedStatus{}, err
+	var combined CombinedStatus
+	seen := map[string]bool{}
+	total := -1
+	for page := 1; page <= maxStatusPages; page++ {
+		query := url.Values{}
+		query.Set("page", strconv.Itoa(page))
+		query.Set("limit", strconv.Itoa(statusPageSize))
+		var batch CombinedStatus
+		count, err := c.getCounted(ctx, path, query, &batch)
+		if err != nil {
+			return CombinedStatus{}, err
+		}
+		if page == 1 {
+			combined.Sha, combined.State, total = batch.Sha, batch.State, count
+		} else if len(batch.Statuses) > 0 {
+			combined.State = worseCommitState(combined.State, batch.State)
+		}
+		for _, status := range batch.Statuses {
+			// A context updated between two reads moves to the first page and
+			// shifts the rest: it can come back twice.
+			if !seen[status.Context] {
+				seen[status.Context] = true
+				combined.Statuses = append(combined.Statuses, status)
+			}
+		}
+		if len(batch.Statuses) == 0 || (total >= 0 && len(combined.Statuses) >= total) ||
+			(total < 0 && len(batch.Statuses) < statusPageSize) {
+			break
+		}
 	}
-	return status, nil
+	combined.TotalCount = max(total, len(combined.Statuses))
+	return combined, nil
+}
+
+// worseCommitState rolls up two pages' states: a failure outranks anything
+// still running, which outranks success.
+func worseCommitState(a, b string) string {
+	rank := func(state string) int {
+		switch strings.ToLower(strings.TrimSpace(state)) {
+		case "error", "failure":
+			return 3
+		case "pending", "running":
+			return 2
+		case "warning":
+			return 1
+		}
+		return 0
+	}
+	if rank(b) > rank(a) {
+		return b
+	}
+	return a
 }
 
 // SearchPullRequests returns pull requests visible to the token across the

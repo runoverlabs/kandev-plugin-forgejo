@@ -26,6 +26,9 @@
   the whole capability set, so **every gated feature (repository picker, review
   panel, watches) is refused until an administrator re-approves** in Settings →
   Plugins → Forgejo.
+- The review panel's checks and the `ci` tool's commit-status fallback listed
+  only the first 30 statuses of a commit with more, and took the overall state
+  from those 30 alone. They now read every page.
 - The `pr` agent tool's schema no longer describes `title` ("required for
   open" is still the answer when it is missing), to make room for `outcome`
   within the same size budget.

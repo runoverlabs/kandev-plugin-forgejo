@@ -106,24 +106,54 @@ func describeItem(item Item) string {
 	}
 }
 
-// RenderAutoFix builds the whole auto-fix message. The first line names the
-// attempt: Kandev derives a message's idempotency key from its text, so the
-// attempt id is what keeps two rounds with identical feedback distinct, and
-// what makes a resend of the same attempt after a crash a harmless replay.
-func RenderAutoFix(template string, obs Observation, attempt Attempt, items []Item, retry bool) string {
+// RenderAutoFix builds the whole auto-fix message and returns it with the
+// items it carries. The first line names the attempt: Kandev derives a
+// message's idempotency key from its text, so the attempt id is what keeps two
+// rounds with identical feedback distinct, and what makes a resend of the same
+// attempt after a crash a harmless replay.
+//
+// Over maxPromptBytes, whole items are left out from the end (review text
+// before checks) until it fits. A byte cut could land inside the quoted
+// review text and leave the protocol after it inside the block the agent is
+// told is data. The items left out are not in the returned list, so they stay
+// new for the next round.
+func RenderAutoFix(template string, obs Observation, attempt Attempt, items []Item, retry bool) (string, []Item) {
 	header := fmt.Sprintf("[Forgejo auto-fix · %s#%d · round %d/%d · attempt %s]",
 		obs.Repository, obs.Number, attempt.Round, MaxRounds, attempt.ID)
 	if retry {
 		header += "\nThe previous automated fix turn ended without reporting an outcome. This is the full current feedback."
 	}
-	feedback := RenderFeedback(obs, items)
-	body := template
-	if strings.Contains(body, "{{pr.feedback}}") {
-		body = strings.ReplaceAll(body, "{{pr.feedback}}", feedback)
-	} else {
-		body = strings.TrimSpace(body) + "\n\n" + feedback
+	shown := items
+	for {
+		body := renderBody(template, obs, attempt, shown, len(items)-len(shown))
+		text := header + "\n\n" + body + "\n\n" + outcomeProtocol
+		if len(text) <= maxPromptBytes {
+			return text, shown
+		}
+		if len(shown) == 0 {
+			// The template alone is too long (placeholders can repeat). No
+			// review text is left in it to cut into.
+			keep := maxPromptBytes - len(header) - len(outcomeProtocol) - 64
+			body = strings.ToValidUTF8(body[:keep], "")
+			return header + "\n\n" + body + "\n\n(truncated)\n\n" + outcomeProtocol, shown
+		}
+		shown = shown[:len(shown)-1]
 	}
-	body = strings.NewReplacer(
+}
+
+func renderBody(template string, obs Observation, attempt Attempt, items []Item, omitted int) string {
+	feedback := RenderFeedback(obs, items)
+	if omitted > 0 {
+		feedback += fmt.Sprintf("\n\n(%d more feedback items did not fit in this prompt; they follow in a later round.)", omitted)
+	}
+	body := template
+	if !strings.Contains(body, "{{pr.feedback}}") {
+		body = strings.TrimSpace(body) + "\n\n{{pr.feedback}}"
+	}
+	// One pass: nothing substituted in, review text least of all, is scanned
+	// for placeholders again.
+	return strings.TrimSpace(strings.NewReplacer(
+		"{{pr.feedback}}", feedback,
 		"{{pr.url}}", obs.URL,
 		"{{pr.number}}", fmt.Sprint(obs.Number),
 		"{{pr.title}}", oneLine(obs.Title),
@@ -131,16 +161,7 @@ func RenderAutoFix(template string, obs Observation, attempt Attempt, items []It
 		"{{pr.base_branch}}", obs.BaseBranch,
 		"{{pr.repository}}", obs.Repository,
 		"{{attempt.round}}", fmt.Sprint(attempt.Round),
-	).Replace(body)
-	text := header + "\n\n" + strings.TrimSpace(body) + "\n\n" + outcomeProtocol
-	if len(text) > maxPromptBytes {
-		// Cut the middle (the feedback), never the protocol the bookkeeping
-		// depends on.
-		keep := maxPromptBytes - len(outcomeProtocol) - 64
-		cut := strings.ToValidUTF8(text[:keep], "")
-		text = cut + "\n\n(feedback truncated)\n\n" + outcomeProtocol
-	}
-	return text
+	).Replace(body))
 }
 
 // Lifecycle prompt texts. Kandev's GitHub integration sends fixed sentences;

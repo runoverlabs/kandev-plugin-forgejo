@@ -687,3 +687,89 @@ func TestAutoMergeWaitsBeforeTakingNoChecksForNoCI(t *testing.T) {
 	h.evaluate()
 	require.Equal(t, []mergeCall{{ref: testRef, head: "eeeeeeeeeeee"}}, h.merger.calls)
 }
+
+func TestReviewRequestStillPendingAfterAReopenDoesNotPromptTwice(t *testing.T) {
+	h := newHarness(t)
+	h.switches(Switches{OnReviewRequested: true})
+	h.evaluate() // baseline
+	h.setObs(func(obs *Observation) { obs.OperatorRequested = true })
+	h.evaluate()
+	require.Len(t, h.messenger.sent, 1)
+
+	// A closed pull request reports no request: it is not read.
+	h.setObs(func(obs *Observation) { obs.State, obs.OperatorRequested = StateClosed, false })
+	h.evaluate()
+	h.setObs(func(obs *Observation) { obs.State, obs.OperatorRequested = StateOpen, true })
+	h.evaluate()
+	require.Len(t, h.messenger.sent, 1, "the same request, still pending")
+}
+
+func TestObservationReadsOnlyWhatTheSwitchesUse(t *testing.T) {
+	cases := []struct {
+		switches Switches
+		want     Reads
+	}{
+		{Switches{OnMerged: true, OnClosed: true}, Reads{}},
+		{Switches{OnReviewRequested: true}, Reads{ReviewRequest: true}},
+		{Switches{AutoFix: true}, Reads{Feedback: true}},
+		{Switches{AutoMerge: true, OnReviewRequested: true}, Reads{Feedback: true, ReviewRequest: true}},
+	}
+	for _, tc := range cases {
+		h := newHarness(t)
+		h.switches(tc.switches)
+		h.evaluate()
+		require.Equal(t, tc.want, h.observer.reads, "%+v", tc.switches)
+	}
+
+	// An unseeded record reads for the defaults it is about to take.
+	h := newHarness(t)
+	h.settings(Settings{Defaults: Switches{AutoMerge: true}})
+	h.engine.Tick(context.Background())
+	require.Equal(t, Reads{Feedback: true}, h.observer.reads)
+}
+
+func TestAutoMergeRefusesWhenReviewsWereNotAllRead(t *testing.T) {
+	h := newHarness(t)
+	h.switches(Switches{AutoMerge: true})
+	h.setObs(func(obs *Observation) { obs.ReviewsIncomplete = true })
+	record := h.evaluate()
+	require.Empty(t, h.merger.calls)
+	require.Contains(t, record.Status, "more reviews than automation reads")
+}
+
+func TestAttemptToASessionThatNeverStartsEnds(t *testing.T) {
+	h := newHarness(t)
+	h.messenger.sessions[testRef.TaskID] = []Session{{ID: "s-1", State: sessionCreated}}
+	h.switches(Switches{AutoFix: true, AutoMerge: true})
+	h.setObs(failingCI)
+	h.evaluate()
+	require.Len(t, h.messenger.sent, 1)
+	h.advance(startGrace / 2)
+	record := h.evaluate()
+	require.Equal(t, AttemptDispatched, record.Attempt.State, "still within the time a start takes")
+
+	h.advance(startGrace)
+	h.evaluate()
+	require.Len(t, h.messenger.sent, 2, "the launch failed: the round is sent again")
+	require.Equal(t, 2, h.record().Rounds, "and counts, so a session that never starts uses the rounds up")
+}
+
+func TestOversizedFeedbackLeavesTheRestForTheNextRound(t *testing.T) {
+	h := newHarness(t)
+	h.switches(Switches{AutoFix: true})
+	h.setObs(func(obs *Observation) {
+		for i := 1; i <= 40; i++ {
+			obs.Comments = append(obs.Comments, Comment{ID: int64(i), Author: "bob", Body: strings.Repeat("x", maxItemRunes)})
+		}
+	})
+	record := h.evaluate()
+	require.NotNil(t, record.Attempt)
+	sentKeys := len(record.Attempt.Keys)
+	require.Less(t, sentKeys, 40)
+
+	_, err := h.engine.Outcome(context.Background(), testWorkspace, testRef.TaskID, "", "", OutcomeNonActionable, "")
+	require.NoError(t, err)
+	record = h.evaluate()
+	require.Len(t, h.messenger.sent, 2, "what did not fit is still new")
+	require.NotContains(t, record.Attempt.Keys, "comment:1")
+}

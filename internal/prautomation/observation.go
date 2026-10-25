@@ -93,7 +93,11 @@ type Observation struct {
 	Mergeable *bool
 	CI        CI
 	Reviews   []Review
-	Comments  []Comment
+	// ReviewsIncomplete is set when the adapter could not read every review
+	// or every inline comment. Auto-merge then refuses: an objection it did
+	// not read is still an objection.
+	ReviewsIncomplete bool
+	Comments          []Comment
 	// RequiredApprovals is nil when the branch's protection is not visible.
 	RequiredApprovals *int
 	// Operator is the account the plugin's token belongs to. Every comment and

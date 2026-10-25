@@ -267,6 +267,11 @@ that way and easy to get wrong:
   1.27): `page` and `limit` are ignored and every request returns them all, so
   walking pages repeats the list. Reviews are paged. Both send
   `X-Total-Count`, which `pageNewest` uses to keep the newest entries.
+- **The combined commit status pages** (30 contexts by default, 50 at most), and
+  its `total_count` and `state` describe the page alone: `X-Total-Count` is the
+  real count. A failing check can sit on page 2.
+- A review comment's `resolver` is set only on the comment the conversation
+  was resolved from; the web UI uses the first. Replies are not marked.
 - A non-admin token gets 403 from `collaborators/{user}/permission` for anyone
   but itself. A review's `official` flag is the trust signal every token sees.
 - The per-repository issues endpoint takes **`q`**, not `keyword` — and

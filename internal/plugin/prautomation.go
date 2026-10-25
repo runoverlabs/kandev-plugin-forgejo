@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -195,6 +196,9 @@ func (r *Runtime) handleAutomationAction(ctx context.Context, request *pluginsdk
 		OnMerged          *bool  `json:"on_merged"`
 		OnClosed          *bool  `json:"on_closed"`
 		What              string `json:"what"`
+		// ConfirmFork is the panel's record that a human confirmed the fork
+		// warning.
+		ConfirmFork bool `json:"confirm_fork"`
 	}
 	if bad := decodeActionBody(request, &input); bad != nil {
 		return bad, nil
@@ -213,9 +217,30 @@ func (r *Runtime) handleAutomationAction(ctx context.Context, request *pluginsdk
 		if !found {
 			record = prautomation.Record{TaskID: ref.TaskID, RepositoryID: ref.RepositoryID, Number: ref.Number}
 		}
+		if record.Observed.IsZero() {
+			// Not observed yet, so the record cannot say whether this is a fork,
+			// and the panel decides on its warning from it. Shown, not stored:
+			// the loop's observation is what the record keeps.
+			if fork, err := r.automationSource.IsFork(ctx, ref); err == nil {
+				record.Fork = fork
+			}
+		}
 		return r.automationView(ctx, workspaceID, record)
 
 	case ActionAutomationSet:
+		// Auto-fix and auto-merge run an agent on a fork author's code and
+		// comments. That takes a human's confirmation, checked here and not
+		// only in the panel, which may not know yet that it is a fork.
+		enabling := (input.AutoFix != nil && *input.AutoFix) || (input.AutoMerge != nil && *input.AutoMerge)
+		if enabling && !input.ConfirmFork {
+			fork, err := r.automationFork(ctx, workspaceID, ref)
+			if err != nil {
+				return pullFailure(err)
+			}
+			if fork {
+				return domainResponse(http.StatusConflict, "This pull request comes from a fork. Confirm the warning in the panel to turn this on.")
+			}
+		}
 		var changes []string
 		// Upsert: when the loop has not seen this link yet, a human's choice
 		// does not wait for it, and the record starts from what they set.
@@ -275,6 +300,19 @@ func (r *Runtime) handleAutomationAction(ctx context.Context, request *pluginsdk
 		return r.automationView(ctx, workspaceID, record)
 	}
 	return domainResponse(404, "Unknown automation action.")
+}
+
+// automationFork reports whether a linked pull request comes from a fork: as
+// the loop last observed it, or read now when it has not observed it yet.
+func (r *Runtime) automationFork(ctx context.Context, workspaceID string, ref prautomation.PullRef) (bool, error) {
+	record, found, err := r.automation.Store().Get(ctx, workspaceID, ref)
+	if err != nil {
+		return false, err
+	}
+	if found && !record.Observed.IsZero() {
+		return record.Fork, nil
+	}
+	return r.automationSource.IsFork(ctx, ref)
 }
 
 // automationRef resolves the pull request a task-scoped call may act on, from

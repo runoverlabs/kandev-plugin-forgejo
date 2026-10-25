@@ -109,7 +109,9 @@ func BuildSnapshot(obs Observation, trust Trust) Snapshot {
 			if comment.Resolved || own(comment.Author) || strings.TrimSpace(comment.Body) == "" {
 				continue
 			}
-			if !admit(review.Official) {
+			// By its author, not its review: a reply in a thread is stored
+			// under the review that opened it, whoever wrote the reply.
+			if !admit(officialAuthors[strings.ToLower(comment.Author)]) {
 				snapshot.Ignored++
 				continue
 			}

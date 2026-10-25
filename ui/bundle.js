@@ -166,6 +166,7 @@ function createAutomationSection(host) {
         setError(null);
       } catch (cause) {
         host.toast.error(failureMessage(cause));
+        void load();
       } finally {
         setBusy(false);
       }
@@ -189,7 +190,7 @@ function createAutomationSection(host) {
                 "data-testid": "forgejo-automation-fork-confirm",
                 onClick: () => {
                   modal?.close();
-                  void write("automation.set", { [key]: true });
+                  void write("automation.set", { [key]: true, confirm_fork: true });
                 }
               },
               "Turn on"

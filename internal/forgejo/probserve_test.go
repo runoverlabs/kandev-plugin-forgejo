@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -74,11 +75,14 @@ func automationSourceFixture(t *testing.T, pull map[string]any) (*AutomationSour
 	return NewAutomationSource(connection, associations), api
 }
 
-var observedRef = prautomation.PullRef{TaskID: "task-1", RepositoryID: "5", Number: 7}
+var (
+	observedRef = prautomation.PullRef{TaskID: "task-1", RepositoryID: "5", Number: 7}
+	allReads    = prautomation.Reads{Feedback: true, ReviewRequest: true}
+)
 
 func TestObserveReadsEverythingAutomationDecidesOn(t *testing.T) {
 	source, _ := automationSourceFixture(t, nil)
-	obs, err := source.Observe(context.Background(), "ws-1", observedRef)
+	obs, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.NoError(t, err)
 
 	require.Equal(t, prautomation.StateOpen, obs.State)
@@ -110,7 +114,7 @@ func TestObserveTeamRequestOfAnotherOwnerDoesNotCount(t *testing.T) {
 	source, _ := automationSourceFixture(t, map[string]any{
 		"requested_reviewers_teams": []map[string]any{{"name": "docs"}},
 	})
-	obs, err := source.Observe(context.Background(), "ws-1", observedRef)
+	obs, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.NoError(t, err)
 	require.False(t, obs.OperatorRequested)
 }
@@ -119,19 +123,19 @@ func TestObserveForkAndClosedStates(t *testing.T) {
 	source, _ := automationSourceFixture(t, map[string]any{
 		"head": map[string]any{"ref": "feat", "sha": "abc1234", "repo_id": 9},
 	})
-	obs, err := source.Observe(context.Background(), "ws-1", observedRef)
+	obs, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.NoError(t, err)
 	require.True(t, obs.Fork)
 
 	gone, _ := automationSourceFixture(t, map[string]any{
 		"head": map[string]any{"ref": "feat", "sha": "abc1234"},
 	})
-	obs, err = gone.Observe(context.Background(), "ws-1", observedRef)
+	obs, err = gone.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.NoError(t, err)
 	require.True(t, obs.Fork, "a deleted fork has no head repository")
 
 	merged, mergedAPI := automationSourceFixture(t, map[string]any{"state": "closed", "merged": true})
-	obs, err = merged.Observe(context.Background(), "ws-1", observedRef)
+	obs, err = merged.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.NoError(t, err)
 	require.Equal(t, prautomation.StateMerged, obs.State)
 	require.Zero(t, mergedAPI.count(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews"),
@@ -142,7 +146,7 @@ func TestObserveUnsettledConflictIsUnknown(t *testing.T) {
 	source, _ := automationSourceFixture(t, map[string]any{
 		"mergeable": false, "updated_at": time.Now().UTC().Format(time.RFC3339),
 	})
-	obs, err := source.Observe(context.Background(), "ws-1", observedRef)
+	obs, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.NoError(t, err)
 	require.Nil(t, obs.Mergeable)
 }
@@ -158,20 +162,20 @@ func TestObserveFailsWhenAMergeGateCannotBeRead(t *testing.T) {
 		for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 			source, api := automationSourceFixture(t, nil)
 			api.handle(http.MethodGet, path, status, map[string]any{"message": "no"})
-			_, err := source.Observe(context.Background(), "ws-1", observedRef)
+			_, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
 			require.ErrorIs(t, err, ErrUnauthorized, "%s answering %d must not read as no CI or no objections", path, status)
 		}
 	}
 	source, api := automationSourceFixture(t, nil)
 	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", http.StatusNotFound, nil)
-	_, err := source.Observe(context.Background(), "ws-1", observedRef)
+	_, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestObserveSkipsTheCommentsOfAReviewDeletedMeanwhile(t *testing.T) {
 	source, api := automationSourceFixture(t, nil)
 	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/1/comments", http.StatusNotFound, nil)
-	obs, err := source.Observe(context.Background(), "ws-1", observedRef)
+	obs, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.NoError(t, err)
 	require.Empty(t, obs.Reviews[0].Comments)
 }
@@ -189,7 +193,7 @@ func TestObserveFetchesTheCommentsOfTheNewestReviews(t *testing.T) {
 		})
 	}
 	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", 200, reviews)
-	obs, err := source.Observe(context.Background(), "ws-1", observedRef)
+	obs, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.NoError(t, err)
 	require.Len(t, obs.Reviews, total)
 	for i, review := range obs.Reviews {
@@ -200,6 +204,123 @@ func TestObserveFetchesTheCommentsOfTheNewestReviews(t *testing.T) {
 			require.Len(t, review.Comments, 1, "review %d is among the newest", review.ID)
 		}
 	}
+	require.True(t, obs.ReviewsIncomplete, "comments past the bound were not read")
+}
+
+func TestObserveReportsReviewsPastTheBound(t *testing.T) {
+	source, api := automationSourceFixture(t, nil)
+	api.handleFunc(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Total-Count", strconv.Itoa(maxPullReviews+1))
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		var reviews []map[string]any
+		for i := 1; i <= pullListPageSize; i++ {
+			id := (page-1)*pullListPageSize + i
+			if id > maxPullReviews+1 {
+				break
+			}
+			reviews = append(reviews, map[string]any{"id": id, "state": "APPROVED", "user": map[string]any{"id": 4, "login": "bob"}})
+		}
+		_ = json.NewEncoder(w).Encode(reviews)
+	})
+	obs, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
+	require.NoError(t, err)
+	require.Len(t, obs.Reviews, maxPullReviews)
+	require.True(t, obs.ReviewsIncomplete, "the oldest review was not read")
+
+	complete, _ := automationSourceFixture(t, nil)
+	obs, err = complete.Observe(context.Background(), "ws-1", observedRef, allReads)
+	require.NoError(t, err)
+	require.False(t, obs.ReviewsIncomplete)
+}
+
+// A conversation is resolved from its first comment, which is the only one
+// that carries the resolver (Forgejo 16, Gitea 1.27). Replies in it are resolved
+// with it, wherever they are filed.
+func TestObserveResolvesAConversationFromItsFirstComment(t *testing.T) {
+	source, api := automationSourceFixture(t, nil)
+	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", 200, []map[string]any{
+		{"id": 1, "state": "COMMENT", "official": true, "comments_count": 4, "user": map[string]any{"id": 4, "login": "bob"}},
+		{"id": 2, "state": "COMMENT", "comments_count": 1, "user": map[string]any{"id": 6, "login": "eve"}},
+	})
+	resolved := map[string]any{"id": 3, "login": "kandev"}
+	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/1/comments", 200, []map[string]any{
+		{"id": 11, "body": "off by one", "path": "a.go", "position": 4, "user": map[string]any{"id": 4, "login": "bob"}, "resolver": resolved},
+		{"id": 13, "body": "fixed", "path": "a.go", "position": 4, "user": map[string]any{"id": 3, "login": "kandev"}},
+		{"id": 14, "body": "this one", "path": "a.go", "position": 9, "user": map[string]any{"id": 4, "login": "bob"}},
+		{"id": 16, "body": "done", "path": "a.go", "position": 9, "user": map[string]any{"id": 3, "login": "kandev"}, "resolver": resolved},
+	})
+	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/2/comments", 200, []map[string]any{
+		// Gitea files a reply under the replier's own pending review.
+		{"id": 15, "body": "agreed", "path": "a.go", "position": 4, "user": map[string]any{"id": 6, "login": "eve"}},
+	})
+	obs, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
+	require.NoError(t, err)
+	resolution := map[int64]bool{}
+	for _, review := range obs.Reviews {
+		for _, comment := range review.Comments {
+			resolution[comment.ID] = comment.Resolved
+		}
+	}
+	require.Equal(t, map[int64]bool{11: true, 13: true, 15: true, 14: false, 16: false}, resolution,
+		"resolved from a reply, the web UI still shows the conversation open")
+}
+
+func TestObserveReadsOnlyWhatIsAskedFor(t *testing.T) {
+	source, api := automationSourceFixture(t, nil)
+	obs, err := source.Observe(context.Background(), "ws-1", observedRef, prautomation.Reads{})
+	require.NoError(t, err)
+	require.Equal(t, prautomation.StateOpen, obs.State)
+	for _, path := range []string{
+		"/api/v1/user",
+		"/api/v1/repos/o/r/commits/abc1234/status",
+		"/api/v1/repos/o/r/branches/main",
+		"/api/v1/repos/o/r/pulls/7/reviews",
+		"/api/v1/repos/o/r/issues/7/comments",
+	} {
+		require.Zero(t, api.count(http.MethodGet, path), "%s is read by nothing switched on", path)
+	}
+
+	obs, err = source.Observe(context.Background(), "ws-1", observedRef, prautomation.Reads{ReviewRequest: true})
+	require.NoError(t, err)
+	require.True(t, obs.OperatorRequested)
+	require.Zero(t, api.count(http.MethodGet, "/api/v1/repos/o/r/commits/abc1234/status"))
+	require.Zero(t, api.count(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews"))
+}
+
+// The combined status pages, and its total_count and state describe the page
+// alone (Forgejo 16, Gitea 1.27): a failing check on a later page must count.
+func TestObserveReadsEveryPageOfTheCombinedStatus(t *testing.T) {
+	const contexts = 70
+	serve := func(api *apiServer, total int) {
+		api.handleFunc(http.MethodGet, "/api/v1/repos/o/r/commits/abc1234/status", func(w http.ResponseWriter, r *http.Request) {
+			page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			limit = min(limit, statusPageSize)
+			var statuses []map[string]any
+			for i := (page - 1) * limit; i < min(page*limit, contexts); i++ {
+				state := "success"
+				if i == contexts-1 {
+					state = "failure"
+				}
+				statuses = append(statuses, map[string]any{"id": i + 1, "status": state, "context": fmt.Sprintf("ci/%02d", i)})
+			}
+			w.Header().Set("X-Total-Count", strconv.Itoa(total))
+			_ = json.NewEncoder(w).Encode(map[string]any{"state": "success", "total_count": len(statuses), "statuses": statuses})
+		})
+	}
+	source, api := automationSourceFixture(t, nil)
+	serve(api, contexts)
+	obs, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
+	require.NoError(t, err)
+	require.Equal(t, prautomation.CIFailure, obs.CI.State)
+	require.Equal(t, "ci/69", obs.CI.Failing[0].Name)
+	require.Equal(t, 2, api.count(http.MethodGet, "/api/v1/repos/o/r/commits/abc1234/status"))
+
+	// Fewer contexts than counted (one moved between pages): fail closed.
+	short, shortAPI := automationSourceFixture(t, nil)
+	serve(shortAPI, contexts+1)
+	_, err = short.Observe(context.Background(), "ws-1", observedRef, allReads)
+	require.ErrorIs(t, err, errStatusesCut)
 }
 
 func TestLinkedListsOnlyThisInstance(t *testing.T) {

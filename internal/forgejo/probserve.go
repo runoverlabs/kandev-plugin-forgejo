@@ -3,6 +3,7 @@ package forgejo
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,9 +26,14 @@ type ReviewThreadComment struct {
 	ID   int64  `json:"id"`
 	Body string `json:"body"`
 	Path string `json:"path"`
-	User User   `json:"user"`
-	// Resolver is set once someone resolved the conversation. Present on every
-	// supported host; there is no API to resolve one, only the web UI.
+	// Position is the line on the new side, OriginalPosition on the old; the
+	// other is 0. With the path they place the comment's conversation.
+	Position         int64 `json:"position"`
+	OriginalPosition int64 `json:"original_position"`
+	User             User  `json:"user"`
+	// Resolver is set on the comment a conversation was resolved from. There
+	// is no API to resolve one, only the web UI, which resolves from the
+	// conversation's first comment and reads its state from there alone.
 	Resolver *User `json:"resolver"`
 }
 
@@ -46,6 +52,10 @@ func (c *Client) UserTeams(ctx context.Context) ([]Team, error) {
 	teams, _, err := pageAll[Team](ctx, c, "/user/teams", maxUserTeams)
 	return teams, err
 }
+
+// errStatusesCut: the head has more checks than one observation reads, or they
+// changed while they were read. A check that was not read may be failing.
+var errStatusesCut = errors.New("forgejo: not every commit status could be read")
 
 // Bounds on one observation.
 const (
@@ -125,8 +135,9 @@ func (s *AutomationSource) repository(ctx context.Context, ref prautomation.Pull
 	return client, repo, nil
 }
 
-// Observe reads everything automation decides on, in one pass.
-func (s *AutomationSource) Observe(ctx context.Context, _ string, ref prautomation.PullRef) (prautomation.Observation, error) {
+// Observe reads what automation decides on, in one pass: the pull request,
+// and of the rest only the parts reads asks for.
+func (s *AutomationSource) Observe(ctx context.Context, _ string, ref prautomation.PullRef, reads prautomation.Reads) (prautomation.Observation, error) {
 	client, repo, err := s.repository(ctx, ref)
 	if err != nil {
 		return prautomation.Observation{}, err
@@ -159,12 +170,18 @@ func (s *AutomationSource) Observe(ctx context.Context, _ string, ref prautomati
 		return obs, nil
 	}
 
-	login, teams, err := s.operatorIdentity(ctx, client)
-	if err != nil {
-		return prautomation.Observation{}, err
+	if reads.ReviewRequest || reads.Feedback {
+		// The feedback needs the operator too: their own words are not feedback.
+		login, teams, err := s.operatorIdentity(ctx, client)
+		if err != nil {
+			return prautomation.Observation{}, err
+		}
+		obs.Operator = login
+		obs.OperatorRequested = operatorRequested(pull, owner, login, teams)
 	}
-	obs.Operator = login
-	obs.OperatorRequested = operatorRequested(pull, owner, login, teams)
+	if !reads.Feedback {
+		return obs, nil
+	}
 
 	// Every read below feeds a merge gate, so none fails soft: a token that
 	// cannot see the checks or the reviews fails the observation instead of
@@ -173,6 +190,9 @@ func (s *AutomationSource) Observe(ctx context.Context, _ string, ref prautomati
 		combined, err := client.CombinedStatus(ctx, owner, name, sha)
 		if err != nil {
 			return prautomation.Observation{}, err
+		}
+		if len(combined.Statuses) < combined.TotalCount {
+			return prautomation.Observation{}, errStatusesCut
 		}
 		obs.CI = automationCI(combined)
 	}
@@ -186,10 +206,11 @@ func (s *AutomationSource) Observe(ctx context.Context, _ string, ref prautomati
 		obs.RequiredApprovals = &required
 	}
 
-	reviews, err := client.Reviews(ctx, owner, name, ref.Number)
+	reviews, truncated, err := client.NewestReviews(ctx, owner, name, ref.Number)
 	if err != nil {
 		return prautomation.Observation{}, err
 	}
+	obs.ReviewsIncomplete = truncated
 	for _, review := range reviews {
 		if state := automationReviewState(review.State); state != "" {
 			obs.Reviews = append(obs.Reviews, prautomation.Review{
@@ -203,8 +224,12 @@ func (s *AutomationSource) Observe(ctx context.Context, _ string, ref prautomati
 			})
 		}
 	}
-	if err := observeReviewComments(ctx, client, owner, name, ref.Number, reviews, obs.Reviews); err != nil {
+	complete, err := observeReviewComments(ctx, client, owner, name, ref.Number, reviews, obs.Reviews)
+	if err != nil {
 		return prautomation.Observation{}, err
+	}
+	if !complete {
+		obs.ReviewsIncomplete = true
 	}
 
 	comments, _, err := client.IssueComments(ctx, owner, name, ref.Number, maxObservedComments)
@@ -223,20 +248,33 @@ func (s *AutomationSource) Observe(ctx context.Context, _ string, ref prautomati
 }
 
 // observeReviewComments fills in the inline comments of the observed reviews,
-// which are in the order of the raw ones they came from. They are fetched per
-// review, newest first: the bound keeps a long review history from costing a
-// request per review, and the newest reviews are the ones still open.
-func observeReviewComments(ctx context.Context, client *Client, owner, name string, number int64, raw []Review, observed []prautomation.Review) error {
+// which are in the order of the raw ones they came from, and reports whether
+// it read them all. They are fetched per review, newest first: the bound keeps
+// a long review history from costing a request per review, and the newest
+// reviews are the ones still open. Reviews past the bound are reported, so
+// auto-merge does not take an unread comment for a resolved one.
+func observeReviewComments(ctx context.Context, client *Client, owner, name string, number int64, raw []Review, observed []prautomation.Review) (bool, error) {
 	byID := make(map[int64]int, len(observed))
 	for i, review := range observed {
 		byID[review.ID] = i
 	}
-	fetched := 0
-	for i := len(raw) - 1; i >= 0 && fetched < maxReviewCommentFetch; i-- {
+	type placed struct {
+		review, comment int
+		id              int64
+		thread          string
+		resolved        bool
+	}
+	var all []placed
+	fetched, complete := 0, true
+	for i := len(raw) - 1; i >= 0; i-- {
 		review := raw[i]
 		index, ok := byID[review.ID]
 		if !ok || review.CommentsCount == 0 || review.Dismissed {
 			continue
+		}
+		if fetched == maxReviewCommentFetch {
+			complete = false
+			break
 		}
 		fetched++
 		comments, err := client.ReviewComments(ctx, owner, name, number, review.ID)
@@ -245,20 +283,50 @@ func observeReviewComments(ctx context.Context, client *Client, owner, name stri
 			continue
 		}
 		if err != nil {
-			return err
+			return false, err
 		}
 		for _, comment := range comments {
+			all = append(all, placed{
+				review: index, comment: len(observed[index].Comments), id: comment.ID,
+				thread:   fmt.Sprintf("%s\x00%d\x00%d", comment.Path, comment.Position, comment.OriginalPosition),
+				resolved: comment.Resolver != nil && comment.Resolver.ID != 0,
+			})
 			observed[index].Comments = append(observed[index].Comments, prautomation.InlineComment{
-				ID:       comment.ID,
-				Author:   comment.User.Login,
-				Bot:      isBotUser(comment.User),
-				Path:     comment.Path,
-				Body:     comment.Body,
-				Resolved: comment.Resolver != nil && comment.Resolver.ID != 0,
+				ID:     comment.ID,
+				Author: comment.User.Login,
+				Bot:    isBotUser(comment.User),
+				Path:   comment.Path,
+				Body:   comment.Body,
 			})
 		}
 	}
-	return nil
+	// A conversation is resolved when its first comment is, and so is every
+	// reply in it. It is grouped by place, not by review, as the web UI does:
+	// Gitea files a reply under the replier's pending review when there is one.
+	first := map[string]placed{}
+	for _, comment := range all {
+		if current, ok := first[comment.thread]; !ok || comment.id < current.id {
+			first[comment.thread] = comment
+		}
+	}
+	for _, comment := range all {
+		observed[comment.review].Comments[comment.comment].Resolved = first[comment.thread].resolved
+	}
+	return complete, nil
+}
+
+// IsFork reports whether a linked pull request comes from a fork. The panel
+// needs it before the loop has observed the pull request.
+func (s *AutomationSource) IsFork(ctx context.Context, ref prautomation.PullRef) (bool, error) {
+	client, repo, err := s.repository(ctx, ref)
+	if err != nil {
+		return false, err
+	}
+	pull, err := client.PullRequest(ctx, repo.OwnerLogin(), repo.Name, ref.Number)
+	if err != nil {
+		return false, err
+	}
+	return isForkPull(pull), nil
 }
 
 // MergeLinked merges a linked pull request with the repository's default style

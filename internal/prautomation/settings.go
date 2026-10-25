@@ -42,8 +42,8 @@ const (
 	TrustEveryone Trust = "everyone"
 	// TrustOfficial counts official reviews (the reviewer's approval counts
 	// towards the branch's required approvals, which on every supported host
-	// means write access) with their inline comments, and conversation
-	// comments by someone who left an official review on the pull request.
+	// means write access), and inline and conversation comments by someone
+	// who left an official review on the pull request.
 	//
 	// A non-admin token cannot read another user's permission level (the
 	// permission endpoint answers 403), so the review's own flag is the only

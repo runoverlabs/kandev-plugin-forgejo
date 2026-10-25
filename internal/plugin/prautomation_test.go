@@ -144,6 +144,38 @@ func TestAutomationActionsActOnlyOnLinkedPullRequests(t *testing.T) {
 	require.Equal(t, http.StatusUnprocessableEntity, response.Status)
 }
 
+// Auto-fix and auto-merge on a fork need the panel's confirmation, enforced
+// here: the panel may not know yet that it is a fork.
+func TestAutomationSetRefusesAForkWithoutConfirmation(t *testing.T) {
+	fixture, _ := automationFixture(t)
+	ctx := context.Background()
+	fixture.json("GET", "/api/v1/repos/kandev/demo/pulls/12",
+		`{"number":12,"title":"Add thing","state":"open","mergeable":true,
+		  "head":{"ref":"feature","sha":"`+agentSHA+`","repo_id":78},"base":{"ref":"main","repo_id":77},"user":{"login":"bot"}}`)
+
+	response, err := fixture.runtime.HandleAction(ctx, taskAction(ActionAutomationGet, `{"number":12}`))
+	require.NoError(t, err)
+	require.Equal(t, true, decodeBody(t, response)["fork"], "known before the loop observed it")
+
+	for _, body := range []string{`{"number":12,"auto_fix":true}`, `{"number":12,"auto_merge":true}`} {
+		response, err = fixture.runtime.HandleAction(ctx, taskAction(ActionAutomationSet, body))
+		require.NoError(t, err)
+		require.Equal(t, http.StatusConflict, response.Status, body)
+	}
+	_, found, err := fixture.runtime.automation.Store().Get(ctx, "workspace-1",
+		prautomation.PullRef{TaskID: "task-1", RepositoryID: "77", Number: 12})
+	require.NoError(t, err)
+	require.False(t, found, "a refused switch stores nothing")
+
+	response, err = fixture.runtime.HandleAction(ctx, taskAction(ActionAutomationSet, `{"number":12,"on_merged":true}`))
+	require.NoError(t, err)
+	require.Equal(t, true, decodeBody(t, response)["on_merged"], "a lifecycle prompt needs no confirmation")
+
+	response, err = fixture.runtime.HandleAction(ctx, taskAction(ActionAutomationSet, `{"number":12,"auto_fix":true,"confirm_fork":true}`))
+	require.NoError(t, err)
+	require.Equal(t, true, decodeBody(t, response)["auto_fix"])
+}
+
 func TestAutomationSettingsRoundTripAndValidate(t *testing.T) {
 	fixture, _ := automationFixture(t)
 	ctx := context.Background()
@@ -224,9 +256,11 @@ func TestAutomationLoopRespectsTheIntegrationSwitch(t *testing.T) {
 	_, err := fixture.runtime.HandleAction(ctx, taskAction(ActionAutomationSet, `{"number":12,"auto_fix":true}`))
 	require.NoError(t, err)
 	require.NoError(t, host.SetState(ctx, "workspace", "workspace-1", enabledStateKey, map[string]any{"enabled": false}))
+	// Turning auto-fix on read the pull request once, to check for a fork.
+	reads := fixture.callCount("GET", "/api/v1/repos/kandev/demo/pulls/12")
 	fixture.runtime.automation.Tick(ctx)
 	require.Empty(t, host.messages())
-	require.Zero(t, fixture.callCount("GET", "/api/v1/repos/kandev/demo/pulls/12"))
+	require.Equal(t, reads, fixture.callCount("GET", "/api/v1/repos/kandev/demo/pulls/12"))
 }
 
 func TestAutomationReportsMissingApproval(t *testing.T) {

@@ -37,7 +37,9 @@ switches stay as they are and take effect again when it is back on.
 
 The plugin looks at each pull request with a switch on about once a minute, and
 every 20 seconds while a fix round is with the agent or auto-merge is armed. A
-merged pull request is no longer polled.
+merged pull request is no longer polled. It reads only what the switches that
+are on use: the lifecycle prompts need the pull request alone, and the checks,
+reviews and comments are read only for auto-fix or auto-merge.
 
 ## Auto-fix
 
@@ -48,8 +50,10 @@ pull request:
   skipped check asks for no change, so it is not feedback;
 - **a conflict**: the instance reports the branch no longer merges cleanly;
 - **review feedback**: reviews requesting changes, reviews with a comment,
-  their unresolved inline comments, and conversation comments, filtered by the
-  workspace's [feedback setting](#review-feedback-and-trust).
+  inline comments in conversations that are not resolved, and conversation
+  comments, filtered by the workspace's
+  [feedback setting](#review-feedback-and-trust). A conversation is resolved
+  as the web UI shows it: from its first comment, replies included.
 
 Feedback the plugin's own account wrote is never included: the agent comments
 and reviews as that account, and would otherwise be prompted by its own replies.
@@ -58,7 +62,8 @@ come along with something else.
 
 On a long pull request the newest feedback is read: the last 100 reviews, the
 inline comments of the 20 newest reviews that have any, and the last 300
-conversation comments.
+conversation comments. A prompt is at most 32 KiB; feedback that does not fit
+is left for the next round, never cut in the middle.
 
 Only feedback that is **new since the last round** is sent. A failing check on
 a new head commit counts as new, as on GitHub, so a fix that did not work is
@@ -82,7 +87,9 @@ Then:
   minutes after it was sent. The retry carries that round's feedback and
   anything new, not what an earlier outcome already handled.
   The plugin hears about the turn ending from Kandev at once, or notices within
-  about two minutes of the session going idle.
+  about two minutes of the session going idle. A session that has not started
+  five minutes after the prompt reached it never will (its launch failed), and
+  the round is retried the same way.
 - **At most 10 rounds per pull request.** Then auto-fix pauses, and a round
   that ended without a report is no longer waited on. **Reset rounds**
   in the panel, or turning auto-fix off and on, starts again.
@@ -116,7 +123,7 @@ whose words count:
 | Setting | Review text that reaches the agent |
 | --- | --- |
 | **Everyone** (default) | Every review and comment, as with Kandev's GitHub integration |
-| **Official reviewers** | Reviews that count towards the branch's required approvals, with their inline comments, and conversation comments by someone who left such a review |
+| **Official reviewers** | Reviews that count towards the branch's required approvals, and inline and conversation comments by someone who left such a review. A reply in an official reviewer's thread counts only if its own author did |
 | **No review text** | None: auto-fix acts on CI failures and conflicts only |
 
 "Official" is the instance's own flag on a review. On every supported host it
@@ -144,7 +151,10 @@ The plugin merges the pull request itself once all of these hold:
 - the instance reports the branch merges cleanly;
 - nobody's latest review requests changes;
 - official approvals reach the branch's required approvals;
-- no inline review comment is unresolved;
+- no review conversation is unresolved;
+- every check and every review was read. A pull request with more than 100
+  reviews, or more than 20 with inline comments, is not merged automatically:
+  the panel says so, and it is merged by hand;
 - no auto-fix round is in flight, the agent has not reported `blocked` on
   this head within the hour, and after `action_taken` its change has shown up
   as a new head commit, or two minutes have passed.
@@ -199,7 +209,8 @@ them runs with your executor's environment. So:
 
 - Workspace defaults never turn on auto-fix or auto-merge for a fork's pull
   request. Turning either on is a person's choice in the panel, which asks for
-  confirmation first.
+  confirmation first. The plugin refuses the switch without it, also before it
+  has looked at the pull request for the first time.
 - **The plugin never starts an agent for a fork's pull request.** Kandev starts
   a session that has never run when it receives a message, so for a fork the
   plugin only prompts a session that is already running or idle. Until someone

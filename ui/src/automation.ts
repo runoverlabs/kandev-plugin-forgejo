@@ -123,6 +123,9 @@ export function createAutomationSection(host: PluginHostApi): Component<{
         setError(null);
       } catch (cause) {
         host.toast.error(failureMessage(cause));
+        // The refusal may come from what the view did not know yet (that the
+        // pull request is a fork); the next toggle decides on a fresh one.
+        void load();
       } finally {
         setBusy(false);
       }
@@ -148,7 +151,7 @@ export function createAutomationSection(host: PluginHostApi): Component<{
                   "data-testid": "forgejo-automation-fork-confirm",
                   onClick: () => {
                     modal?.close();
-                    void write("automation.set", { [key]: true });
+                    void write("automation.set", { [key]: true, confirm_fork: true });
                   },
                 },
                 "Turn on",

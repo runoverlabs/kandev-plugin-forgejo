@@ -7,7 +7,19 @@ import (
 
 // Observer reads a linked pull request from the instance.
 type Observer interface {
-	Observe(ctx context.Context, workspaceID string, ref PullRef) (Observation, error)
+	Observe(ctx context.Context, workspaceID string, ref PullRef, reads Reads) (Observation, error)
+}
+
+// Reads says which parts of an open pull request an evaluation needs. The
+// pull request itself (state, head, fork, mergeability) is always read; each
+// part here costs requests, so a part nothing switched on uses is left out and
+// stays zero in the observation.
+type Reads struct {
+	// Feedback is the checks, branch protection, reviews and comments: what
+	// auto-fix and auto-merge decide on.
+	Feedback bool
+	// ReviewRequest is the operator and whether their review is requested.
+	ReviewRequest bool
 }
 
 // Merger merges a pull request, pinned to the head the gates were checked on:

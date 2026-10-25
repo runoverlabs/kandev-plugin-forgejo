@@ -87,7 +87,7 @@ func TestLiveAutomationObservation(t *testing.T) {
 	require.NoError(t, admin.do(ctx, http.MethodPost, apiV1,
 		"/repos/"+pathSegment(owner)+"/"+pathSegment(repo)+"/statuses/"+pull.Head.Sha, nil, status, nil))
 
-	obs, err := source.Observe(ctx, "ws-1", liveRepoRef(t, admin, owner, repo, pull.Number))
+	obs, err := source.Observe(ctx, "ws-1", liveRepoRef(t, admin, owner, repo, pull.Number), allReads)
 	require.NoError(t, err)
 	require.Equal(t, prautomation.StateOpen, obs.State)
 	require.False(t, obs.Fork)

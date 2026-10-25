@@ -176,9 +176,31 @@ describe("automation section", () => {
     const confirm = byTestId(t.modals[0].content(), "forgejo-automation-fork-confirm");
     confirm.props.onClick();
     await t.settle();
-    expect(t.calls.at(-1)?.input.body).toEqual({ number: 7, auto_fix: true });
+    expect(t.calls.at(-1)?.input.body).toEqual({ number: 7, auto_fix: true, confirm_fork: true });
 
     byTestId(t.render(), "forgejo-automation-on_closed").props.onCheckedChange(true);
+    expect(t.modals).toHaveLength(1);
+  });
+
+  it("reloads after a refused switch, so a fork the view did not know about asks next time", async () => {
+    let fork = false;
+    const t = section(
+      {},
+      {
+        "automation.get": () => ({ ...VIEW, fork }),
+        "automation.set": () => {
+          fork = true;
+          throw new Error("This pull request comes from a fork. Confirm the warning in the panel to turn this on.");
+        },
+      },
+    );
+    t.render();
+    await t.settle();
+    byTestId(t.render(), "forgejo-automation-auto_fix").props.onCheckedChange(true);
+    await t.settle();
+    expect(t.calls.filter((call) => call.key === "automation.get")).toHaveLength(2);
+
+    byTestId(t.render(), "forgejo-automation-auto_fix").props.onCheckedChange(true);
     expect(t.modals).toHaveLength(1);
   });
 

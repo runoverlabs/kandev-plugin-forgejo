@@ -82,12 +82,14 @@ type fakeObserver struct {
 	obs   map[PullRef]Observation
 	err   error
 	calls int
+	reads Reads // of the last call
 }
 
-func (f *fakeObserver) Observe(_ context.Context, _ string, ref PullRef) (Observation, error) {
+func (f *fakeObserver) Observe(_ context.Context, _ string, ref PullRef, reads Reads) (Observation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	f.reads = reads
 	if f.err != nil {
 		return Observation{}, f.err
 	}
