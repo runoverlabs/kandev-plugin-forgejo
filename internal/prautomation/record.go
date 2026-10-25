@@ -66,10 +66,10 @@ type Record struct {
 	Switches
 
 	// What the last observation saw, for the panel and the gates.
-	Repository string    `json:"repository,omitempty"`
-	Title      string    `json:"title,omitempty"`
-	URL        string    `json:"url,omitempty"`
-	HeadSHA    string    `json:"head_sha,omitempty"`
+	Repository string `json:"repository,omitempty"`
+	Title      string `json:"title,omitempty"`
+	URL        string `json:"url,omitempty"`
+	HeadSHA    string `json:"head_sha,omitempty"`
 	// HeadSeenAt is when the current head was first observed.
 	HeadSeenAt time.Time `json:"head_seen_at,omitempty"`
 	Fork       bool      `json:"fork,omitempty"`

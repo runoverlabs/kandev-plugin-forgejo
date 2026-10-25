@@ -30,10 +30,10 @@ func automationSourceFixture(t *testing.T, pull map[string]any) (*AutomationSour
 	})
 	base := map[string]any{
 		"number": 7, "title": "Add x", "state": "open", "mergeable": true,
-		"html_url": "https://forge/o/r/pulls/7",
-		"user":     map[string]any{"login": "alice"},
-		"head":     map[string]any{"ref": "feat", "sha": "abc1234", "repo_id": 5},
-		"base":     map[string]any{"ref": "main", "repo_id": 5},
+		"html_url":                  "https://forge/o/r/pulls/7",
+		"user":                      map[string]any{"login": "alice"},
+		"head":                      map[string]any{"ref": "feat", "sha": "abc1234", "repo_id": 5},
+		"base":                      map[string]any{"ref": "main", "repo_id": 5},
 		"requested_reviewers":       []any{nil, map[string]any{"login": "carol"}},
 		"requested_reviewers_teams": []map[string]any{{"name": "core"}},
 	}
