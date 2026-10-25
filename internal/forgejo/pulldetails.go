@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
@@ -42,7 +43,7 @@ func NewPullActions(connection *Connection, repositories *Repositories, associat
 
 // linked is a pull request resolved from the task's own associations.
 type linked struct {
-	client     *Client
+	client     *rest.Client
 	repository sourcecontrol.Repository
 	identity   sourcecontrol.ChangeRequestIdentity
 }
@@ -220,7 +221,7 @@ const mergeableSettle = 30 * time.Second
 // when it says false but the pull request changed too recently to believe it.
 // A true answer is always passed through: a stale true is caught by the head SHA
 // precondition on merge, whereas a stale false would wrongly block the user.
-func (a *PullActions) settledMergeable(pull PullRequest) *bool {
+func (a *PullActions) settledMergeable(pull rest.PullRequest) *bool {
 	return settleMergeable(pull, a.now())
 }
 
@@ -228,7 +229,7 @@ func (a *PullActions) settledMergeable(pull PullRequest) *bool {
 // absent on instances that do not report it, and a plain bool cannot say so,
 // so presence is inferred from the branch being protected or the field being
 // true: false on an unprotected branch is indistinguishable from "unreported".
-func userCanMerge(branch Branch) *bool {
+func userCanMerge(branch rest.Branch) *bool {
 	if branch.UserCanMerge || branch.Protected {
 		value := branch.UserCanMerge
 		return &value
@@ -270,7 +271,7 @@ func mergeBlockers(state string, mergeable *bool, pipeline string, checksRequire
 	return blockers
 }
 
-func detailReviews(reviews []Review, truncated *[]string) []sourcecontrol.DetailReview {
+func detailReviews(reviews []rest.Review, truncated *[]string) []sourcecontrol.DetailReview {
 	if len(reviews) > maxDetailReviews {
 		*truncated = append(*truncated, truncatedReviews)
 		reviews = reviews[len(reviews)-maxDetailReviews:]

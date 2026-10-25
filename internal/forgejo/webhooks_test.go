@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"kandev-plugin-forgejo/internal/automations"
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 
 	"github.com/stretchr/testify/require"
 )
@@ -91,9 +92,9 @@ func TestDecodeCapturedWebhooks(t *testing.T) {
 	require.Len(t, dirs, 5, "one fixture directory per CI container")
 	for _, dir := range dirs {
 		host := filepath.Base(dir)
-		provider := string(FlavorForgejo)
+		provider := string(rest.FlavorForgejo)
 		if strings.HasPrefix(host, "gitea") {
-			provider = string(FlavorGitea)
+			provider = string(rest.FlavorGitea)
 		}
 		bodies, err := filepath.Glob(filepath.Join(dir, "*.body.json"))
 		require.NoError(t, err)
@@ -238,7 +239,7 @@ func TestSupportsActionRunWebhooks(t *testing.T) {
 		"":                     false,
 		"garbage":              false,
 	} {
-		require.Equal(t, want, SupportsActionRunWebhooks(FlavorForgejo, version), version)
+		require.Equal(t, want, SupportsActionRunWebhooks(rest.FlavorForgejo, version), version)
 	}
-	require.False(t, SupportsActionRunWebhooks(FlavorGitea, "1.27.3"))
+	require.False(t, SupportsActionRunWebhooks(rest.FlavorGitea, "1.27.3"))
 }

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
@@ -216,7 +217,7 @@ func (r *Repositories) ResolveAttached(ctx context.Context, action pluginsdk.Ver
 // resolveHostRepository converts a Kandev repository record into a provider
 // repository, re-reading it from the instance so identity and clone URL are
 // provider truth rather than stored display data.
-func (r *Repositories) resolveHostRepository(ctx context.Context, client *Client, repository pluginsdk.Repository) (sourcecontrol.Repository, error) {
+func (r *Repositories) resolveHostRepository(ctx context.Context, client *rest.Client, repository pluginsdk.Repository) (sourcecontrol.Repository, error) {
 	if id := strings.TrimSpace(repository.ProviderRepositoryID); id != "" {
 		parsed, err := strconv.ParseInt(id, 10, 64)
 		if err == nil && parsed > 0 {
@@ -250,7 +251,7 @@ func (r *Repositories) resolveHostRepository(ctx context.Context, client *Client
 // toRepository converts a provider repo into the credential-free descriptor
 // the host renders. It drops records missing identity fields rather than
 // emitting a half-formed entry the picker cannot act on.
-func (r *Repositories) toRepository(client *Client, repo Repo) (sourcecontrol.Repository, bool) {
+func (r *Repositories) toRepository(client *rest.Client, repo rest.Repo) (sourcecontrol.Repository, bool) {
 	owner := repo.OwnerLogin()
 	name := strings.TrimSpace(repo.Name)
 	cloneURL := strings.TrimSpace(repo.CloneURL)

@@ -1,4 +1,4 @@
-package forgejo
+package rest
 
 import (
 	"context"
@@ -82,10 +82,10 @@ type IssueListOptions struct {
 	Limit int
 }
 
-// maxIssuePageLimit is the per-page ceiling this plugin asks for. Forgejo and
+// MaxIssuePageLimit is the per-page ceiling this plugin asks for. Forgejo and
 // Gitea both clamp to their own configured maximum, so this is a request, not
 // a guarantee, and the caller must still paginate.
-const maxIssuePageLimit = 50
+const MaxIssuePageLimit = 50
 
 // ListIssues returns one page of issues for a repository, excluding pull
 // requests.
@@ -94,23 +94,23 @@ const maxIssuePageLimit = 50
 // because a watch polling on an interval should not pull a repository's whole
 // issue list across the network to discard most of it locally.
 func (c *Client) ListIssues(ctx context.Context, owner, name string, options IssueListOptions) ([]Issue, error) {
-	issues, _, err := c.listIssuesPage(ctx, owner, name, options)
+	issues, _, err := c.ListIssuesPage(ctx, owner, name, options)
 	return issues, err
 }
 
-// listIssuesPage is ListIssues that also reports how many rows the server
+// ListIssuesPage is ListIssues that also reports how many rows the server
 // returned before pull requests were filtered out. A paginating caller needs
 // that raw count: the filtered length is not an end-of-results signal, because
 // a server that ignores type=issues can fill a page with pull requests and make
 // a full page look short.
-func (c *Client) listIssuesPage(ctx context.Context, owner, name string, options IssueListOptions) (issues []Issue, raw int, err error) {
+func (c *Client) ListIssuesPage(ctx context.Context, owner, name string, options IssueListOptions) (issues []Issue, raw int, err error) {
 	page := options.Page
 	if page < 1 {
 		page = 1
 	}
 	limit := options.Limit
-	if limit <= 0 || limit > maxIssuePageLimit {
-		limit = maxIssuePageLimit
+	if limit <= 0 || limit > MaxIssuePageLimit {
+		limit = MaxIssuePageLimit
 	}
 
 	values := url.Values{}

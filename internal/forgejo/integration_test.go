@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 	"kandev-plugin-forgejo/internal/watches"
@@ -42,7 +44,7 @@ func liveConfig(t *testing.T) (baseURL, token, owner, repo string) {
 	return baseURL, token, owner, repo
 }
 
-func liveAdapters(t *testing.T) (*Client, *Repositories, *sourcecontrol.Associations, *Reviews, *References, *fakeHost) {
+func liveAdapters(t *testing.T) (*rest.Client, *Repositories, *sourcecontrol.Associations, *Reviews, *References, *fakeHost) {
 	t.Helper()
 	baseURL, token, _, _ := liveConfig(t)
 	host := newFakeHost(map[string]any{"base_url": baseURL, "api_token": token})
@@ -69,11 +71,11 @@ func TestLiveInstanceSpeaksRESTv1(t *testing.T) {
 	require.NotEmpty(t, user.Login)
 
 	flavor := client.DetectFlavor(ctx, version)
-	require.Contains(t, []Flavor{FlavorForgejo, FlavorGitea}, flavor)
+	require.Contains(t, []rest.Flavor{rest.FlavorForgejo, rest.FlavorGitea}, flavor)
 	t.Logf("detected flavor: %s", flavor)
 	// When the caller says which host this is, hold the probe to it.
 	if expected := strings.TrimSpace(os.Getenv("KANDEV_FORGEJO_EXPECT_FLAVOR")); expected != "" {
-		require.Equal(t, Flavor(expected), flavor)
+		require.Equal(t, rest.Flavor(expected), flavor)
 	}
 }
 
@@ -245,10 +247,10 @@ func TestLiveCreatePullRequest(t *testing.T) {
 
 // createBranch is test support: the plugin never creates branches at runtime,
 // Kandev's executor does.
-func createBranch(ctx context.Context, client *Client, owner, repo, newBranch, fromBranch string) error {
+func createBranch(ctx context.Context, client *rest.Client, owner, repo, newBranch, fromBranch string) error {
 	body := map[string]string{"new_branch_name": newBranch, "old_branch_name": fromBranch}
-	path := "/repos/" + pathSegment(owner) + "/" + pathSegment(repo) + "/branches"
-	return client.do(ctx, http.MethodPost, apiV1, path, nil, body, nil)
+	path := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/branches"
+	return client.Do(ctx, http.MethodPost, path, nil, body, nil)
 }
 
 // TestLiveCIStatusResolves proves the fallback chain against a real instance.
@@ -331,7 +333,7 @@ func TestLivePullRequestEditRoundTrips(t *testing.T) {
 	head := fmt.Sprintf("%s-edit-%d", base, time.Now().UnixNano())
 	require.NoError(t, createBranch(ctx, client, owner, repo, head, base))
 
-	created, err := client.CreatePullRequest(ctx, owner, repo, CreatePullRequestInput{
+	created, err := client.CreatePullRequest(ctx, owner, repo, rest.CreatePullRequestInput{
 		Head: head, Base: base, Title: "WIP: kandev plugin live edit check",
 	})
 	require.NoError(t, err)
@@ -339,7 +341,7 @@ func TestLivePullRequestEditRoundTrips(t *testing.T) {
 
 	stripped, changed := StripWorkInProgressPrefix(created.Title)
 	require.True(t, changed)
-	updated, err := client.EditPullRequest(ctx, owner, repo, created.Number, EditPullRequestInput{Title: stripped})
+	updated, err := client.EditPullRequest(ctx, owner, repo, created.Number, rest.EditPullRequestInput{Title: stripped})
 	require.NoError(t, err)
 	require.Equal(t, stripped, strings.TrimSpace(updated.Title))
 	require.False(t, IsWorkInProgressTitle(updated.Title))
@@ -356,7 +358,7 @@ func TestLivePullRequestEditRoundTrips(t *testing.T) {
 	}
 	require.True(t, found, "a freshly opened pull request must be listed with its head ref")
 
-	_, err = client.EditPullRequest(ctx, owner, repo, created.Number, EditPullRequestInput{State: "closed"})
+	_, err = client.EditPullRequest(ctx, owner, repo, created.Number, rest.EditPullRequestInput{State: "closed"})
 	require.NoError(t, err)
 }
 
@@ -376,13 +378,13 @@ func TestLiveIssueListingExcludesPullRequests(t *testing.T) {
 	var created struct {
 		Number int64 `json:"number"`
 	}
-	require.NoError(t, client.post(ctx,
-		"/repos/"+pathSegment(owner)+"/"+pathSegment(repo)+"/issues",
+	require.NoError(t, client.Do(ctx, http.MethodPost,
+		"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repo)+"/issues", nil,
 		map[string]any{"title": marker, "body": "created by the live contract test"},
 		&created))
 	require.Positive(t, created.Number)
 
-	issues, err := client.ListIssues(ctx, owner, repo, IssueListOptions{State: "all"})
+	issues, err := client.ListIssues(ctx, owner, repo, rest.IssueListOptions{State: "all"})
 	require.NoError(t, err)
 	require.NotEmpty(t, issues)
 
@@ -406,9 +408,9 @@ func TestLiveIssueListingExcludesPullRequests(t *testing.T) {
 	// A host that never indexes is a deployment choice, not a broken contract:
 	// the watch still works, its optional free-text filter just matches nothing.
 	// That is worth logging, not failing.
-	var matched []Issue
+	var matched []rest.Issue
 	for attempt := 0; attempt < 15; attempt++ {
-		matched, err = client.ListIssues(ctx, owner, repo, IssueListOptions{State: "all", Query: marker})
+		matched, err = client.ListIssues(ctx, owner, repo, rest.IssueListOptions{State: "all", Query: marker})
 		require.NoError(t, err)
 		if len(matched) > 0 {
 			break
@@ -424,7 +426,7 @@ func TestLiveIssueListingExcludesPullRequests(t *testing.T) {
 	// `since` in the future must exclude it. This is the parameter the poller
 	// relies on to keep a steady-state tick cheap; a host that ignores it
 	// still works, but the plugin should know which behaviour it got.
-	future, err := client.ListIssues(ctx, owner, repo, IssueListOptions{
+	future, err := client.ListIssues(ctx, owner, repo, rest.IssueListOptions{
 		State: "all",
 		Since: time.Now().Add(24 * time.Hour),
 	})
@@ -455,9 +457,8 @@ func TestLivePullRequestActions(t *testing.T) {
 	head := fmt.Sprintf("actions-%d", time.Now().UnixNano())
 	require.NoError(t, createBranch(ctx, client, owner, repo, head, baseBranch))
 	file := map[string]string{"content": "aGVsbG8=", "message": "live test", "branch": head}
-	require.NoError(t, client.do(ctx, http.MethodPost, apiV1,
-		"/repos/"+pathSegment(owner)+"/"+pathSegment(repo)+"/contents/"+head+".txt", nil, file, nil))
-	pull, err := client.CreatePullRequest(ctx, owner, repo, CreatePullRequestInput{Head: head, Base: baseBranch, Title: "live actions"})
+	require.NoError(t, client.Do(ctx, http.MethodPost, "/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repo)+"/contents/"+head+".txt", nil, file, nil))
+	pull, err := client.CreatePullRequest(ctx, owner, repo, rest.CreatePullRequestInput{Head: head, Base: baseBranch, Title: "live actions"})
 	require.NoError(t, err)
 
 	inspected, err := repositories.Inspect(ctx, "ws-1", client.Scope()+"/"+owner+"/"+repo)
@@ -494,7 +495,7 @@ func TestLivePullRequestActions(t *testing.T) {
 	require.NoError(t, client.UpdateBranch(ctx, owner, repo, pull.Number, "merge"))
 
 	// Gitea 1.20 answers a transient 405 while it computes mergeability.
-	merge := func(input MergeInput) error {
+	merge := func(input rest.MergeInput) error {
 		var err error
 		for attempt := 0; attempt < 15; attempt++ {
 			err = client.MergePullRequest(ctx, owner, repo, pull.Number, input)
@@ -507,17 +508,17 @@ func TestLivePullRequestActions(t *testing.T) {
 		return err
 	}
 
-	stale := merge(MergeInput{Do: MergeStyleSquash, HeadCommitID: "0000000000000000000000000000000000000000"})
+	stale := merge(rest.MergeInput{Do: rest.MergeStyleSquash, HeadCommitID: "0000000000000000000000000000000000000000"})
 	var writeErr *scm.WriteError
 	require.ErrorAs(t, stale, &writeErr, "a stale head must be refused, not merged")
 	t.Logf("stale head -> %d %s", writeErr.Status, writeErr.Reason)
 
-	require.NoError(t, merge(MergeInput{Do: MergeStyleSquash, HeadCommitID: details.HeadSHA, DeleteBranch: true}))
+	require.NoError(t, merge(rest.MergeInput{Do: rest.MergeStyleSquash, HeadCommitID: details.HeadSHA, DeleteBranch: true}))
 	merged, err := client.PullRequest(ctx, owner, repo, pull.Number)
 	require.NoError(t, err)
 	require.True(t, merged.Merged)
 
-	again := merge(MergeInput{Do: MergeStyleSquash})
+	again := merge(rest.MergeInput{Do: rest.MergeStyleSquash})
 	require.ErrorAs(t, again, &writeErr, "merging twice must be refused")
 	t.Logf("second merge -> %d %s", writeErr.Status, writeErr.Reason)
 
@@ -529,20 +530,20 @@ func TestLivePullRequestActions(t *testing.T) {
 // liveUserClient returns a client for a second seeded user, skipping when the
 // instance has none. Each is a different account with a different role on the
 // repository: `reviewer` can write, `readonly` can only read.
-func liveUserClient(t *testing.T, envVar string) *Client {
+func liveUserClient(t *testing.T, envVar string) *rest.Client {
 	t.Helper()
 	token := strings.TrimSpace(os.Getenv(envVar))
 	if token == "" {
 		t.Skipf("set %s to exercise multi-user behaviour", envVar)
 	}
 	baseURL, _, _, _ := liveConfig(t)
-	client, err := NewClient(baseURL, token, nil)
+	client, err := rest.NewClient(baseURL, token, nil)
 	require.NoError(t, err)
 	return client
 }
 
 // livePull opens a fresh pull request as the admin and returns it.
-func livePull(t *testing.T, client *Client) (PullRequest, string, string) {
+func livePull(t *testing.T, client *rest.Client) (rest.PullRequest, string, string) {
 	t.Helper()
 	_, _, owner, repo := liveConfig(t)
 	base := strings.TrimSpace(os.Getenv("KANDEV_FORGEJO_HEAD_BRANCH"))
@@ -553,9 +554,8 @@ func livePull(t *testing.T, client *Client) (PullRequest, string, string) {
 	head := fmt.Sprintf("users-%d", time.Now().UnixNano())
 	require.NoError(t, createBranch(ctx, client, owner, repo, head, base))
 	file := map[string]string{"content": "aGVsbG8=", "message": "live test", "branch": head}
-	require.NoError(t, client.do(ctx, http.MethodPost, apiV1,
-		"/repos/"+pathSegment(owner)+"/"+pathSegment(repo)+"/contents/"+head+".txt", nil, file, nil))
-	pull, err := client.CreatePullRequest(ctx, owner, repo, CreatePullRequestInput{Head: head, Base: base, Title: "live users"})
+	require.NoError(t, client.Do(ctx, http.MethodPost, "/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repo)+"/contents/"+head+".txt", nil, file, nil))
+	pull, err := client.CreatePullRequest(ctx, owner, repo, rest.CreatePullRequestInput{Head: head, Base: base, Title: "live users"})
 	require.NoError(t, err)
 	return pull, owner, repo
 }
@@ -575,10 +575,10 @@ func TestLiveReviewerFlow(t *testing.T) {
 	ctx := context.Background()
 	pull, owner, repo := livePull(t, admin)
 
-	_, err := admin.SubmitReview(ctx, owner, repo, pull.Number, SubmitReviewInput{Event: ReviewApprove})
+	_, err := admin.SubmitReview(ctx, owner, repo, pull.Number, rest.SubmitReviewInput{Event: rest.ReviewApprove})
 	requireReason(t, err, scm.ReasonSelfReview)
 
-	review, err := reviewer.SubmitReview(ctx, owner, repo, pull.Number, SubmitReviewInput{Event: ReviewApprove, Body: "lgtm"})
+	review, err := reviewer.SubmitReview(ctx, owner, repo, pull.Number, rest.SubmitReviewInput{Event: rest.ReviewApprove, Body: "lgtm"})
 	require.NoError(t, err)
 	require.Equal(t, "APPROVED", review.State)
 
@@ -588,7 +588,7 @@ func TestLiveReviewerFlow(t *testing.T) {
 	require.NotNil(t, summary)
 	require.Equal(t, 1, summary.Approved)
 
-	changes, err := reviewer.SubmitReview(ctx, owner, repo, pull.Number, SubmitReviewInput{Event: ReviewRequestChanges, Body: "no"})
+	changes, err := reviewer.SubmitReview(ctx, owner, repo, pull.Number, rest.SubmitReviewInput{Event: rest.ReviewRequestChanges, Body: "no"})
 	require.NoError(t, err)
 	require.Equal(t, "REQUEST_CHANGES", changes.State)
 }
@@ -606,7 +606,7 @@ func TestLiveReadOnlyUserIsForbidden(t *testing.T) {
 	// is about permission, not "try again later".
 	time.Sleep(3 * time.Second)
 
-	requireReason(t, readonly.MergePullRequest(ctx, owner, repo, pull.Number, MergeInput{Do: MergeStyleSquash}), scm.ReasonForbidden)
+	requireReason(t, readonly.MergePullRequest(ctx, owner, repo, pull.Number, rest.MergeInput{Do: rest.MergeStyleSquash}), scm.ReasonForbidden)
 	requireReason(t, readonly.SetLabels(ctx, owner, repo, pull.Number, nil), scm.ReasonForbidden)
 	requireReason(t, readonly.UpdateBranch(ctx, owner, repo, pull.Number, "merge"), scm.ReasonForbidden)
 
@@ -658,7 +658,7 @@ func TestLiveWriteActions(t *testing.T) {
 	requireReason(t, err, scm.ReasonHeadChanged)
 
 	result, err := actions.Merge(ctx, "ws-1", "task-1", sourcecontrol.MergeRequest{
-		Number: pull.Number, HeadSHA: details.HeadSHA, Style: MergeStyleSquash, DeleteBranch: true,
+		Number: pull.Number, HeadSHA: details.HeadSHA, Style: rest.MergeStyleSquash, DeleteBranch: true,
 	})
 	require.NoError(t, err)
 	require.Equal(t, sourcecontrol.MergeOutcomeMerged, result.Outcome)
@@ -733,7 +733,7 @@ func TestLiveReviewRequestedSearch(t *testing.T) {
 	require.False(t, otherDetail.RequestedFromMe)
 
 	// Answering the request drops the pull request out of the search.
-	_, err = reviewer.SubmitReview(ctx, owner, repo, pull.Number, SubmitReviewInput{Event: ReviewApprove})
+	_, err = reviewer.SubmitReview(ctx, owner, repo, pull.Number, rest.SubmitReviewInput{Event: rest.ReviewApprove})
 	require.NoError(t, err)
 	require.Empty(t, find(asReviewer))
 
@@ -741,12 +741,12 @@ func TestLiveReviewRequestedSearch(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, watches.PullOpen, state)
 	time.Sleep(3 * time.Second)
-	require.NoError(t, admin.MergePullRequest(ctx, owner, repo, pull.Number, MergeInput{Do: MergeStyleSquash}))
+	require.NoError(t, admin.MergePullRequest(ctx, owner, repo, pull.Number, rest.MergeInput{Do: rest.MergeStyleSquash}))
 	state, err = asReviewer.PullState(ctx, ref, pull.Number)
 	require.NoError(t, err)
 	require.Equal(t, watches.PullMerged, state)
 
-	_, err = admin.EditPullRequest(ctx, owner, repo, other.Number, EditPullRequestInput{State: "closed"})
+	_, err = admin.EditPullRequest(ctx, owner, repo, other.Number, rest.EditPullRequestInput{State: "closed"})
 	require.NoError(t, err)
 	state, err = asReviewer.PullState(ctx, ref, other.Number)
 	require.NoError(t, err)
@@ -754,7 +754,7 @@ func TestLiveReviewRequestedSearch(t *testing.T) {
 
 	// Drafts: the title prefix works on every version; the field only on newer.
 	wip, _, _ := livePull(t, admin)
-	_, err = admin.EditPullRequest(ctx, owner, repo, wip.Number, EditPullRequestInput{Title: "WIP: not ready"})
+	_, err = admin.EditPullRequest(ctx, owner, repo, wip.Number, rest.EditPullRequestInput{Title: "WIP: not ready"})
 	require.NoError(t, err)
 	wipDetail, err := asReviewer.PullDetail(ctx, ref, wip.Number, watches.ReviewScopeUserAndTeams)
 	require.NoError(t, err)

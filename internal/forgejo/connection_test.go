@@ -36,27 +36,27 @@ func TestConnectionWithoutHostIsNotConfigured(t *testing.T) {
 func TestConnectionRebuildsClientWhenConfigChanges(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/user", http.StatusOK, map[string]any{"login": "kandev"})
-	host := newFakeHost(map[string]any{"base_url": api.url(), "api_token": "first"})
+	api.Handle(http.MethodGet, "/api/v1/user", http.StatusOK, map[string]any{"login": "kandev"})
+	host := newFakeHost(map[string]any{"base_url": api.URL(), "api_token": "first"})
 	connection := NewConnection(func() pluginsdk.Host { return host })
 
 	client, err := connection.Client(context.Background())
 	require.NoError(t, err)
 	_, err = client.CurrentUser(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, "token first", api.authSeen[0])
+	require.Equal(t, "token first", api.AuthSeen()[0])
 
 	again, err := connection.Client(context.Background())
 	require.NoError(t, err)
 	require.Same(t, client, again, "unchanged config reuses the cached client")
 
-	host.config = map[string]any{"base_url": api.url(), "api_token": "rotated"}
+	host.config = map[string]any{"base_url": api.URL(), "api_token": "rotated"}
 	rotated, err := connection.Client(context.Background())
 	require.NoError(t, err)
 	require.NotSame(t, client, rotated)
 	_, err = rotated.CurrentUser(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, "token rotated", api.authSeen[len(api.authSeen)-1])
+	require.Equal(t, "token rotated", api.AuthSeen()[len(api.AuthSeen())-1])
 }
 
 func TestConnectionScopeIsNormalized(t *testing.T) {

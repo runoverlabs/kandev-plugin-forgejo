@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
@@ -123,7 +124,7 @@ func (r *References) Authorize(ctx context.Context, _ string, _ string, referenc
 
 // referenceState reports whether a candidate is open, merged, or closed so the
 // composer can label it without a second provider call.
-func referenceState(result IssueSearchResult) string {
+func referenceState(result rest.IssueSearchResult) string {
 	if result.PullRequest != nil && result.PullRequest.Merged {
 		return "merged"
 	}

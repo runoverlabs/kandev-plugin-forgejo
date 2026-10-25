@@ -1,12 +1,12 @@
-// Package forgejo is the concrete provider adapter layer. It owns every
-// Forgejo/Gitea-specific URL, pagination token, authentication detail, and
-// error mapping, and exposes only the narrow ports the provider-neutral
-// source-control recipe declares.
+// Package rest is the Forgejo and Gitea REST v1 wire client: requests,
+// authentication, pagination, the wire types, and classifying a refused write.
+// It knows nothing about Kandev or about what the plugin does with an answer;
+// internal/forgejo maps its types onto the features' ports.
 //
 // Forgejo is a hard fork of Gitea and both serve the same versioned REST
 // surface at <base>/api/v1. This client deliberately restricts itself to
 // endpoints and fields that exist on both, so one plugin serves either host.
-package forgejo
+package rest
 
 import (
 	"bytes"
@@ -100,6 +100,14 @@ func (c *Client) Scope() string { return c.baseURL.String() }
 // Host is the instance hostname, used as the repository provider host.
 func (c *Client) Host() string { return c.baseURL.Host }
 
+// BasePath is the path the instance is served under, "" at the root.
+func (c *Client) BasePath() string { return c.baseURL.Path }
+
+// Token is the credential the client presents. Only the git credential helper
+// hands it on, because git authenticates with it over HTTPS; it must never
+// reach a response, a log or an error.
+func (c *Client) Token() string { return c.token }
+
 // apiV1 is the versioned REST surface Forgejo and Gitea share.
 const apiV1 = "/api/v1"
 
@@ -128,6 +136,12 @@ func (c *Client) put(ctx context.Context, path string, body, out any) error {
 // the reviewer endpoints take one.
 func (c *Client) delete(ctx context.Context, path string, body any) error {
 	return c.write(ctx, http.MethodDelete, path, nil, body, nil)
+}
+
+// Do performs one call against /api/v1<path>, for an endpoint with no typed
+// method here. Failures are not classified into *scm.WriteError.
+func (c *Client) Do(ctx context.Context, method, path string, query url.Values, body, out any) error {
+	return c.do(ctx, method, apiV1, path, query, body, out)
 }
 
 // newRequest builds one authenticated request against <base><prefix><path>.

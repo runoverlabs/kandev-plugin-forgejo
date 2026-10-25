@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/prautomation"
 	"kandev-plugin-forgejo/internal/scm"
 
@@ -20,13 +22,13 @@ import (
 
 // liveAutomationSource is the automation adapter on the admin token, which is
 // the operator account here.
-func liveAutomationSource(t *testing.T) (*AutomationSource, *Client) {
+func liveAutomationSource(t *testing.T) (*AutomationSource, *rest.Client) {
 	t.Helper()
 	admin, _, associations, _, _, host := liveAdapters(t)
 	return NewAutomationSource(NewConnection(func() pluginsdk.Host { return host }), associations), admin
 }
 
-func liveRepoRef(t *testing.T, client *Client, owner, repo string, number int64) prautomation.PullRef {
+func liveRepoRef(t *testing.T, client *rest.Client, owner, repo string, number int64) prautomation.PullRef {
 	t.Helper()
 	found, err := client.Repo(context.Background(), owner, repo)
 	require.NoError(t, err)
@@ -70,23 +72,23 @@ func TestLiveAutomationObservation(t *testing.T) {
 	head := fmt.Sprintf("automation-%d", time.Now().UnixNano())
 	require.NoError(t, createBranch(ctx, reviewer, owner, repo, head, base))
 	file := map[string]string{"content": "b25lCnR3bwp0aHJlZQo=", "message": "live automation", "branch": head}
-	require.NoError(t, reviewer.do(ctx, http.MethodPost, apiV1,
-		"/repos/"+pathSegment(owner)+"/"+pathSegment(repo)+"/contents/"+head+".txt", nil, file, nil))
-	pull, err := reviewer.CreatePullRequest(ctx, owner, repo, CreatePullRequestInput{Head: head, Base: base, Title: "live automation"})
+	require.NoError(t, reviewer.Do(ctx, http.MethodPost,
+		"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repo)+"/contents/"+head+".txt", nil, file, nil))
+	pull, err := reviewer.CreatePullRequest(ctx, owner, repo, rest.CreatePullRequestInput{Head: head, Base: base, Title: "live automation"})
 	require.NoError(t, err)
 	require.NoError(t, reviewer.RequestReviewers(ctx, owner, repo, pull.Number, []string{me.Login}))
 
-	_, err = admin.SubmitReview(ctx, owner, repo, pull.Number, SubmitReviewInput{
-		Event: ReviewRequestChanges, Body: "please fix", CommitID: pull.Head.Sha,
-		Comments: []InlineComment{{Path: head + ".txt", Body: "line two", NewPosition: 2}},
+	_, err = admin.SubmitReview(ctx, owner, repo, pull.Number, rest.SubmitReviewInput{
+		Event: rest.ReviewRequestChanges, Body: "please fix", CommitID: pull.Head.Sha,
+		Comments: []rest.InlineComment{{Path: head + ".txt", Body: "line two", NewPosition: 2}},
 	})
 	require.NoError(t, err)
-	_, err = readonly.SubmitReview(ctx, owner, repo, pull.Number, SubmitReviewInput{Event: ReviewComment, Body: "a reader's view"})
+	_, err = readonly.SubmitReview(ctx, owner, repo, pull.Number, rest.SubmitReviewInput{Event: rest.ReviewComment, Body: "a reader's view"})
 	require.NoError(t, err)
 	require.NoError(t, readonly.CreateComment(ctx, owner, repo, pull.Number, "drive-by"))
 	status := map[string]string{"state": "failure", "context": "live/ci", "target_url": "https://ci.example/1"}
-	require.NoError(t, admin.do(ctx, http.MethodPost, apiV1,
-		"/repos/"+pathSegment(owner)+"/"+pathSegment(repo)+"/statuses/"+pull.Head.Sha, nil, status, nil))
+	require.NoError(t, admin.Do(ctx, http.MethodPost,
+		"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repo)+"/statuses/"+pull.Head.Sha, nil, status, nil))
 
 	obs, err := source.Observe(ctx, "ws-1", liveRepoRef(t, admin, owner, repo, pull.Number), allReads)
 	require.NoError(t, err)
@@ -125,13 +127,13 @@ func TestLiveAutomationMergePinsTheHead(t *testing.T) {
 	ref := liveRepoRef(t, admin, owner, repo, pull.Number)
 	stale := pull.Head.Sha
 
-	path := "/repos/" + pathSegment(owner) + "/" + pathSegment(repo) + "/contents/" + pull.Head.Ref + ".txt"
+	path := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/contents/" + pull.Head.Ref + ".txt"
 	var existing struct {
 		Sha string `json:"sha"`
 	}
-	require.NoError(t, admin.get(ctx, path, map[string][]string{"ref": {pull.Head.Ref}}, &existing))
+	require.NoError(t, admin.Do(ctx, http.MethodGet, path, url.Values{"ref": {pull.Head.Ref}}, nil, &existing))
 	update := map[string]string{"content": "c2Vjb25k", "message": "second", "branch": pull.Head.Ref, "sha": existing.Sha}
-	require.NoError(t, admin.do(ctx, http.MethodPut, apiV1, path, nil, update, nil))
+	require.NoError(t, admin.Do(ctx, http.MethodPut, path, nil, update, nil))
 
 	err := retryChecking(t, func() error { return source.MergeLinked(ctx, ref, stale) })
 	requireReason(t, err, scm.ReasonHeadChanged)

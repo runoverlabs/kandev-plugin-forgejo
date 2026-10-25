@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
@@ -32,7 +33,7 @@ const (
 
 // requireHead refuses a call whose head SHA is missing or no longer the pull
 // request's head, which is the stale-click protection every write relies on.
-func requireHead(pull PullRequest, headSHA string, required bool) error {
+func requireHead(pull rest.PullRequest, headSHA string, required bool) error {
 	headSHA = strings.TrimSpace(headSHA)
 	if headSHA == "" {
 		if required {
@@ -83,7 +84,7 @@ func (a *PullActions) Merge(ctx context.Context, workspaceID, taskID string, req
 	if err != nil {
 		return sourcecontrol.MergeResult{}, err
 	}
-	input := MergeInput{
+	input := rest.MergeInput{
 		Do:                     style,
 		HeadCommitID:           pull.Head.Sha,
 		DeleteBranch:           request.DeleteBranch,
@@ -117,8 +118,8 @@ func (a *PullActions) Merge(ctx context.Context, workspaceID, taskID string, req
 // instance has the last word.
 func (a *PullActions) mergeStyle(ctx context.Context, target linked, requested string) (string, error) {
 	known := map[string]bool{
-		MergeStyleMerge: true, MergeStyleRebase: true, MergeStyleRebaseMerge: true,
-		MergeStyleSquash: true, MergeStyleFastForwardOnly: true,
+		rest.MergeStyleMerge: true, rest.MergeStyleRebase: true, rest.MergeStyleRebaseMerge: true,
+		rest.MergeStyleSquash: true, rest.MergeStyleFastForwardOnly: true,
 	}
 	requested = strings.TrimSpace(requested)
 	if requested != "" && !known[requested] {
@@ -154,7 +155,7 @@ func (a *PullActions) mergeStyle(ctx context.Context, target linked, requested s
 	case len(allowed) > 0:
 		return allowed[0], nil
 	default:
-		return MergeStyleMerge, nil
+		return rest.MergeStyleMerge, nil
 	}
 }
 
@@ -163,16 +164,16 @@ func (a *PullActions) Review(ctx context.Context, workspaceID, taskID string, re
 	var event string
 	switch request.Event {
 	case sourcecontrol.ReviewEventApprove:
-		event = ReviewApprove
+		event = rest.ReviewApprove
 	case sourcecontrol.ReviewEventRequestChanges:
-		event = ReviewRequestChanges
+		event = rest.ReviewRequestChanges
 	case sourcecontrol.ReviewEventComment:
-		event = ReviewComment
+		event = rest.ReviewComment
 	default:
 		return sourcecontrol.ReviewResult{}, scm.Invalid("The review event must be approve, request_changes or comment.")
 	}
 	body := strings.TrimSpace(request.Body)
-	if body == "" && event != ReviewApprove && len(request.Comments) == 0 {
+	if body == "" && event != rest.ReviewApprove && len(request.Comments) == 0 {
 		return sourcecontrol.ReviewResult{}, scm.Invalid("This review needs a body or inline comments.")
 	}
 	if len([]rune(body)) > sourcecontrol.MaxReviewBodyRunes {
@@ -181,14 +182,14 @@ func (a *PullActions) Review(ctx context.Context, workspaceID, taskID string, re
 	if len(request.Comments) > sourcecontrol.MaxReviewComments {
 		return sourcecontrol.ReviewResult{}, scm.Invalid("Too many inline comments.")
 	}
-	inline := make([]InlineComment, 0, len(request.Comments))
+	inline := make([]rest.InlineComment, 0, len(request.Comments))
 	for _, comment := range request.Comments {
 		text := strings.TrimSpace(comment.Body)
 		path := strings.TrimSpace(comment.Path)
 		if path == "" || text == "" || comment.Line <= 0 || len([]rune(text)) > sourcecontrol.MaxInlineCommentRune {
 			return sourcecontrol.ReviewResult{}, scm.Invalid("Each inline comment needs a path, a line and a body.")
 		}
-		inline = append(inline, InlineComment{Path: path, Body: text, NewPosition: comment.Line})
+		inline = append(inline, rest.InlineComment{Path: path, Body: text, NewPosition: comment.Line})
 	}
 
 	target, err := a.resolveLinked(ctx, workspaceID, taskID, request.Number)
@@ -204,7 +205,7 @@ func (a *PullActions) Review(ctx context.Context, workspaceID, taskID string, re
 		return sourcecontrol.ReviewResult{}, err
 	}
 
-	input := SubmitReviewInput{Event: event, Body: withAttribution(body), Comments: inline}
+	input := rest.SubmitReviewInput{Event: event, Body: withAttribution(body), Comments: inline}
 	if strings.TrimSpace(request.HeadSHA) != "" {
 		input.CommitID = pull.Head.Sha
 	}

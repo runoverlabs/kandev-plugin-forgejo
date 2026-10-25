@@ -1,4 +1,4 @@
-package forgejo
+package rest
 
 import (
 	"context"
@@ -343,11 +343,11 @@ func (c *Client) PullRequest(ctx context.Context, owner, name string, number int
 	return pull, nil
 }
 
-// maxPullReviews bounds the reviews read for one pull request. The newest are
+// MaxPullReviews bounds the reviews read for one pull request. The newest are
 // kept: a reviewer's latest verdict is the one that counts.
-const maxPullReviews = 100
+const MaxPullReviews = 100
 
-// Reviews returns a pull request's newest maxPullReviews reviews, oldest first.
+// Reviews returns a pull request's newest MaxPullReviews reviews, oldest first.
 func (c *Client) Reviews(ctx context.Context, owner, name string, number int64) ([]Review, error) {
 	reviews, _, err := c.NewestReviews(ctx, owner, name, number)
 	return reviews, err
@@ -357,13 +357,13 @@ func (c *Client) Reviews(ctx context.Context, owner, name string, number int64) 
 // out.
 func (c *Client) NewestReviews(ctx context.Context, owner, name string, number int64) ([]Review, bool, error) {
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", pathSegment(owner), pathSegment(name), number)
-	return pageNewest[Review](ctx, c, path, maxPullReviews)
+	return pageNewest[Review](ctx, c, path, MaxPullReviews)
 }
 
 // Combined status paging: every supported host caps a page at 50 contexts.
 const (
-	statusPageSize = 50
-	maxStatusPages = 5
+	StatusPageSize = 50
+	MaxStatusPages = 5
 )
 
 // CombinedStatus returns the latest status of every context on a ref, and their
@@ -379,10 +379,10 @@ func (c *Client) CombinedStatus(ctx context.Context, owner, name, ref string) (C
 	var combined CombinedStatus
 	seen := map[string]bool{}
 	total, full := -1, false
-	for page := 1; page <= maxStatusPages; page++ {
+	for page := 1; page <= MaxStatusPages; page++ {
 		query := url.Values{}
 		query.Set("page", strconv.Itoa(page))
-		query.Set("limit", strconv.Itoa(statusPageSize))
+		query.Set("limit", strconv.Itoa(StatusPageSize))
 		var batch CombinedStatus
 		count, err := c.getCounted(ctx, path, query, &batch)
 		if err != nil {
@@ -393,7 +393,7 @@ func (c *Client) CombinedStatus(ctx context.Context, owner, name, ref string) (C
 		} else if len(batch.Statuses) > 0 {
 			combined.State = worseCommitState(combined.State, batch.State)
 		}
-		full = len(batch.Statuses) >= statusPageSize
+		full = len(batch.Statuses) >= StatusPageSize
 		for _, status := range batch.Statuses {
 			// A context updated between two reads moves to the first page and
 			// shifts the rest: it can come back twice.
@@ -403,7 +403,7 @@ func (c *Client) CombinedStatus(ctx context.Context, owner, name, ref string) (C
 			}
 		}
 		if len(batch.Statuses) == 0 || (total >= 0 && len(combined.Statuses) >= total) ||
-			(total < 0 && len(batch.Statuses) < statusPageSize) {
+			(total < 0 && len(batch.Statuses) < StatusPageSize) {
 			break
 		}
 	}

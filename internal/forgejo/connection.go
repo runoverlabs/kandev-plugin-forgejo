@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
@@ -23,7 +24,7 @@ type Connection struct {
 	httpClient *http.Client
 
 	mu     sync.Mutex
-	client *Client
+	client *rest.Client
 	key    string
 }
 
@@ -39,7 +40,7 @@ func NewConnection(hosts kandev.Provider) *Connection {
 
 // Client resolves the configured instance client, rebuilding it when the
 // operator config has changed since the last call.
-func (c *Connection) Client(ctx context.Context) (*Client, error) {
+func (c *Connection) Client(ctx context.Context) (*rest.Client, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -66,7 +67,7 @@ func (c *Connection) Client(ctx context.Context) (*Client, error) {
 	if c.client != nil && c.key == key {
 		return c.client, nil
 	}
-	client, err := NewClient(baseURL, token, c.httpClient)
+	client, err := rest.NewClient(baseURL, token, c.httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", scm.ErrInvalidConfig, err)
 	}

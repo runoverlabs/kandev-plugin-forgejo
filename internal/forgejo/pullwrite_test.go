@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const pullBase = "/api/v1/repos/o/r/pulls/7"
+
 // recorder captures the JSON body of the last request to a route and counts
 // how often it was hit.
 type recorder struct {
@@ -22,7 +24,7 @@ type recorder struct {
 
 func record(api *apiServer, method, path string, status int) *recorder {
 	rec := &recorder{}
-	api.handleFunc(method, path, func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc(method, path, func(w http.ResponseWriter, r *http.Request) {
 		rec.calls.Add(1)
 		rec.body = nil
 		_ = json.NewDecoder(r.Body).Decode(&rec.body)
@@ -91,7 +93,7 @@ func TestMergeCancelAndFinishedPullRequests(t *testing.T) {
 	require.EqualValues(t, 1, cancel.calls.Load())
 
 	merge := record(api, http.MethodPost, pullBase+"/merge", 200)
-	api.handle(http.MethodGet, pullBase, 200, map[string]any{
+	api.Handle(http.MethodGet, pullBase, 200, map[string]any{
 		"number": 7, "state": "closed", "merged": true, "head": map[string]any{"sha": "abc"},
 	})
 	_, err = actions.Merge(ctx, "ws-1", "task-1", sourcecontrol.MergeRequest{Number: 7, HeadSHA: "abc1234"})
@@ -105,7 +107,7 @@ func TestMergeRetriesWhileTheInstanceIsStillChecking(t *testing.T) {
 	t.Parallel()
 	actions, api, _ := detailsFixture(t)
 	var calls atomic.Int32
-	api.handleFunc(http.MethodPost, pullBase+"/merge", func(w http.ResponseWriter, _ *http.Request) {
+	api.HandleFunc(http.MethodPost, pullBase+"/merge", func(w http.ResponseWriter, _ *http.Request) {
 		if calls.Add(1) < 2 {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			_, _ = w.Write([]byte(`{"message":"Please try again later"}`))
@@ -195,7 +197,7 @@ func TestEveryWriteRefusesAnUnlinkedPullRequest(t *testing.T) {
 	t.Parallel()
 	actions, api, _ := detailsFixture(t)
 	ctx := context.Background()
-	before := len(api.requests)
+	before := len(api.Requests())
 
 	calls := map[string]func() error{
 		"merge": func() error {
@@ -226,5 +228,5 @@ func TestEveryWriteRefusesAnUnlinkedPullRequest(t *testing.T) {
 	for name, call := range calls {
 		require.ErrorIs(t, call(), scm.ErrNotLinked, name)
 	}
-	require.Len(t, api.requests, before)
+	require.Len(t, api.Requests(), before)
 }

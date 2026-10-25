@@ -5,56 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/prautomation"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
-
-// Team is a team as the pull request and /user/teams report it.
-type Team struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
-	Organization *struct {
-		UserName string `json:"username"`
-	} `json:"organization"`
-}
-
-// ReviewThreadComment is an inline comment of a submitted review.
-type ReviewThreadComment struct {
-	ID   int64  `json:"id"`
-	Body string `json:"body"`
-	Path string `json:"path"`
-	// Position is the line on the new side, OriginalPosition on the old; the
-	// other is 0. With the path they place the comment's conversation.
-	Position         int64 `json:"position"`
-	OriginalPosition int64 `json:"original_position"`
-	User             User  `json:"user"`
-	// Resolver is set on the comment a conversation was resolved from. There
-	// is no API to resolve one, only the web UI, which resolves from the
-	// conversation's first comment and reads its state from there alone.
-	Resolver *User `json:"resolver"`
-}
-
-// ReviewComments lists the inline comments of one review.
-func (c *Client) ReviewComments(ctx context.Context, owner, name string, number, reviewID int64) ([]ReviewThreadComment, error) {
-	var comments []ReviewThreadComment
-	path := pullPath(owner, name, number, "/reviews/"+strconv.FormatInt(reviewID, 10)+"/comments")
-	if err := c.get(ctx, path, nil, &comments); err != nil {
-		return nil, err
-	}
-	return comments, nil
-}
-
-// UserTeams lists the teams the token's account belongs to.
-func (c *Client) UserTeams(ctx context.Context) ([]Team, error) {
-	teams, _, err := pageAll[Team](ctx, c, "/user/teams", maxUserTeams)
-	return teams, err
-}
 
 // errStatusesCut: the head has more checks than one observation reads, or they
 // changed while they were read. A check that was not read may be failing.
@@ -62,7 +21,6 @@ var errStatusesCut = errors.New("forgejo: not every commit status could be read"
 
 // Bounds on one observation.
 const (
-	maxUserTeams          = 200
 	maxObservedComments   = 300
 	maxReviewCommentFetch = 20
 	operatorCacheLifetime = 10 * time.Minute
@@ -122,18 +80,18 @@ func (s *AutomationSource) Linked(ctx context.Context, workspaceID string) ([]pr
 }
 
 // repository resolves a reference's repository by its immutable id.
-func (s *AutomationSource) repository(ctx context.Context, ref prautomation.PullRef) (*Client, Repo, error) {
+func (s *AutomationSource) repository(ctx context.Context, ref prautomation.PullRef) (*rest.Client, rest.Repo, error) {
 	client, err := s.connection.Client(ctx)
 	if err != nil {
-		return nil, Repo{}, err
+		return nil, rest.Repo{}, err
 	}
 	id, err := parseRepositoryID(ref.RepositoryID)
 	if err != nil {
-		return nil, Repo{}, err
+		return nil, rest.Repo{}, err
 	}
 	repo, err := client.RepoByID(ctx, id)
 	if err != nil {
-		return nil, Repo{}, err
+		return nil, rest.Repo{}, err
 	}
 	return client, repo, nil
 }
@@ -189,7 +147,7 @@ func (s *AutomationSource) Observe(ctx context.Context, _ string, ref prautomati
 	// Every read below feeds a merge gate, so none fails soft: a token that
 	// cannot see the checks or the reviews fails the observation instead of
 	// reading as no CI or no objections.
-	var statuses []CommitStatus
+	var statuses []rest.CommitStatus
 	if sha := strings.TrimSpace(pull.Head.Sha); sha != "" {
 		combined, err := client.CombinedStatus(ctx, owner, name, sha)
 		if err != nil {
@@ -263,7 +221,7 @@ func (s *AutomationSource) Observe(ctx context.Context, _ string, ref prautomati
 // auto-merge does not take an unread comment for a resolved one. A dismissed
 // review's comments are read too: a conversation it started carries the
 // resolver for replies filed under other, live reviews.
-func observeReviewComments(ctx context.Context, client *Client, owner, name string, number int64, raw []Review, observed []prautomation.Review) (bool, error) {
+func observeReviewComments(ctx context.Context, client *rest.Client, owner, name string, number int64, raw []rest.Review, observed []prautomation.Review) (bool, error) {
 	byID := make(map[int64]int, len(observed))
 	for i, review := range observed {
 		byID[review.ID] = i
@@ -354,16 +312,16 @@ func (s *AutomationSource) MergeLinked(ctx context.Context, ref prautomation.Pul
 	}
 	style := strings.TrimSpace(repo.DefaultMergeStyle)
 	if style == "" {
-		style = MergeStyleMerge
+		style = rest.MergeStyleMerge
 	}
-	return client.MergePullRequest(ctx, repo.OwnerLogin(), repo.Name, ref.Number, MergeInput{
+	return client.MergePullRequest(ctx, repo.OwnerLogin(), repo.Name, ref.Number, rest.MergeInput{
 		Do:           style,
 		HeadCommitID: headSHA,
 		DeleteBranch: repo.DefaultDeleteBranch,
 	})
 }
 
-func (s *AutomationSource) operatorIdentity(ctx context.Context, client *Client) (string, map[string]bool, error) {
+func (s *AutomationSource) operatorIdentity(ctx context.Context, client *rest.Client) (string, map[string]bool, error) {
 	s.mu.Lock()
 	cached := s.operator
 	s.mu.Unlock()
@@ -393,7 +351,7 @@ func (s *AutomationSource) operatorIdentity(ctx context.Context, client *Client)
 
 // operatorRequested reports a review request for the operator, directly or
 // through a team of the repository's owner it belongs to.
-func operatorRequested(pull PullRequest, owner, login string, teams map[string]bool) bool {
+func operatorRequested(pull rest.PullRequest, owner, login string, teams map[string]bool) bool {
 	for _, user := range pull.Requested {
 		if login != "" && strings.EqualFold(user.Login, login) {
 			return true
@@ -407,7 +365,7 @@ func operatorRequested(pull PullRequest, owner, login string, teams map[string]b
 	return false
 }
 
-func automationState(pull PullRequest) prautomation.PullState {
+func automationState(pull rest.PullRequest) prautomation.PullState {
 	switch {
 	case pull.Merged:
 		return prautomation.StateMerged
@@ -420,7 +378,7 @@ func automationState(pull PullRequest) prautomation.PullState {
 
 // automationCI maps a combined status. A cancelled or skipped check is not a
 // failure: nothing in it asks for a change.
-func automationCI(combined CombinedStatus) prautomation.CI {
+func automationCI(combined rest.CombinedStatus) prautomation.CI {
 	ci := prautomation.CI{State: prautomation.CINone}
 	if len(combined.Statuses) == 0 {
 		return ci
@@ -457,7 +415,7 @@ func automationCI(combined CombinedStatus) prautomation.CI {
 // head matches. The instance holds such a pattern pending and refuses the
 // merge, so a check that has not reported yet is not a green build even when
 // every check that has is.
-func missingRequiredChecks(patterns []string, statuses []CommitStatus) []string {
+func missingRequiredChecks(patterns []string, statuses []rest.CommitStatus) []string {
 	var missing []string
 	for _, pattern := range patterns {
 		pattern = strings.TrimSpace(pattern)
@@ -562,7 +520,7 @@ func automationReviewState(state string) string {
 // isBotUser recognises the accounts the instance itself posts as: the Actions
 // user and the ghost user have negative ids on both hosts. Neither host marks
 // other bots; a "[bot]" login suffix is the common convention.
-func isBotUser(user User) bool {
+func isBotUser(user rest.User) bool {
 	login := strings.ToLower(strings.TrimSpace(user.Login))
 	return user.ID < 0 || strings.HasSuffix(login, "[bot]") ||
 		login == "forgejo-actions" || login == "gitea-actions"
@@ -572,7 +530,7 @@ func isBotUser(user User) bool {
 // when it says false but the pull request changed too recently to believe it.
 // A true answer is always passed through: a stale true is caught by the head SHA
 // precondition on merge, whereas a stale false would wrongly block.
-func settleMergeable(pull PullRequest, now time.Time) *bool {
+func settleMergeable(pull rest.PullRequest, now time.Time) *bool {
 	if pull.Mergeable == nil || *pull.Mergeable {
 		return pull.Mergeable
 	}

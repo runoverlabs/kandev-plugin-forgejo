@@ -1,4 +1,4 @@
-package forgejo
+package rest
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 func TestJobLogTailUsesSuffixRange(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handleFunc("GET", "/api/v1/repos/kandev/demo/actions/jobs/42/logs", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc("GET", "/api/v1/repos/kandev/demo/actions/jobs/42/logs", func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "bytes=-16", r.Header.Get("Range"))
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusPartialContent)
@@ -36,7 +36,7 @@ func TestJobLogTailIgnoredRangeStillTails(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
 	body := strings.Repeat("x", 5000) + "THE-END"
-	api.handleFunc("GET", "/api/v1/repos/kandev/demo/actions/jobs/42/logs", func(w http.ResponseWriter, _ *http.Request) {
+	api.HandleFunc("GET", "/api/v1/repos/kandev/demo/actions/jobs/42/logs", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte(body))
 	})
@@ -52,7 +52,7 @@ func TestJobLogTailIgnoredRangeStillTails(t *testing.T) {
 func TestJobLogTailShortLogIsNotTruncated(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handleFunc("GET", "/api/v1/repos/kandev/demo/actions/jobs/42/logs", func(w http.ResponseWriter, _ *http.Request) {
+	api.HandleFunc("GET", "/api/v1/repos/kandev/demo/actions/jobs/42/logs", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("short log\n"))
 	})
 
@@ -115,7 +115,7 @@ func TestReadTailAcrossManyChunks(t *testing.T) {
 func TestJobLogTailNormalizesGiteaServerError(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handleFunc("GET", "/api/v1/repos/kandev/demo/actions/jobs/42/logs", func(w http.ResponseWriter, _ *http.Request) {
+	api.HandleFunc("GET", "/api/v1/repos/kandev/demo/actions/jobs/42/logs", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"message":"run job with id 42: resource does not exist"}`))
 	})
@@ -129,7 +129,7 @@ func TestJobLogTailNormalizesGiteaServerError(t *testing.T) {
 func TestJobLogTailKeepsOtherFailuresDistinct(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handleFunc("GET", "/api/v1/repos/kandev/demo/actions/jobs/42/logs", func(w http.ResponseWriter, _ *http.Request) {
+	api.HandleFunc("GET", "/api/v1/repos/kandev/demo/actions/jobs/42/logs", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 

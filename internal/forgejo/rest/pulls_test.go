@@ -1,4 +1,4 @@
-package forgejo
+package rest
 
 import (
 	"context"
@@ -17,7 +17,7 @@ const pullBase = "/api/v1/repos/o/r/pulls/7"
 func newActionsClient(t *testing.T) (*Client, *apiServer) {
 	t.Helper()
 	api := newAPIServer(t)
-	client, err := NewClient(api.url(), "super-secret-token", nil)
+	client, err := NewClient(api.URL(), "super-secret-token", nil)
 	require.NoError(t, err)
 	return client, api
 }
@@ -26,7 +26,7 @@ func TestMergePullRequestSendsExpectedBody(t *testing.T) {
 	t.Parallel()
 	client, api := newActionsClient(t)
 	var got map[string]any
-	api.handleFunc(http.MethodPost, pullBase+"/merge", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc(http.MethodPost, pullBase+"/merge", func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
 		w.WriteHeader(http.StatusOK) // empty body must be accepted
 	})
@@ -80,7 +80,7 @@ func TestWriteStatusMapping(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			client, api := newActionsClient(t)
-			api.handleFunc(http.MethodPost, pullBase+"/merge", func(w http.ResponseWriter, _ *http.Request) {
+			api.HandleFunc(http.MethodPost, pullBase+"/merge", func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(tc.body))
 			})
@@ -97,17 +97,17 @@ func TestWriteStatusMapping(t *testing.T) {
 func TestWriteKeepsUnauthorizedAndNotFound(t *testing.T) {
 	t.Parallel()
 	client, api := newActionsClient(t)
-	api.handle(http.MethodPost, pullBase+"/merge", http.StatusUnauthorized, nil)
+	api.Handle(http.MethodPost, pullBase+"/merge", http.StatusUnauthorized, nil)
 	require.ErrorIs(t, client.MergePullRequest(context.Background(), "o", "r", 7, MergeInput{Do: "merge"}), scm.ErrUnauthorized)
 
-	api.handle(http.MethodPost, pullBase+"/merge", http.StatusNotFound, nil)
+	api.Handle(http.MethodPost, pullBase+"/merge", http.StatusNotFound, nil)
 	require.ErrorIs(t, client.MergePullRequest(context.Background(), "o", "r", 7, MergeInput{Do: "merge"}), scm.ErrNotFound)
 }
 
 func TestWriteErrorsDoNotLeakBodyOrToken(t *testing.T) {
 	t.Parallel()
 	client, api := newActionsClient(t)
-	api.handleFunc(http.MethodPost, pullBase+"/reviews", func(w http.ResponseWriter, _ *http.Request) {
+	api.HandleFunc(http.MethodPost, pullBase+"/reviews", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"message":"token super-secret-token lacks scope"}`))
 	})
@@ -121,16 +121,16 @@ func TestSubmitReviewAndReviewerRequests(t *testing.T) {
 	t.Parallel()
 	client, api := newActionsClient(t)
 	var review, add, remove map[string]any
-	api.handleFunc(http.MethodPost, pullBase+"/reviews", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc(http.MethodPost, pullBase+"/reviews", func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&review))
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":3,"state":"APPROVED"}`))
 	})
-	api.handleFunc(http.MethodPost, pullBase+"/requested_reviewers", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc(http.MethodPost, pullBase+"/requested_reviewers", func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&add))
 		w.WriteHeader(http.StatusCreated)
 	})
-	api.handleFunc(http.MethodDelete, pullBase+"/requested_reviewers", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc(http.MethodDelete, pullBase+"/requested_reviewers", func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&remove))
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -155,25 +155,25 @@ func TestSubmitReviewAndReviewerRequests(t *testing.T) {
 func TestCancelAutoMergeAndUpdateBranch(t *testing.T) {
 	t.Parallel()
 	client, api := newActionsClient(t)
-	api.handle(http.MethodDelete, pullBase+"/merge", http.StatusNoContent, nil)
-	api.handle(http.MethodPost, pullBase+"/update", http.StatusOK, nil)
+	api.Handle(http.MethodDelete, pullBase+"/merge", http.StatusNoContent, nil)
+	api.Handle(http.MethodPost, pullBase+"/update", http.StatusOK, nil)
 	ctx := context.Background()
 
 	require.NoError(t, client.CancelAutoMerge(ctx, "o", "r", 7))
 	require.NoError(t, client.UpdateBranch(ctx, "o", "r", 7, "rebase"))
-	require.Equal(t, "style=rebase", api.requests[len(api.requests)-1].URL.RawQuery)
+	require.Equal(t, "style=rebase", api.Requests()[len(api.Requests())-1].URL.RawQuery)
 	require.Error(t, client.UpdateBranch(ctx, "o", "r", 7, "squash"))
 
 	// Gitea answers 500 when there is nothing to update; that is success.
-	api.handle(http.MethodPost, pullBase+"/update", http.StatusInternalServerError, map[string]any{"message": "HeadBranch of PR 7 is up to date"})
+	api.Handle(http.MethodPost, pullBase+"/update", http.StatusInternalServerError, map[string]any{"message": "HeadBranch of PR 7 is up to date"})
 	require.NoError(t, client.UpdateBranch(ctx, "o", "r", 7, "merge"))
 }
 
 func TestPullFilesPagesAndReportsTruncation(t *testing.T) {
 	t.Parallel()
 	client, api := newActionsClient(t)
-	api.handleFunc(http.MethodGet, pullBase+"/files", func(w http.ResponseWriter, r *http.Request) {
-		files := make([]ChangedFile, pullListPageSize)
+	api.HandleFunc(http.MethodGet, pullBase+"/files", func(w http.ResponseWriter, r *http.Request) {
+		files := make([]ChangedFile, PullListPageSize)
 		for i := range files {
 			files[i] = ChangedFile{Filename: "f", Additions: 1}
 		}
@@ -188,14 +188,14 @@ func TestPullFilesPagesAndReportsTruncation(t *testing.T) {
 	// A server that never runs dry is still bounded by the page cap.
 	files, truncated, err = client.PullFiles(context.Background(), "o", "r", 7, 100000)
 	require.NoError(t, err)
-	require.Len(t, files, pullListPageSize*maxPullListPages)
+	require.Len(t, files, PullListPageSize*maxPullListPages)
 	require.True(t, truncated)
 }
 
 func TestPullCommitsShortPageIsComplete(t *testing.T) {
 	t.Parallel()
 	client, api := newActionsClient(t)
-	api.handle(http.MethodGet, pullBase+"/commits", http.StatusOK, []map[string]any{{"sha": "a"}, {"sha": "b"}})
+	api.Handle(http.MethodGet, pullBase+"/commits", http.StatusOK, []map[string]any{{"sha": "a"}, {"sha": "b"}})
 	commits, truncated, err := client.PullCommits(context.Background(), "o", "r", 7, 100)
 	require.NoError(t, err)
 	require.Len(t, commits, 2)
@@ -207,7 +207,7 @@ func TestPullCommitsShortPageIsComplete(t *testing.T) {
 // everything, as the issue comments endpoint answers), with X-Total-Count
 // unless uncounted.
 func serveList(api *apiServer, path string, count, pageCap int, uncounted bool) {
-	api.handleFunc(http.MethodGet, path, func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc(http.MethodGet, path, func(w http.ResponseWriter, r *http.Request) {
 		from, to := 0, count
 		if pageCap > 0 {
 			page, _ := strconv.Atoi(r.URL.Query().Get("page"))
@@ -267,7 +267,7 @@ func TestPageNewestKeepsTheNewestOfAPagedList(t *testing.T) {
 			reviews, err := client.Reviews(context.Background(), "o", "r", 7)
 			require.NoError(t, err)
 			require.Equal(t, tc.want, ids(reviews, reviewID))
-			require.Equal(t, tc.requests, api.count(http.MethodGet, pullBase+"/reviews"))
+			require.Equal(t, tc.requests, api.Count(http.MethodGet, pullBase+"/reviews"))
 		})
 	}
 }
@@ -291,7 +291,7 @@ func TestIssueCommentsOfAnUnpagedListAreNotRepeated(t *testing.T) {
 func TestPullDiffKeepsTheStart(t *testing.T) {
 	t.Parallel()
 	client, api := newActionsClient(t)
-	api.handleFunc(http.MethodGet, pullBase+".diff", func(w http.ResponseWriter, _ *http.Request) {
+	api.HandleFunc(http.MethodGet, pullBase+".diff", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("0123456789"))
 	})
 	ctx := context.Background()
@@ -317,9 +317,9 @@ func TestIssueSideWrites(t *testing.T) {
 			w.WriteHeader(status)
 		}
 	}
-	api.handleFunc(http.MethodPut, "/api/v1/repos/o/r/issues/7/labels", decode(&labels, 200))
-	api.handleFunc(http.MethodPatch, "/api/v1/repos/o/r/issues/7", decode(&assignees, 201))
-	api.handleFunc(http.MethodPost, "/api/v1/repos/o/r/issues/7/comments", decode(&comment, 201))
+	api.HandleFunc(http.MethodPut, "/api/v1/repos/o/r/issues/7/labels", decode(&labels, 200))
+	api.HandleFunc(http.MethodPatch, "/api/v1/repos/o/r/issues/7", decode(&assignees, 201))
+	api.HandleFunc(http.MethodPost, "/api/v1/repos/o/r/issues/7/comments", decode(&comment, 201))
 	ctx := context.Background()
 
 	require.NoError(t, client.SetLabels(ctx, "o", "r", 7, nil))
@@ -340,11 +340,11 @@ func TestRepoMergeStylesOrderAndAbsence(t *testing.T) {
 func TestBranchDetailDecodesProtection(t *testing.T) {
 	t.Parallel()
 	client, api := newActionsClient(t)
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/branches/main", http.StatusOK, map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/branches/main", http.StatusOK, map[string]any{
 		"name": "main", "protected": true, "required_approvals": 2,
 		"enable_status_check": true, "status_check_contexts": []string{"ci"}, "user_can_merge": true,
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/branch_protections/main", http.StatusForbidden, nil)
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/branch_protections/main", http.StatusForbidden, nil)
 	ctx := context.Background()
 
 	branch, err := client.BranchDetail(ctx, "o", "r", "main")

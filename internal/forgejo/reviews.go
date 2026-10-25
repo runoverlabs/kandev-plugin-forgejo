@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
@@ -90,7 +91,7 @@ func (r *Reviews) Associations(ctx context.Context, workspaceID string) ([]sourc
 // summarize builds one review snapshot. A pull request that has disappeared is
 // reported as absent rather than as an error, so one deleted PR cannot break a
 // task's whole refresh.
-func (r *Reviews) summarize(ctx context.Context, client *Client, identity sourcecontrol.ChangeRequestIdentity) (sourcecontrol.ReviewSummary, bool, error) {
+func (r *Reviews) summarize(ctx context.Context, client *rest.Client, identity sourcecontrol.ChangeRequestIdentity) (sourcecontrol.ReviewSummary, bool, error) {
 	repository, err := r.repositories.Resolve(ctx, "", sourcecontrol.RepositoryIdentity{
 		ConnectionScope: identity.ConnectionScope,
 		RepositoryID:    identity.RepositoryID,
@@ -166,7 +167,7 @@ func (r *Reviews) summarize(ctx context.Context, client *Client, identity source
 // pullRequestState maps Forgejo's state plus its merged/draft flags onto the
 // host's open | merged | closed | draft vocabulary. Order matters: a merged
 // pull request is reported as merged even though its state is "closed".
-func pullRequestState(pull PullRequest) string {
+func pullRequestState(pull rest.PullRequest) string {
 	switch {
 	case pull.Merged:
 		return "merged"
@@ -196,7 +197,7 @@ func pipelineState(state string) string {
 
 // normalizeChecks converts individual commit statuses into host checks. The
 // per-entry field is `status`, not `state`.
-func normalizeChecks(statuses []CommitStatus) []sourcecontrol.ReviewTaskStatusCheck {
+func normalizeChecks(statuses []rest.CommitStatus) []sourcecontrol.ReviewTaskStatusCheck {
 	checks := make([]sourcecontrol.ReviewTaskStatusCheck, 0, len(statuses))
 	for _, status := range statuses {
 		label := strings.TrimSpace(status.Context)
@@ -221,7 +222,7 @@ func normalizeChecks(statuses []CommitStatus) []sourcecontrol.ReviewTaskStatusCh
 // summarizeReviews reduces submitted reviews to the host's review summary.
 // Stale and dismissed reviews are ignored, and only the most recent decision
 // per reviewer counts, matching how both hosts render the review box.
-func summarizeReviews(reviews []Review) *sourcecontrol.ReviewTaskReview {
+func summarizeReviews(reviews []rest.Review) *sourcecontrol.ReviewTaskReview {
 	latest := make(map[string]string, len(reviews))
 	order := make([]string, 0, len(reviews))
 	for _, review := range reviews {

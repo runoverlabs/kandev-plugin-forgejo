@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"kandev-plugin-forgejo/internal/automations"
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/scm"
 )
 
@@ -109,7 +110,7 @@ type instanceInfo struct {
 // is a definitive answer (the instance did not report one), never a failed
 // request: those are not cached.
 type instanceVersion struct {
-	flavor  Flavor
+	flavor  rest.Flavor
 	version string
 	at      time.Time
 }
@@ -123,7 +124,7 @@ type repositoryOptions struct {
 // whenever the URL or token changes.
 type automationCache struct {
 	mu           sync.Mutex
-	client       *Client
+	client       *rest.Client
 	info         *instanceInfo
 	version      *instanceVersion
 	repositories *repositoryOptions
@@ -133,14 +134,14 @@ type automationCache struct {
 	found map[string]time.Time
 }
 
-func (c *automationCache) forClient(client *Client) {
+func (c *automationCache) forClient(client *rest.Client) {
 	if c.client != client {
 		c.client, c.info, c.version, c.repositories, c.found = client, nil, nil, nil, nil
 	}
 }
 
 // instanceInfo returns the account, from cache when fresh.
-func (s *ConditionInstance) instanceInfo(ctx context.Context, client *Client) (instanceInfo, error) {
+func (s *ConditionInstance) instanceInfo(ctx context.Context, client *rest.Client) (instanceInfo, error) {
 	cache := &s.cache
 	cache.mu.Lock()
 	cache.forClient(client)
@@ -167,7 +168,7 @@ func (s *ConditionInstance) instanceInfo(ctx context.Context, client *Client) (i
 // ci_result needs them, so other conditions never pay for the requests. A
 // failed request is an error, not an empty version: the host cancels a
 // delivery on available=false, so a blip must not read as "no version".
-func (s *ConditionInstance) instanceVersion(ctx context.Context, client *Client) (instanceVersion, error) {
+func (s *ConditionInstance) instanceVersion(ctx context.Context, client *rest.Client) (instanceVersion, error) {
 	cache := &s.cache
 	cache.mu.Lock()
 	cache.forClient(client)
@@ -201,7 +202,7 @@ func (s *ConditionInstance) instanceVersion(ctx context.Context, client *Client)
 
 // repositoryExists checks that the token can read a repository, from cache
 // when it was found recently.
-func (s *ConditionInstance) repositoryExists(ctx context.Context, client *Client, repository string) error {
+func (s *ConditionInstance) repositoryExists(ctx context.Context, client *rest.Client, repository string) error {
 	key := strings.ToLower(repository)
 	cache := &s.cache
 	cache.mu.Lock()
@@ -235,7 +236,7 @@ func (s *ConditionInstance) repositoryExists(ctx context.Context, client *Client
 
 // repositoryOptions suggests the repositories the token sees, most recently
 // updated first. A failure suggests nothing; the field still takes free text.
-func (s *ConditionInstance) repositoryOptions(ctx context.Context, client *Client) []string {
+func (s *ConditionInstance) repositoryOptions(ctx context.Context, client *rest.Client) []string {
 	cache := &s.cache
 	cache.mu.Lock()
 	cache.forClient(client)

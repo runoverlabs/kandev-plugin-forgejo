@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/watches"
 )
@@ -37,18 +38,18 @@ func (s *IssueSource) ListIssues(ctx context.Context, repo scm.RepoRef, query wa
 		return nil, err
 	}
 
-	collected := make([]watches.Issue, 0, maxIssuePageLimit)
+	collected := make([]watches.Issue, 0, rest.MaxIssuePageLimit)
 	for page := 1; page <= maxIssuePages; page++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		issues, raw, err := client.listIssuesPage(ctx, repo.Owner, repo.Name, IssueListOptions{
+		issues, raw, err := client.ListIssuesPage(ctx, repo.Owner, repo.Name, rest.IssueListOptions{
 			State:  query.State,
 			Labels: query.Labels,
 			Query:  query.Query,
 			Since:  query.Since,
 			Page:   page,
-			Limit:  maxIssuePageLimit,
+			Limit:  rest.MaxIssuePageLimit,
 		})
 		if err != nil {
 			// A failure on any page discards what earlier pages collected. A
@@ -81,7 +82,7 @@ func (s *IssueSource) ListIssues(ctx context.Context, repo scm.RepoRef, query wa
 		// ignores type=issues can fill a page with pull requests; counting only
 		// the issues would make that full page look short and drop every issue
 		// on the pages after it.
-		if raw < maxIssuePageLimit {
+		if raw < rest.MaxIssuePageLimit {
 			break
 		}
 	}

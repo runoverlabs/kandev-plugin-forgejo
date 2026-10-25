@@ -1,4 +1,4 @@
-package forgejo
+package rest
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 
 func newTestClient(t *testing.T, api *apiServer) *Client {
 	t.Helper()
-	client, err := NewClient(api.url(), "token-value", nil)
+	client, err := NewClient(api.URL(), "token-value", nil)
 	require.NoError(t, err)
 	return client
 }
@@ -24,7 +24,7 @@ func newTestClient(t *testing.T, api *apiServer) *Client {
 func TestCIStatusPrefersWorkflowRuns(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handleFunc("GET", "/api/v1/repos/kandev/demo/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc("GET", "/api/v1/repos/kandev/demo/actions/runs", func(w http.ResponseWriter, r *http.Request) {
 		// A bare branch name must be expanded: the endpoint filters on a full
 		// git ref and silently ignores anything it does not recognize.
 		require.Equal(t, "refs/heads/feature", r.URL.Query().Get("ref"))
@@ -32,7 +32,7 @@ func TestCIStatusPrefersWorkflowRuns(t *testing.T) {
 		_, _ = w.Write([]byte(`{"total_count":1,"workflow_runs":[
 			{"id":7,"title":"build","status":"failure","commit_sha":"abc123def4567","html_url":"http://forge/run/7"}]}`))
 	})
-	api.handle("GET", "/api/v1/repos/kandev/demo/actions/runs/7/jobs", http.StatusOK, []map[string]any{
+	api.Handle("GET", "/api/v1/repos/kandev/demo/actions/runs/7/jobs", http.StatusOK, []map[string]any{
 		{"id": 41, "name": "lint", "status": "success", "run_id": 7},
 		{"id": 42, "name": "test", "status": "failure", "run_id": 7},
 	})
@@ -51,7 +51,7 @@ func TestCIStatusPrefersWorkflowRuns(t *testing.T) {
 func TestCIStatusRunsWithoutJobsEndpoint(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle("GET", "/api/v1/repos/kandev/demo/actions/runs", http.StatusOK, map[string]any{
+	api.Handle("GET", "/api/v1/repos/kandev/demo/actions/runs", http.StatusOK, map[string]any{
 		"total_count": 1,
 		"workflow_runs": []map[string]any{
 			{"id": 7, "title": "build", "status": "running", "commit_sha": "abc", "html_url": "http://forge/run/7"},
@@ -73,7 +73,7 @@ func TestCIStatusRunsWithoutJobsEndpoint(t *testing.T) {
 func TestCIStatusFallsBackToActionsTasks(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle("GET", "/api/v1/repos/kandev/demo/actions/tasks", http.StatusOK, map[string]any{
+	api.Handle("GET", "/api/v1/repos/kandev/demo/actions/tasks", http.StatusOK, map[string]any{
 		"total_count": 3,
 		"workflow_runs": []map[string]any{
 			{"id": 91, "name": "test", "head_branch": "feature", "head_sha": "aaa", "status": "failure", "run_number": 12, "url": "http://forge/t/91"},
@@ -97,7 +97,7 @@ func TestCIStatusFallsBackToActionsTasks(t *testing.T) {
 func TestCIStatusFallsBackToCommitStatus(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle("GET", "/api/v1/repos/kandev/demo/commits/feature/status", http.StatusOK, map[string]any{
+	api.Handle("GET", "/api/v1/repos/kandev/demo/commits/feature/status", http.StatusOK, map[string]any{
 		"state": "failure",
 		"sha":   "deadbeef",
 		"statuses": []map[string]any{
@@ -121,9 +121,9 @@ func TestCIStatusFallsBackToCommitStatus(t *testing.T) {
 func TestCIStatusReportsNoneRatherThanFailing(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle("GET", "/api/v1/repos/kandev/demo/actions/runs", http.StatusOK, map[string]any{"total_count": 0, "workflow_runs": []any{}})
-	api.handle("GET", "/api/v1/repos/kandev/demo/actions/tasks", http.StatusOK, map[string]any{"total_count": 0, "workflow_runs": []any{}})
-	api.handle("GET", "/api/v1/repos/kandev/demo/commits/feature/status", http.StatusOK, map[string]any{"state": "", "statuses": []any{}})
+	api.Handle("GET", "/api/v1/repos/kandev/demo/actions/runs", http.StatusOK, map[string]any{"total_count": 0, "workflow_runs": []any{}})
+	api.Handle("GET", "/api/v1/repos/kandev/demo/actions/tasks", http.StatusOK, map[string]any{"total_count": 0, "workflow_runs": []any{}})
+	api.Handle("GET", "/api/v1/repos/kandev/demo/commits/feature/status", http.StatusOK, map[string]any{"state": "", "statuses": []any{}})
 
 	status, err := newTestClient(t, api).CIStatusFor(context.Background(), "kandev", "demo", "feature")
 	require.NoError(t, err)
@@ -137,7 +137,7 @@ func TestCIStatusQueriesByCommitSHA(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
 	sha := "a1b2c3d4e5f6"
-	api.handleFunc("GET", "/api/v1/repos/kandev/demo/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc("GET", "/api/v1/repos/kandev/demo/actions/runs", func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, sha, r.URL.Query().Get("head_sha"))
 		require.Empty(t, r.URL.Query().Get("ref"))
 		w.Header().Set("Content-Type", "application/json")
@@ -174,24 +174,4 @@ func TestRollUpStates(t *testing.T) {
 	require.Equal(t, scm.CIStatePending, rollUpStates([]string{scm.CIStateSuccess, scm.CIStatePending}))
 	require.Equal(t, scm.CIStateSuccess, rollUpStates([]string{scm.CIStateSuccess, scm.CIStateSuccess}))
 	require.Equal(t, scm.CIStateNone, rollUpStates(nil))
-}
-
-func TestStripWorkInProgressPrefix(t *testing.T) {
-	t.Parallel()
-	for _, testCase := range []struct {
-		title   string
-		want    string
-		changed bool
-	}{
-		{"WIP: add thing", "add thing", true},
-		{"wip: add thing", "add thing", true},
-		{"[WIP] add thing", "add thing", true},
-		{"Draft: add thing", "add thing", true},
-		{"add thing", "add thing", false},
-		{"  WIP: add thing  ", "add thing", true},
-	} {
-		stripped, changed := StripWorkInProgressPrefix(testCase.title)
-		require.Equalf(t, testCase.want, stripped, "title %q", testCase.title)
-		require.Equalf(t, testCase.changed, changed, "title %q", testCase.title)
-	}
 }

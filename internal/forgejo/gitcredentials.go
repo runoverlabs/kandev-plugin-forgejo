@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
+
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )
 
@@ -49,7 +51,7 @@ func (g *GitCredentials) Resolve(ctx context.Context, request *pluginsdk.Resolve
 	if strings.TrimSpace(user.Login) == "" {
 		return nil, errors.New("forgejo: token owner has no login")
 	}
-	return &pluginsdk.ResolveGitCredentialResponse{Username: user.Login, Secret: client.token}, nil
+	return &pluginsdk.ResolveGitCredentialResponse{Username: user.Login, Secret: client.Token()}, nil
 }
 
 // Binding returns a non-secret revision for the exact lease scope. It changes
@@ -69,7 +71,7 @@ func (g *GitCredentials) Binding(ctx context.Context, request *pluginsdk.GitCred
 	}
 	digest := sha256.New()
 	for _, part := range []string{
-		client.Scope(), client.token, scope.workspaceID, scope.taskID, scope.sessionID,
+		client.Scope(), client.Token(), scope.workspaceID, scope.taskID, scope.sessionID,
 		scope.repositoryID, strings.ToLower(scope.host), scope.path,
 	} {
 		digest.Write([]byte(part))
@@ -85,7 +87,7 @@ type credentialLeaseScope struct {
 // scopedClient checks the request before any instance I/O: complete identity,
 // the configured instance host, and a single owner/repository path below the
 // instance base path.
-func (g *GitCredentials) scopedClient(ctx context.Context, scope credentialLeaseScope) (*Client, error) {
+func (g *GitCredentials) scopedClient(ctx context.Context, scope credentialLeaseScope) (*rest.Client, error) {
 	for _, value := range []string{scope.workspaceID, scope.taskID, scope.sessionID, scope.repositoryID} {
 		if strings.TrimSpace(value) == "" {
 			return nil, errCredentialScope
@@ -98,7 +100,7 @@ func (g *GitCredentials) scopedClient(ctx context.Context, scope credentialLease
 	if !strings.EqualFold(strings.TrimSpace(scope.host), client.Host()) {
 		return nil, errCredentialScope
 	}
-	if !isRepositoryPath(scope.path, client.baseURL.Path) {
+	if !isRepositoryPath(scope.path, client.BasePath()) {
 		return nil, errCredentialScope
 	}
 	return client, nil

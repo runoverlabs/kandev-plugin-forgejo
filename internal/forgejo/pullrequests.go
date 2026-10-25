@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
@@ -92,7 +93,7 @@ func (p *PullRequests) MarkReady(ctx context.Context, repository sourcecontrol.R
 		return sourcecontrol.PullRequestSummary{}, false, err
 	}
 	updated, err := client.EditPullRequest(ctx, repository.OwnerOrProject, repository.Name, pull.Number,
-		EditPullRequestInput{Title: stripped})
+		rest.EditPullRequestInput{Title: stripped})
 	if err != nil {
 		return sourcecontrol.PullRequestSummary{}, false, err
 	}
@@ -119,7 +120,7 @@ func (p *PullRequests) JobLogTail(ctx context.Context, repository sourcecontrol.
 
 // summarizePull reports merged separately from closed, which the REST state
 // field does not.
-func summarizePull(pull PullRequest) sourcecontrol.PullRequestSummary {
+func summarizePull(pull rest.PullRequest) sourcecontrol.PullRequestSummary {
 	state := strings.TrimSpace(pull.State)
 	switch {
 	case pull.Merged:

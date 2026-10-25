@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/prautomation"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
@@ -25,10 +26,10 @@ func automationSourceFixture(t *testing.T, pull map[string]any) (*AutomationSour
 	connection, host := newTestConnection(t, api, "token")
 	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "ws-1"}
 	associations := sourcecontrol.NewAssociations(func() pluginsdk.Host { return host })
-	require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.url(), "5", 7)))
+	require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.URL(), "5", 7)))
 	require.NoError(t, associations.Link(context.Background(), "task-1", identity("https://elsewhere.example", "5", 8)))
 
-	api.handle(http.MethodGet, "/api/v1/repositories/5", 200, map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repositories/5", 200, map[string]any{
 		"id": 5, "name": "r", "full_name": "o/r", "owner": map[string]any{"login": "o"},
 		"default_merge_style": "squash", "default_delete_branch_after_merge": true,
 	})
@@ -44,32 +45,32 @@ func automationSourceFixture(t *testing.T, pull map[string]any) (*AutomationSour
 	for key, value := range pull {
 		base[key] = value
 	}
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7", 200, base)
-	api.handle(http.MethodGet, "/api/v1/user", 200, map[string]any{"id": 3, "login": "kandev"})
-	api.handle(http.MethodGet, "/api/v1/user/teams", 200, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7", 200, base)
+	api.Handle(http.MethodGet, "/api/v1/user", 200, map[string]any{"id": 3, "login": "kandev"})
+	api.Handle(http.MethodGet, "/api/v1/user/teams", 200, []map[string]any{
 		{"name": "core", "organization": map[string]any{"username": "o"}},
 		{"name": "core", "organization": map[string]any{"username": "other-org"}},
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/commits/abc1234/status", 200, map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/commits/abc1234/status", 200, map[string]any{
 		"state": "failure", "statuses": []map[string]any{
 			{"id": 1, "status": "failure", "context": "ci/test", "target_url": "https://ci/1"},
 			{"id": 2, "status": "success", "context": "ci/lint"},
 			{"id": 3, "status": "cancelled", "context": "ci/slow"},
 		},
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/branches/main", 200, map[string]any{"name": "main", "required_approvals": 2})
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", 200, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/branches/main", 200, map[string]any{"name": "main", "required_approvals": 2})
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", 200, []map[string]any{
 		{"id": 1, "state": "REQUEST_CHANGES", "official": true, "comments_count": 2, "body": "no",
 			"user": map[string]any{"id": 4, "login": "bob"}},
 		{"id": 2, "state": "PENDING", "user": map[string]any{"id": 5, "login": "dave"}},
 		{"id": 3, "state": "APPROVED", "official": false, "user": map[string]any{"id": 6, "login": "eve"}},
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/1/comments", 200, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/1/comments", 200, []map[string]any{
 		{"id": 11, "body": "off by one", "path": "a.go", "user": map[string]any{"id": 4, "login": "bob"}},
 		{"id": 12, "body": "fine now", "path": "b.go", "user": map[string]any{"id": 4, "login": "bob"},
 			"resolver": map[string]any{"id": 3, "login": "kandev"}},
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/issues/7/comments", 200, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/issues/7/comments", 200, []map[string]any{
 		{"id": 21, "body": "hi", "user": map[string]any{"id": 6, "login": "eve"}},
 		{"id": 22, "body": "run passed", "user": map[string]any{"id": -2, "login": "forgejo-actions"}},
 		{"id": 23, "body": "from a deleted account", "user": map[string]any{"id": -1, "login": "Ghost"}},
@@ -140,7 +141,7 @@ func TestObserveForkAndClosedStates(t *testing.T) {
 	obs, err = merged.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.NoError(t, err)
 	require.Equal(t, prautomation.StateMerged, obs.State)
-	require.Zero(t, mergedAPI.count(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews"),
+	require.Zero(t, mergedAPI.Count(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews"),
 		"a finished pull request only feeds lifecycle prompts")
 }
 
@@ -163,20 +164,20 @@ func TestObserveFailsWhenAMergeGateCannotBeRead(t *testing.T) {
 	} {
 		for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 			source, api := automationSourceFixture(t, nil)
-			api.handle(http.MethodGet, path, status, map[string]any{"message": "no"})
+			api.Handle(http.MethodGet, path, status, map[string]any{"message": "no"})
 			_, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
 			require.ErrorIs(t, err, scm.ErrUnauthorized, "%s answering %d must not read as no CI or no objections", path, status)
 		}
 	}
 	source, api := automationSourceFixture(t, nil)
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", http.StatusNotFound, nil)
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", http.StatusNotFound, nil)
 	_, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.ErrorIs(t, err, scm.ErrNotFound)
 }
 
 func TestObserveSkipsTheCommentsOfAReviewDeletedMeanwhile(t *testing.T) {
 	source, api := automationSourceFixture(t, nil)
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/1/comments", http.StatusNotFound, nil)
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/1/comments", http.StatusNotFound, nil)
 	obs, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.NoError(t, err)
 	require.Empty(t, obs.Reviews[0].Comments)
@@ -190,11 +191,11 @@ func TestObserveFetchesTheCommentsOfTheNewestReviews(t *testing.T) {
 		reviews = append(reviews, map[string]any{
 			"id": id, "state": "COMMENT", "comments_count": 1, "user": map[string]any{"id": 4, "login": "bob"},
 		})
-		api.handle(http.MethodGet, fmt.Sprintf("/api/v1/repos/o/r/pulls/7/reviews/%d/comments", id), 200, []map[string]any{
+		api.Handle(http.MethodGet, fmt.Sprintf("/api/v1/repos/o/r/pulls/7/reviews/%d/comments", id), 200, []map[string]any{
 			{"id": 100 + id, "body": "look", "path": "a.go", "user": map[string]any{"id": 4, "login": "bob"}},
 		})
 	}
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", 200, reviews)
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", 200, reviews)
 	obs, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.NoError(t, err)
 	require.Len(t, obs.Reviews, total)
@@ -211,13 +212,13 @@ func TestObserveFetchesTheCommentsOfTheNewestReviews(t *testing.T) {
 
 func TestObserveReportsReviewsPastTheBound(t *testing.T) {
 	source, api := automationSourceFixture(t, nil)
-	api.handleFunc(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Total-Count", strconv.Itoa(maxPullReviews+1))
+	api.HandleFunc(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Total-Count", strconv.Itoa(rest.MaxPullReviews+1))
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		var reviews []map[string]any
-		for i := 1; i <= pullListPageSize; i++ {
-			id := (page-1)*pullListPageSize + i
-			if id > maxPullReviews+1 {
+		for i := 1; i <= rest.PullListPageSize; i++ {
+			id := (page-1)*rest.PullListPageSize + i
+			if id > rest.MaxPullReviews+1 {
 				break
 			}
 			reviews = append(reviews, map[string]any{"id": id, "state": "APPROVED", "user": map[string]any{"id": 4, "login": "bob"}})
@@ -226,7 +227,7 @@ func TestObserveReportsReviewsPastTheBound(t *testing.T) {
 	})
 	obs, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.NoError(t, err)
-	require.Len(t, obs.Reviews, maxPullReviews)
+	require.Len(t, obs.Reviews, rest.MaxPullReviews)
 	require.True(t, obs.ReviewsIncomplete, "the oldest review was not read")
 
 	complete, _ := automationSourceFixture(t, nil)
@@ -240,18 +241,18 @@ func TestObserveReportsReviewsPastTheBound(t *testing.T) {
 // with it, wherever they are filed.
 func TestObserveResolvesAConversationFromItsFirstComment(t *testing.T) {
 	source, api := automationSourceFixture(t, nil)
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", 200, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", 200, []map[string]any{
 		{"id": 1, "state": "COMMENT", "official": true, "comments_count": 4, "user": map[string]any{"id": 4, "login": "bob"}},
 		{"id": 2, "state": "COMMENT", "comments_count": 1, "user": map[string]any{"id": 6, "login": "eve"}},
 	})
 	resolved := map[string]any{"id": 3, "login": "kandev"}
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/1/comments", 200, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/1/comments", 200, []map[string]any{
 		{"id": 11, "body": "off by one", "path": "a.go", "position": 4, "user": map[string]any{"id": 4, "login": "bob"}, "resolver": resolved},
 		{"id": 13, "body": "fixed", "path": "a.go", "position": 4, "user": map[string]any{"id": 3, "login": "kandev"}},
 		{"id": 14, "body": "this one", "path": "a.go", "position": 9, "user": map[string]any{"id": 4, "login": "bob"}},
 		{"id": 16, "body": "done", "path": "a.go", "position": 9, "user": map[string]any{"id": 3, "login": "kandev"}, "resolver": resolved},
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/2/comments", 200, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/2/comments", 200, []map[string]any{
 		// Gitea files a reply under the replier's own pending review.
 		{"id": 15, "body": "agreed", "path": "a.go", "position": 4, "user": map[string]any{"id": 6, "login": "eve"}},
 	})
@@ -272,15 +273,15 @@ func TestObserveResolvesAConversationFromItsFirstComment(t *testing.T) {
 // The dismissed review still decides whether the conversation is resolved.
 func TestObserveResolvesAConversationStartedInADismissedReview(t *testing.T) {
 	source, api := automationSourceFixture(t, nil)
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", 200, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", 200, []map[string]any{
 		{"id": 1, "state": "REQUEST_CHANGES", "dismissed": true, "comments_count": 1, "user": map[string]any{"id": 4, "login": "bob"}},
 		{"id": 2, "state": "COMMENT", "comments_count": 1, "user": map[string]any{"id": 6, "login": "eve"}},
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/1/comments", 200, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/1/comments", 200, []map[string]any{
 		{"id": 11, "body": "off by one", "path": "a.go", "position": 4, "user": map[string]any{"id": 4, "login": "bob"},
 			"resolver": map[string]any{"id": 3, "login": "kandev"}},
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/2/comments", 200, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews/2/comments", 200, []map[string]any{
 		{"id": 15, "body": "agreed", "path": "a.go", "position": 4, "user": map[string]any{"id": 6, "login": "eve"}},
 	})
 	obs, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
@@ -303,14 +304,14 @@ func TestObserveReadsOnlyWhatIsAskedFor(t *testing.T) {
 		"/api/v1/repos/o/r/pulls/7/reviews",
 		"/api/v1/repos/o/r/issues/7/comments",
 	} {
-		require.Zero(t, api.count(http.MethodGet, path), "%s is read by nothing switched on", path)
+		require.Zero(t, api.Count(http.MethodGet, path), "%s is read by nothing switched on", path)
 	}
 
 	obs, err = source.Observe(context.Background(), "ws-1", observedRef, prautomation.Reads{ReviewRequest: true})
 	require.NoError(t, err)
 	require.True(t, obs.OperatorRequested)
-	require.Zero(t, api.count(http.MethodGet, "/api/v1/repos/o/r/commits/abc1234/status"))
-	require.Zero(t, api.count(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews"))
+	require.Zero(t, api.Count(http.MethodGet, "/api/v1/repos/o/r/commits/abc1234/status"))
+	require.Zero(t, api.Count(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews"))
 }
 
 // The combined status pages, and its total_count and state describe the page
@@ -318,10 +319,10 @@ func TestObserveReadsOnlyWhatIsAskedFor(t *testing.T) {
 func TestObserveReadsEveryPageOfTheCombinedStatus(t *testing.T) {
 	contexts := 70
 	serve := func(api *apiServer, total int) {
-		api.handleFunc(http.MethodGet, "/api/v1/repos/o/r/commits/abc1234/status", func(w http.ResponseWriter, r *http.Request) {
+		api.HandleFunc(http.MethodGet, "/api/v1/repos/o/r/commits/abc1234/status", func(w http.ResponseWriter, r *http.Request) {
 			page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-			limit = min(limit, statusPageSize)
+			limit = min(limit, rest.StatusPageSize)
 			var statuses []map[string]any
 			for i := (page - 1) * limit; i < min(page*limit, contexts); i++ {
 				state := "success"
@@ -342,7 +343,7 @@ func TestObserveReadsEveryPageOfTheCombinedStatus(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, prautomation.CIFailure, obs.CI.State)
 	require.Equal(t, "ci/69", obs.CI.Failing[0].Name)
-	require.Equal(t, 2, api.count(http.MethodGet, "/api/v1/repos/o/r/commits/abc1234/status"))
+	require.Equal(t, 2, api.Count(http.MethodGet, "/api/v1/repos/o/r/commits/abc1234/status"))
 
 	// Fewer contexts than counted (one moved between pages): fail closed.
 	short, shortAPI := automationSourceFixture(t, nil)
@@ -357,7 +358,7 @@ func TestObserveReadsEveryPageOfTheCombinedStatus(t *testing.T) {
 	obs, err = uncounted.Observe(context.Background(), "ws-1", observedRef, allReads)
 	require.NoError(t, err)
 	require.Equal(t, prautomation.CIFailure, obs.CI.State)
-	contexts = statusPageSize*maxStatusPages + 1
+	contexts = rest.StatusPageSize*rest.MaxStatusPages + 1
 	capped, cappedAPI := automationSourceFixture(t, nil)
 	serve(cappedAPI, -1)
 	_, err = capped.Observe(context.Background(), "ws-1", observedRef, allReads)
@@ -374,7 +375,7 @@ func TestLinkedListsOnlyThisInstance(t *testing.T) {
 func TestMergeLinkedUsesRepositoryDefaultsAndPinsTheHead(t *testing.T) {
 	source, api := automationSourceFixture(t, nil)
 	var body map[string]any
-	api.handleFunc(http.MethodPost, "/api/v1/repos/o/r/pulls/7/merge", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc(http.MethodPost, "/api/v1/repos/o/r/pulls/7/merge", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		w.WriteHeader(http.StatusOK)
 	})
@@ -386,18 +387,18 @@ func TestMergeLinkedUsesRepositoryDefaultsAndPinsTheHead(t *testing.T) {
 }
 
 func TestAutomationCIStates(t *testing.T) {
-	require.Equal(t, prautomation.CINone, automationCI(CombinedStatus{}).State)
-	require.Equal(t, prautomation.CIPending, automationCI(CombinedStatus{Statuses: []CommitStatus{
+	require.Equal(t, prautomation.CINone, automationCI(rest.CombinedStatus{}).State)
+	require.Equal(t, prautomation.CIPending, automationCI(rest.CombinedStatus{Statuses: []rest.CommitStatus{
 		{Status: "failure", Context: "a"}, {Status: "pending", Context: "b"},
 	}}).State, "a failure while something still runs is not settled")
-	require.Equal(t, prautomation.CISuccess, automationCI(CombinedStatus{Statuses: []CommitStatus{
+	require.Equal(t, prautomation.CISuccess, automationCI(rest.CombinedStatus{Statuses: []rest.CommitStatus{
 		{Status: "success"}, {Status: "warning"}, {Status: "skipped"},
 	}}).State)
 }
 
 func TestObserveReportsRequiredChecksThatHaveNotReported(t *testing.T) {
 	source, api := automationSourceFixture(t, nil)
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/branches/main", 200, map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/branches/main", 200, map[string]any{
 		"name": "main", "enable_status_check": true,
 		"status_check_contexts": []string{"ci/lint", "ci/te?t", "deploy / *", "ci/deploy"},
 	})
@@ -405,7 +406,7 @@ func TestObserveReportsRequiredChecksThatHaveNotReported(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"deploy / *", "ci/deploy"}, obs.CI.Missing)
 
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/branches/main", 200, map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/branches/main", 200, map[string]any{
 		"name": "main", "status_check_contexts": []string{"ci/deploy"},
 	})
 	obs, err = source.Observe(context.Background(), "ws-1", observedRef, allReads)
@@ -437,17 +438,4 @@ func TestContextGlobMatchesAsTheInstanceDoes(t *testing.T) {
 	for _, broken := range []string{"{a,b", "a}", "[ab"} {
 		require.Nil(t, contextGlob(broken), broken)
 	}
-}
-
-// count reports how many requests reached method and path.
-func (a *apiServer) count(method, path string) int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	n := 0
-	for _, r := range a.requests {
-		if r.Method == method && r.URL.Path == path {
-			n++
-		}
-	}
-	return n
 }

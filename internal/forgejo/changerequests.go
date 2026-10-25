@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
@@ -102,7 +103,7 @@ func (c *ChangeRequests) Create(ctx context.Context, repository sourcecontrol.Re
 		title = "WIP: " + title
 	}
 
-	created, err := client.CreatePullRequest(ctx, repository.OwnerOrProject, repository.Name, CreatePullRequestInput{
+	created, err := client.CreatePullRequest(ctx, repository.OwnerOrProject, repository.Name, rest.CreatePullRequestInput{
 		Head:  head,
 		Base:  base,
 		Title: title,

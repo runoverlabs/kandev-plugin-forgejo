@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/watches"
 )
@@ -51,8 +52,8 @@ func (s *ReviewSource) SearchReviewRequests(ctx context.Context, q watches.Revie
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		results, err := client.SearchReviewRequested(ctx, ReviewSearchOptions{
-			Labels: q.Labels, Query: q.Query, Page: page, Limit: maxIssuePageLimit,
+		results, err := client.SearchReviewRequested(ctx, rest.ReviewSearchOptions{
+			Labels: q.Labels, Query: q.Query, Page: page, Limit: rest.MaxIssuePageLimit,
 		})
 		if err != nil {
 			return nil, translateReviewError("the review search", err)
@@ -87,7 +88,7 @@ func (s *ReviewSource) SearchReviewRequests(ctx context.Context, q watches.Revie
 				UpdatedAt: result.UpdatedAt,
 			})
 		}
-		if len(results) < maxIssuePageLimit {
+		if len(results) < rest.MaxIssuePageLimit {
 			break
 		}
 	}
@@ -149,20 +150,20 @@ func (s *ReviewSource) PullState(ctx context.Context, repo scm.RepoRef, number i
 }
 
 // isFork reports whether a REST pull request's head is a fork.
-func isFork(pull PullRequest) bool {
+func isFork(pull rest.PullRequest) bool {
 	return headIsFork(branchRepoID(pull.Head), branchRepoID(pull.Base), repoFullName(pull.Head.Repo), repoFullName(pull.Base.Repo))
 }
 
 // branchRepoID is the branch's repository id: repo_id, or the embedded
 // repository's when that is all there is.
-func branchRepoID(branch PullRequestRef) int64 {
+func branchRepoID(branch rest.PullRequestRef) int64 {
 	if branch.RepoID == 0 && branch.Repo != nil {
 		return branch.Repo.ID
 	}
 	return branch.RepoID
 }
 
-func repoFullName(repo *Repo) string {
+func repoFullName(repo *rest.Repo) string {
 	if repo == nil {
 		return ""
 	}
@@ -197,7 +198,7 @@ func hasWIPPrefix(title string) bool {
 // token. A refusal that more requests would not cure is marked so a batch
 // stops instead of repeating it.
 func translateReviewError(what string, err error) error {
-	var status *StatusError
+	var status *rest.StatusError
 	switch {
 	case errors.Is(err, scm.ErrNotFound):
 		return fmt.Errorf("%s is not visible to this token", what)

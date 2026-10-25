@@ -1,4 +1,4 @@
-package forgejo
+package rest
 
 import (
 	"context"
@@ -18,7 +18,7 @@ const (
 	MaxPullDiffBytes = 256 << 10
 	// maxPullListPages bounds how many pages PullFiles and PullCommits walk.
 	maxPullListPages = 10
-	pullListPageSize = 50
+	PullListPageSize = 50
 )
 
 // Merge styles, spelled as the merge endpoint's `Do` field expects them.
@@ -177,16 +177,16 @@ func pageAll[T any](ctx context.Context, c *Client, path string, limit int) ([]T
 	for page := 1; page <= maxPullListPages; page++ {
 		query := url.Values{}
 		query.Set("page", strconv.Itoa(page))
-		query.Set("limit", strconv.Itoa(pullListPageSize))
+		query.Set("limit", strconv.Itoa(PullListPageSize))
 		var batch []T
 		if err := c.get(ctx, path, query, &batch); err != nil {
 			return nil, false, err
 		}
 		all = append(all, batch...)
 		if len(all) >= limit {
-			return all[:limit], len(all) > limit || len(batch) == pullListPageSize, nil
+			return all[:limit], len(all) > limit || len(batch) == PullListPageSize, nil
 		}
-		if len(batch) < pullListPageSize {
+		if len(batch) < PullListPageSize {
 			return all, false, nil
 		}
 	}
@@ -244,7 +244,7 @@ func pageNewest[T any](ctx context.Context, c *Client, path string, limit int) (
 func pageNewestUncounted[T any](ctx context.Context, c *Client, path string, limit int, first []T) ([]T, bool, error) {
 	all, dropped := first, false
 	batch := first
-	for page := 2; len(batch) == pullListPageSize && page <= maxPullListPages; page++ {
+	for page := 2; len(batch) == PullListPageSize && page <= maxPullListPages; page++ {
 		var err error
 		if batch, _, err = listPage[T](ctx, c, path, page); err != nil {
 			return nil, false, err
@@ -255,13 +255,13 @@ func pageNewestUncounted[T any](ctx context.Context, c *Client, path string, lim
 		}
 	}
 	items := newestItems(all, limit)
-	return items, dropped || len(all) > len(items) || len(batch) == pullListPageSize, nil
+	return items, dropped || len(all) > len(items) || len(batch) == PullListPageSize, nil
 }
 
 func listPage[T any](ctx context.Context, c *Client, path string, page int) ([]T, int, error) {
 	query := url.Values{}
 	query.Set("page", strconv.Itoa(page))
-	query.Set("limit", strconv.Itoa(pullListPageSize))
+	query.Set("limit", strconv.Itoa(PullListPageSize))
 	var batch []T
 	total, err := c.getCounted(ctx, path, query, &batch)
 	return batch, total, err
@@ -301,7 +301,7 @@ func (c *Client) CreateComment(ctx context.Context, owner, name string, number i
 // RepoLabels lists repository labels, so names can be resolved to the numeric
 // ids every supported version accepts (names are newer).
 func (c *Client) RepoLabels(ctx context.Context, owner, name string) ([]Label, error) {
-	labels, _, err := pageAll[Label](ctx, c, "/repos/"+pathSegment(owner)+"/"+pathSegment(name)+"/labels", pullListPageSize*maxPullListPages)
+	labels, _, err := pageAll[Label](ctx, c, "/repos/"+pathSegment(owner)+"/"+pathSegment(name)+"/labels", PullListPageSize*maxPullListPages)
 	return labels, err
 }
 

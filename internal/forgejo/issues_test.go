@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/watches"
 
@@ -18,17 +19,17 @@ func TestListIssuesBuildsTheServerSideFilter(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
 	var query map[string][]string
-	api.handleFunc(http.MethodGet, "/api/v1/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc(http.MethodGet, "/api/v1/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
 		query = r.URL.Query()
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode([]Issue{})
+		_ = json.NewEncoder(w).Encode([]rest.Issue{})
 	})
 	connection, _ := newTestConnection(t, api, "token-1")
 	client, err := connection.Client(context.Background())
 	require.NoError(t, err)
 
 	since := time.Date(2026, 9, 19, 10, 0, 0, 0, time.UTC)
-	_, err = client.ListIssues(context.Background(), "acme", "app", IssueListOptions{
+	_, err = client.ListIssues(context.Background(), "acme", "app", rest.IssueListOptions{
 		State:  "all",
 		Labels: []string{"bug", " regression "},
 		Query:  "crash",
@@ -53,15 +54,15 @@ func TestListIssuesOmitsEmptyFilters(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
 	var query map[string][]string
-	api.handleFunc(http.MethodGet, "/api/v1/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc(http.MethodGet, "/api/v1/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
 		query = r.URL.Query()
-		_ = json.NewEncoder(w).Encode([]Issue{})
+		_ = json.NewEncoder(w).Encode([]rest.Issue{})
 	})
 	connection, _ := newTestConnection(t, api, "token-1")
 	client, err := connection.Client(context.Background())
 	require.NoError(t, err)
 
-	_, err = client.ListIssues(context.Background(), "acme", "app", IssueListOptions{Labels: []string{" ", ""}})
+	_, err = client.ListIssues(context.Background(), "acme", "app", rest.IssueListOptions{Labels: []string{" ", ""}})
 	require.NoError(t, err)
 
 	require.NotContains(t, query, "labels", "a blank label must not become a filter on the empty label")
@@ -76,7 +77,7 @@ func TestListIssuesOmitsEmptyFilters(t *testing.T) {
 func TestListIssuesExcludesPullRequests(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repos/acme/app/issues", http.StatusOK, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/app/issues", http.StatusOK, []map[string]any{
 		{"number": 1, "title": "A real issue"},
 		{"number": 2, "title": "A pull request", "pull_request": map[string]any{"merged": false}},
 		{"number": 3, "title": "Another issue"},
@@ -85,7 +86,7 @@ func TestListIssuesExcludesPullRequests(t *testing.T) {
 	client, err := connection.Client(context.Background())
 	require.NoError(t, err)
 
-	issues, err := client.ListIssues(context.Background(), "acme", "app", IssueListOptions{})
+	issues, err := client.ListIssues(context.Background(), "acme", "app", rest.IssueListOptions{})
 	require.NoError(t, err)
 	require.Len(t, issues, 2)
 	require.EqualValues(t, 1, issues[0].Number)
@@ -94,14 +95,14 @@ func TestListIssuesExcludesPullRequests(t *testing.T) {
 
 func TestIssueLabelNames(t *testing.T) {
 	t.Parallel()
-	issue := Issue{Labels: []Label{{Name: "bug"}, {Name: "  "}, {Name: " regression "}}}
+	issue := rest.Issue{Labels: []rest.Label{{Name: "bug"}, {Name: "  "}, {Name: " regression "}}}
 	require.Equal(t, []string{"bug", "regression"}, issue.LabelNames())
 }
 
 func TestIssueSourceMapsOntoTheNeutralPort(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repos/acme/app/issues", http.StatusOK, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/app/issues", http.StatusOK, []map[string]any{
 		{
 			"number": 7, "title": "Crash", "body": "It crashes.", "state": "open",
 			"html_url": "https://git.example/acme/app/issues/7",
@@ -143,7 +144,7 @@ func TestIssueSourceRedactsProviderErrors(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 			api := newAPIServer(t)
-			api.handle(http.MethodGet, "/api/v1/repos/acme/app/issues", testCase.status,
+			api.Handle(http.MethodGet, "/api/v1/repos/acme/app/issues", testCase.status,
 				map[string]any{"message": "token abcd1234 is invalid"})
 			connection, _ := newTestConnection(t, api, "token-1")
 			source := NewIssueSource(connection)
@@ -163,11 +164,11 @@ func TestIssueSourceFollowsPagination(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
 	pages := 0
-	api.handleFunc(http.MethodGet, "/api/v1/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc(http.MethodGet, "/api/v1/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
 		pages++
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Query().Get("page") == "1" {
-			full := make([]map[string]any, maxIssuePageLimit)
+			full := make([]map[string]any, rest.MaxIssuePageLimit)
 			for i := range full {
 				full[i] = map[string]any{"number": i + 1, "title": "Issue"}
 			}
@@ -183,7 +184,7 @@ func TestIssueSourceFollowsPagination(t *testing.T) {
 		scm.RepoRef{Owner: "acme", Name: "app"}, watches.IssueQuery{})
 	require.NoError(t, err)
 	require.Equal(t, 2, pages)
-	require.Len(t, issues, maxIssuePageLimit+1)
+	require.Len(t, issues, rest.MaxIssuePageLimit+1)
 }
 
 // A server that ignores type=issues mixes pull requests into every page. A full
@@ -194,11 +195,11 @@ func TestIssueSourceKeepsPagingWhenAFullPageIsMostlyPullRequests(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
 	var pages int32
-	api.handleFunc(http.MethodGet, "/api/v1/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc(http.MethodGet, "/api/v1/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&pages, 1)
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Query().Get("page") == "1" {
-			full := make([]map[string]any, maxIssuePageLimit)
+			full := make([]map[string]any, rest.MaxIssuePageLimit)
 			for i := range full {
 				row := map[string]any{"number": i + 1, "title": "Item"}
 				if i%5 != 0 { // four in five are pull requests the server failed to exclude
@@ -223,7 +224,7 @@ func TestIssueSourceKeepsPagingWhenAFullPageIsMostlyPullRequests(t *testing.T) {
 		numbers = append(numbers, int64(issue.Number))
 	}
 	require.Contains(t, numbers, int64(999), "the issue on page two must not be dropped")
-	require.Len(t, issues, maxIssuePageLimit/5+1)
+	require.Len(t, issues, rest.MaxIssuePageLimit/5+1)
 }
 
 // The instance ignores a label name it does not know rather than matching
@@ -231,7 +232,7 @@ func TestIssueSourceKeepsPagingWhenAFullPageIsMostlyPullRequests(t *testing.T) {
 func TestListIssuesChecksLabelsItself(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repos/acme/app/issues", http.StatusOK, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/app/issues", http.StatusOK, []map[string]any{
 		{"number": 1, "title": "bug", "labels": []map[string]any{{"name": "Bug"}}},
 		{"number": 2, "title": "unlabelled"},
 	})

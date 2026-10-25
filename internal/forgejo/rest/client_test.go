@@ -1,4 +1,4 @@
-package forgejo
+package rest
 
 import (
 	"context"
@@ -48,18 +48,18 @@ func TestNewClientRequiresToken(t *testing.T) {
 func TestClientSendsTokenSchemeAndMapsStatuses(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/user", http.StatusOK, map[string]any{"login": "kandev"})
-	api.handle(http.MethodGet, "/api/v1/repos/owner/missing", http.StatusNotFound, nil)
-	api.handle(http.MethodGet, "/api/v1/repos/owner/forbidden", http.StatusForbidden, nil)
-	api.handle(http.MethodGet, "/api/v1/repos/owner/broken", http.StatusInternalServerError, nil)
+	api.Handle(http.MethodGet, "/api/v1/user", http.StatusOK, map[string]any{"login": "kandev"})
+	api.Handle(http.MethodGet, "/api/v1/repos/owner/missing", http.StatusNotFound, nil)
+	api.Handle(http.MethodGet, "/api/v1/repos/owner/forbidden", http.StatusForbidden, nil)
+	api.Handle(http.MethodGet, "/api/v1/repos/owner/broken", http.StatusInternalServerError, nil)
 
-	client, err := NewClient(api.url(), "secret-token", nil)
+	client, err := NewClient(api.URL(), "secret-token", nil)
 	require.NoError(t, err)
 
 	user, err := client.CurrentUser(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "kandev", user.Login)
-	require.Equal(t, "token secret-token", api.authSeen[0], "both Forgejo and Gitea require the `token <value>` scheme")
+	require.Equal(t, "token secret-token", api.AuthSeen()[0], "both Forgejo and Gitea require the `token <value>` scheme")
 
 	_, err = client.Repo(context.Background(), "owner", "missing")
 	require.ErrorIs(t, err, scm.ErrNotFound)
@@ -76,10 +76,10 @@ func TestClientSendsTokenSchemeAndMapsStatuses(t *testing.T) {
 func TestClientErrorsDoNotLeakToken(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repos/owner/broken", http.StatusBadGateway, map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/owner/broken", http.StatusBadGateway, map[string]any{
 		"message": "upstream said token=super-secret-token",
 	})
-	client, err := NewClient(api.url(), "super-secret-token", nil)
+	client, err := NewClient(api.URL(), "super-secret-token", nil)
 	require.NoError(t, err)
 
 	_, err = client.Repo(context.Background(), "owner", "broken")
@@ -90,7 +90,7 @@ func TestClientErrorsDoNotLeakToken(t *testing.T) {
 func TestClientHonorsContextCancellation(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	client, err := NewClient(api.url(), "token", nil)
+	client, err := NewClient(api.URL(), "token", nil)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -105,13 +105,13 @@ func TestClientEscapesPathSegments(t *testing.T) {
 	api := newAPIServer(t)
 	// The fake server routes on the DECODED path; the assertion below proves
 	// the wire form stayed escaped.
-	api.handle(http.MethodGet, "/api/v1/repos/owner/weird/name", http.StatusOK, map[string]any{"id": 1})
-	client, err := NewClient(api.url(), "token", nil)
+	api.Handle(http.MethodGet, "/api/v1/repos/owner/weird/name", http.StatusOK, map[string]any{"id": 1})
+	client, err := NewClient(api.URL(), "token", nil)
 	require.NoError(t, err)
 
 	_, err = client.Repo(context.Background(), "owner", "weird/name")
 	require.NoError(t, err)
-	require.Contains(t, api.requests[0].RequestURI, "weird%2Fname",
+	require.Contains(t, api.Requests()[0].RequestURI, "weird%2Fname",
 		"a slash in a repository name must stay escaped, not split into a new path segment")
 }
 
@@ -123,8 +123,8 @@ func TestDetectFlavor(t *testing.T) {
 	t.Run("forgejo namespace present", func(t *testing.T) {
 		t.Parallel()
 		api := newAPIServer(t)
-		api.handle(http.MethodGet, "/api/forgejo/v1/version", http.StatusOK, map[string]any{"version": "16.0.5+gitea-1.22.0"})
-		client, err := NewClient(api.url(), "token", nil)
+		api.Handle(http.MethodGet, "/api/forgejo/v1/version", http.StatusOK, map[string]any{"version": "16.0.5+gitea-1.22.0"})
+		client, err := NewClient(api.URL(), "token", nil)
 		require.NoError(t, err)
 		require.Equal(t, FlavorForgejo, client.DetectFlavor(context.Background(), "16.0.5+gitea-1.22.0"))
 	})
@@ -132,8 +132,8 @@ func TestDetectFlavor(t *testing.T) {
 	t.Run("forgejo that no longer advertises gitea compatibility", func(t *testing.T) {
 		t.Parallel()
 		api := newAPIServer(t)
-		api.handle(http.MethodGet, "/api/forgejo/v1/version", http.StatusOK, map[string]any{"version": "20.0.0"})
-		client, err := NewClient(api.url(), "token", nil)
+		api.Handle(http.MethodGet, "/api/forgejo/v1/version", http.StatusOK, map[string]any{"version": "20.0.0"})
+		client, err := NewClient(api.URL(), "token", nil)
 		require.NoError(t, err)
 		require.Equal(t, FlavorForgejo, client.DetectFlavor(context.Background(), "20.0.0"),
 			"the namespace probe must not depend on the version suffix")
@@ -143,7 +143,7 @@ func TestDetectFlavor(t *testing.T) {
 		t.Parallel()
 		api := newAPIServer(t)
 		// /api/forgejo/v1/version intentionally unregistered -> 404.
-		client, err := NewClient(api.url(), "token", nil)
+		client, err := NewClient(api.URL(), "token", nil)
 		require.NoError(t, err)
 		require.Equal(t, FlavorGitea, client.DetectFlavor(context.Background(), "1.24.7"))
 	})
@@ -151,8 +151,8 @@ func TestDetectFlavor(t *testing.T) {
 	t.Run("falls back to the version suffix when the namespace is unreachable", func(t *testing.T) {
 		t.Parallel()
 		api := newAPIServer(t)
-		api.handle(http.MethodGet, "/api/forgejo/v1/version", http.StatusBadGateway, nil)
-		client, err := NewClient(api.url(), "token", nil)
+		api.Handle(http.MethodGet, "/api/forgejo/v1/version", http.StatusBadGateway, nil)
+		client, err := NewClient(api.URL(), "token", nil)
 		require.NoError(t, err)
 		require.Equal(t, FlavorForgejo, client.DetectFlavor(context.Background(), "16.0.5+gitea-1.22.0"))
 		require.Equal(t, FlavorGitea, client.DetectFlavor(context.Background(), "1.24.7"))
@@ -161,8 +161,8 @@ func TestDetectFlavor(t *testing.T) {
 	t.Run("probe reports an unreachable namespace instead of guessing", func(t *testing.T) {
 		t.Parallel()
 		api := newAPIServer(t)
-		api.handle(http.MethodGet, "/api/forgejo/v1/version", http.StatusBadGateway, nil)
-		client, err := NewClient(api.url(), "token", nil)
+		api.Handle(http.MethodGet, "/api/forgejo/v1/version", http.StatusBadGateway, nil)
+		client, err := NewClient(api.URL(), "token", nil)
 		require.NoError(t, err)
 		_, err = client.ProbeFlavor(context.Background(), "20.0.0")
 		require.Error(t, err)
@@ -171,7 +171,7 @@ func TestDetectFlavor(t *testing.T) {
 	t.Run("probe treats a missing namespace as an answer", func(t *testing.T) {
 		t.Parallel()
 		api := newAPIServer(t)
-		client, err := NewClient(api.url(), "token", nil)
+		client, err := NewClient(api.URL(), "token", nil)
 		require.NoError(t, err)
 		flavor, err := client.ProbeFlavor(context.Background(), "1.24.7")
 		require.NoError(t, err)

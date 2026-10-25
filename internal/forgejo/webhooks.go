@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"kandev-plugin-forgejo/internal/automations"
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 )
 
 // Webhook headers, lower-case as the host hands them over. Every host sends the
@@ -107,9 +108,9 @@ func WebhookKind(headers map[string]string) string {
 // no condition handles, or a comment on an issue, decodes to an Event with an
 // empty Kind.
 func DecodeWebhook(body []byte, headers map[string]string) (automations.Event, error) {
-	provider := string(FlavorGitea)
+	provider := string(rest.FlavorGitea)
 	if strings.TrimSpace(headers[headerForgejoEvent]) != "" {
-		provider = string(FlavorForgejo)
+		provider = string(rest.FlavorForgejo)
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(body, &object); err != nil || object == nil {
@@ -464,8 +465,8 @@ const minActionRunWebhookMajor = 12
 // payloads, so it never does. An unreadable version is unsupported: the caller
 // reports the condition unavailable rather than binding a hook that may never
 // fire.
-func SupportsActionRunWebhooks(flavor Flavor, version string) bool {
-	if flavor != FlavorForgejo {
+func SupportsActionRunWebhooks(flavor rest.Flavor, version string) bool {
+	if flavor != rest.FlavorForgejo {
 		return false
 	}
 	major, _, _ := strings.Cut(strings.TrimSpace(version), ".")
