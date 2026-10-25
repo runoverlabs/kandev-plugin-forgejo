@@ -149,7 +149,16 @@ func (s *ReviewSource) PullState(ctx context.Context, repo watches.RepoRef, numb
 
 // isFork reports whether a REST pull request's head is a fork.
 func isFork(pull PullRequest) bool {
-	return headIsFork(pull.Head.RepoID, pull.Base.RepoID, repoFullName(pull.Head.Repo), repoFullName(pull.Base.Repo))
+	return headIsFork(branchRepoID(pull.Head), branchRepoID(pull.Base), repoFullName(pull.Head.Repo), repoFullName(pull.Base.Repo))
+}
+
+// branchRepoID is the branch's repository id: repo_id, or the embedded
+// repository's when that is all there is.
+func branchRepoID(branch PullRequestRef) int64 {
+	if branch.RepoID == 0 && branch.Repo != nil {
+		return branch.Repo.ID
+	}
+	return branch.RepoID
 }
 
 func repoFullName(repo *Repo) string {

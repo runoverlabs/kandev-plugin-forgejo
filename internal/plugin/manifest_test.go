@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"kandev-plugin-forgejo/internal/automations"
 	"kandev-plugin-forgejo/internal/forgejo"
+	"kandev-plugin-forgejo/internal/prautomation"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/stretchr/testify/require"
@@ -372,4 +374,24 @@ func normalizeJSON(t *testing.T, value map[string]any) map[string]any {
 	out := map[string]any{}
 	require.NoError(t, json.Unmarshal(mustJSON(t, value), &out))
 	return out
+}
+
+// The Host bounds the action body as sent, JSON escapes included: the largest
+// template the settings accept must still fit, at its worst escaping.
+func TestManifestSettingsBoundFitsTheLargestTemplate(t *testing.T) {
+	t.Parallel()
+	limit := 0
+	for _, action := range loadManifest(t).Actions {
+		if action.Key == ActionAutomationSettingsSet {
+			limit = action.MaxBodyBytes
+		}
+	}
+	template := strings.Repeat("\x01", prautomation.MaxTemplateBytes)
+	body, err := json.Marshal(map[string]any{
+		"defaults": prautomation.Switches{AutoFix: true, AutoMerge: true, OnReviewRequested: true, OnMerged: true, OnClosed: true},
+		"trust":    string(prautomation.TrustOfficial),
+		"template": template,
+	})
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(body), limit)
 }

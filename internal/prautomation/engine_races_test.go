@@ -3,6 +3,7 @@ package prautomation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -43,14 +44,29 @@ func TestNoPromptIsSentWhenTheAttemptCannotBeStored(t *testing.T) {
 	require.Equal(t, 1, record.Rounds)
 }
 
-func TestFailedDeliveryUndoesTheStoredAttempt(t *testing.T) {
+func TestRefusedDeliveryUndoesTheStoredAttempt(t *testing.T) {
 	h := newHarness(t)
 	h.switches(Switches{AutoFix: true})
 	h.setObs(failingCI)
-	h.messenger.sendErr = errors.New("boom")
+	h.messenger.sendErr = fmt.Errorf("%w: gone", ErrTaskInactive)
 	record := h.evaluate()
 	require.Nil(t, record.Attempt)
 	require.Zero(t, record.Rounds)
+}
+
+func TestAmbiguousDeliveryKeepsTheStoredAttempt(t *testing.T) {
+	h := newHarness(t)
+	h.switches(Switches{AutoFix: true})
+	h.setObs(failingCI)
+	h.messenger.sendErr = errors.New("deadline exceeded")
+	record := h.evaluate()
+	require.NotNil(t, record.Attempt, "the Host may have queued the prompt before the call failed")
+	require.Equal(t, 1, record.Rounds)
+
+	// The next evaluation must not stack a second round on it.
+	h.messenger.sendErr = nil
+	h.evaluate()
+	require.Empty(t, h.messenger.sent)
 }
 
 func TestForkPromptsAnAgentThatHasRun(t *testing.T) {
@@ -87,6 +103,27 @@ func TestTickLeavesARecordForALinkMadeMeanwhile(t *testing.T) {
 	h.links.refs[testWorkspace] = nil
 	h.engine.Tick(context.Background())
 	require.True(t, h.record().AutoMerge)
+}
+
+func TestTickKeepsATaskSwitchedOnMeanwhileTracked(t *testing.T) {
+	h := newHarness(t)
+	h.switches(Switches{})
+	h.engine.Tick(context.Background())
+	// The record was listed switched off; a human turns auto-fix on while the
+	// tick is running.
+	h.links.afterLinked = func() {
+		h.links.afterLinked = nil
+		_, err := h.engine.Update(context.Background(), testWorkspace, testRef, func(r *Record) error {
+			r.ApplySwitches(Switches{AutoFix: true})
+			return nil
+		})
+		require.NoError(t, err)
+	}
+	h.engine.Tick(context.Background())
+	h.engine.mu.Lock()
+	_, ok := h.engine.tracked[testRef.TaskID]
+	h.engine.mu.Unlock()
+	require.True(t, ok, "the task's first-round events would be dropped until the next tick")
 }
 
 func TestTurningOneLifecycleSwitchOffDropsOnlyItsQueuedPrompt(t *testing.T) {

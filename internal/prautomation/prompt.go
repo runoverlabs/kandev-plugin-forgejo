@@ -146,22 +146,39 @@ func RenderAutoFix(template string, obs Observation, attempt Attempt, items []It
 	if retry {
 		header += "\nThe previous automated fix turn ended without reporting an outcome. This is the full current feedback."
 	}
-	shown := items
-	for {
-		body := renderBody(template, obs, attempt, shown, len(items)-len(shown))
-		text := header + "\n\n" + body + "\n\n" + outcomeProtocol
-		if len(text) <= maxPromptBytes {
-			return text, shown
-		}
-		if len(shown) == 0 {
-			// The template alone is too long (placeholders can repeat). No
-			// review text is left in it to cut into.
-			keep := maxPromptBytes - len(header) - len(outcomeProtocol) - 64
-			body = strings.ToValidUTF8(body[:keep], "")
-			return header + "\n\n" + body + "\n\n(truncated)\n\n" + outcomeProtocol, shown
-		}
-		shown = shown[:len(shown)-1]
+	render := func(n int) string {
+		body := renderBody(template, obs, attempt, items[:n], len(items)-n)
+		return header + "\n\n" + body + "\n\n" + outcomeProtocol
 	}
+	if text := render(len(items)); len(text) <= maxPromptBytes {
+		return text, items
+	}
+	// The most items that fit, found by halving: a render is the size of the
+	// whole prompt, and a pull request can carry hundreds of items.
+	lo, hi := -1, len(items)
+	for hi-lo > 1 {
+		mid := (lo + hi) / 2
+		if len(render(mid)) <= maxPromptBytes {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	if lo >= 0 {
+		return render(lo), items[:lo]
+	}
+	// The template alone is too long (placeholders can repeat). Review text
+	// cannot be in the cut, as there is none, but a fenced block can: it is
+	// closed, so the protocol after it does not read as data. Fences come
+	// only from the template and writeFenced; quoted text has them
+	// neutralized.
+	body := renderBody(template, obs, attempt, nil, len(items))
+	keep := maxPromptBytes - len(header) - len(outcomeProtocol) - 64
+	body = strings.ToValidUTF8(body[:keep], "")
+	if strings.Count(body, "```")%2 == 1 {
+		body += "\n```"
+	}
+	return header + "\n\n" + body + "\n\n(truncated)\n\n" + outcomeProtocol, nil
 }
 
 func renderBody(template string, obs Observation, attempt Attempt, items []Item, omitted int) string {

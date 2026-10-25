@@ -102,6 +102,9 @@ type Engine struct {
 
 	mu      sync.Mutex
 	tracked map[string]trackedTask // by task id, rebuilt every tick
+	// meanwhile holds what track adds while a tick rebuilds tracked, which
+	// the rebuilt index would otherwise drop. Nil between ticks.
+	meanwhile map[string]trackedTask
 	running context.Context
 	cancel  context.CancelFunc
 	stopped chan struct{}
@@ -220,15 +223,26 @@ func (e *Engine) Tick(ctx context.Context) {
 		e.logf("prautomation: list workspaces: %v", err)
 		return
 	}
+	e.mu.Lock()
+	e.meanwhile = map[string]trackedTask{}
+	e.mu.Unlock()
 	tracked := map[string]trackedTask{}
 	for _, workspaceID := range workspaces {
 		if ctx.Err() != nil {
+			e.mu.Lock()
+			e.meanwhile = nil
+			e.mu.Unlock()
 			return
 		}
 		e.tickWorkspace(ctx, workspaceID, tracked)
 	}
 	e.mu.Lock()
-	e.tracked = tracked
+	for taskID, task := range e.meanwhile {
+		for _, ref := range task.refs {
+			tracked[taskID] = tracked[taskID].with(task.workspaceID, ref)
+		}
+	}
+	e.tracked, e.meanwhile = tracked, nil
 	e.mu.Unlock()
 }
 
@@ -551,6 +565,13 @@ func (r *evaluation) deliver(sessionID, text string) (string, bool) {
 	return status, true
 }
 
+// refused reports whether a Send error means the Host turned the prompt
+// away, so nothing was queued.
+func refused(err error) bool {
+	return errors.Is(err, ErrNotApproved) || errors.Is(err, ErrNoSession) ||
+		errors.Is(err, ErrTaskInactive) || errors.Is(err, ErrNoHost)
+}
+
 func (r *evaluation) sendFailed(err error) {
 	switch {
 	case errors.Is(err, ErrNotApproved):
@@ -718,9 +739,16 @@ func (r *evaluation) autoFix() {
 		r.engine.logf("prautomation: save attempt: %v", err)
 		return
 	}
-	dispatch, ok := r.deliver(sessionID, text)
-	if !ok {
-		record.Attempt, record.Rounds = previous, rounds
+	dispatch, err := r.engine.messenger.Send(r.ctx, record.TaskID, sessionID, text)
+	if err != nil {
+		r.sendFailed(err)
+		// Only a refusal is undone. Any other failure (a timeout, the Host
+		// going away mid-call) may have come after the prompt was queued;
+		// the attempt stays dispatched, and if nothing ran it is resent once
+		// its session has been idle past idleGrace.
+		if refused(err) {
+			record.Attempt, record.Rounds = previous, rounds
+		}
 		return
 	}
 	attempt.Dispatch = dispatch
@@ -1049,6 +1077,9 @@ func (e *Engine) track(workspaceID string, record Record) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.tracked[record.TaskID] = e.tracked[record.TaskID].with(workspaceID, record.Ref())
+	if e.meanwhile != nil {
+		e.meanwhile[record.TaskID] = e.meanwhile[record.TaskID].with(workspaceID, record.Ref())
+	}
 }
 
 // Update applies change to one record under its lock and stores it. A change
@@ -1097,13 +1128,6 @@ func (e *Engine) remove(ctx context.Context, workspaceID string, ref PullRef) er
 	}
 	defer unlock()
 	return e.store.Delete(ctx, workspaceID, ref)
-}
-
-func (e *Engine) update(ctx context.Context, workspaceID string, ref PullRef, change func(*Record)) {
-	_, _ = e.Update(ctx, workspaceID, ref, func(record *Record) error {
-		change(record)
-		return nil
-	})
 }
 
 func itemKeys(items []Item) []string {

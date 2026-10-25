@@ -152,7 +152,7 @@ func (s *AutomationSource) Observe(ctx context.Context, _ string, ref prautomati
 		Number:     pull.Number,
 		State:      automationState(pull),
 		Draft:      pull.Draft || hasWIPPrefix(pull.Title),
-		Fork:       isForkPull(pull),
+		Fork:       isFork(pull),
 		Title:      strings.TrimSpace(pull.Title),
 		URL:        strings.TrimSpace(pull.HTMLURL),
 		Repository: owner + "/" + name,
@@ -334,7 +334,7 @@ func (s *AutomationSource) IsFork(ctx context.Context, ref prautomation.PullRef)
 	if err != nil {
 		return false, err
 	}
-	return isForkPull(pull), nil
+	return isFork(pull), nil
 }
 
 // MergeLinked merges a linked pull request with the repository's default style
@@ -414,23 +414,6 @@ func automationState(pull PullRequest) prautomation.PullState {
 	default:
 		return prautomation.StateOpen
 	}
-}
-
-// isForkPull: the head lives in another repository, or in one that is gone (a
-// deleted fork), which is how the webhook decoding decides it too.
-func isForkPull(pull PullRequest) bool {
-	if pull.Head.Repo == nil && pull.Head.RepoID == 0 {
-		return true
-	}
-	headID := pull.Head.RepoID
-	if headID == 0 && pull.Head.Repo != nil {
-		headID = pull.Head.Repo.ID
-	}
-	baseID := pull.Base.RepoID
-	if baseID == 0 && pull.Base.Repo != nil {
-		baseID = pull.Base.Repo.ID
-	}
-	return headID != baseID
 }
 
 // automationCI maps a combined status. A cancelled or skipped check is not a

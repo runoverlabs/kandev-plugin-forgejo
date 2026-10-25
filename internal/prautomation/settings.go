@@ -80,10 +80,15 @@ type Settings struct {
 	Template string `json:"template"`
 }
 
-// Normalize fills the defaults a stored or partial value leaves out.
+// Normalize fills the defaults a stored or partial value leaves out. A trust
+// level it does not know (a later version's, or a damaged value) reads as
+// TrustNone: an unknown level must not let more text reach the agent.
 func (s Settings) Normalize() Settings {
-	if !s.Trust.Valid() {
+	switch {
+	case s.Trust == "":
 		s.Trust = TrustEveryone
+	case !s.Trust.Valid():
+		s.Trust = TrustNone
 	}
 	if strings.TrimSpace(s.Template) == "" {
 		s.Template = ""

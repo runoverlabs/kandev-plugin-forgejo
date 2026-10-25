@@ -184,9 +184,11 @@ actions:
   - key: "automation.settings"
     scope: "workspace"
     max_body_bytes: 1024
+  # The Host measures the JSON as sent: a 16 KiB template escapes to up to six
+  # times that (a control character is \u00XX), so the bound leaves room.
   - key: "automation.settings_set"
     scope: "workspace"
-    max_body_bytes: 20480
+    max_body_bytes: 102400
 
 # Tools exposed to task agents through Kandev's MCP endpoint. Every definition
 # here is injected into every agent session on a matching surface and cannot be
