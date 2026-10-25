@@ -273,9 +273,16 @@ func (w *Watch) Normalize() {
 	}
 	w.normalizeKind()
 
-	labels := make([]string, 0, len(w.Labels))
+	w.Labels = normalizeLabels(w.Labels)
+	w.Repos = normalizeRepos(w.Repos)
+}
+
+// normalizeLabels trims the labels and drops empty and repeated ones, keeping
+// the first occurrence's order.
+func normalizeLabels(raw []string) []string {
+	labels := make([]string, 0, len(raw))
 	seen := map[string]struct{}{}
-	for _, label := range w.Labels {
+	for _, label := range raw {
 		trimmed := strings.TrimSpace(label)
 		if trimmed == "" {
 			continue
@@ -286,23 +293,27 @@ func (w *Watch) Normalize() {
 		seen[trimmed] = struct{}{}
 		labels = append(labels, trimmed)
 	}
-	w.Labels = labels
+	return labels
+}
 
-	repos := make([]scm.RepoRef, 0, len(w.Repos))
-	seenRepo := map[string]struct{}{}
-	for _, repo := range w.Repos {
+// normalizeRepos trims the repositories and drops incomplete ones and ones
+// repeated up to case, keeping the first occurrence.
+func normalizeRepos(raw []scm.RepoRef) []scm.RepoRef {
+	repos := make([]scm.RepoRef, 0, len(raw))
+	seen := map[string]struct{}{}
+	for _, repo := range raw {
 		ref := scm.RepoRef{Owner: strings.TrimSpace(repo.Owner), Name: strings.TrimSpace(repo.Name)}
 		if ref.Owner == "" || ref.Name == "" {
 			continue
 		}
 		key := strings.ToLower(ref.FullName())
-		if _, duplicate := seenRepo[key]; duplicate {
+		if _, duplicate := seen[key]; duplicate {
 			continue
 		}
-		seenRepo[key] = struct{}{}
+		seen[key] = struct{}{}
 		repos = append(repos, ref)
 	}
-	w.Repos = repos
+	return repos
 }
 
 // normalizeKind canonicalizes the review-only fields. An issue watch carries

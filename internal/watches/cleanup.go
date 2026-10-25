@@ -63,7 +63,12 @@ func (p *Poller) cleanup(ctx context.Context, host pluginsdk.Host, watch Watch, 
 	if err != nil {
 		return []string{"cleanup: " + err.Error()}
 	}
+	return p.sweep(ctx, host, watch, records, tasks, result)
+}
 
+// sweep checks each recorded pull request that still has work to retire, up to
+// maxCleanupChecks provider requests, and settles the finished ones.
+func (p *Poller) sweep(ctx context.Context, host pluginsdk.Host, watch Watch, records []TaskRecord, tasks map[string]pluginsdk.Task, result *Result) []string {
 	var failures []string
 	checks := 0
 	for _, record := range records {
@@ -81,7 +86,7 @@ func (p *Poller) cleanup(ctx context.Context, host pluginsdk.Host, watch Watch, 
 		checks++
 		state, err := p.reviews.PullState(ctx, repo, record.Number)
 		if err != nil {
-			failures = append(failures, fmt.Sprintf("cleanup %s#%d: %s", record.Repo, record.Number, err))
+			failures = append(failures, cleanupFailure(record, err))
 			if errors.Is(err, ErrBackoff) {
 				break
 			}
@@ -90,48 +95,49 @@ func (p *Poller) cleanup(ctx context.Context, host pluginsdk.Host, watch Watch, 
 		if state == PullOpen {
 			continue
 		}
-		if !exists {
-			// The task is gone and the pull request is finished, so the record
-			// has no further use. Dropped only now: while the pull request is
-			// open the record is what stops the same request being filed again.
-			if err := host.DeleteState(ctx, stateScope, watch.WorkspaceID, record.Key); err != nil {
-				failures = append(failures, fmt.Sprintf("cleanup %s#%d: %s", record.Repo, record.Number, err))
-			}
-			continue
-		}
-		archived, why, err := p.retire(ctx, host, task)
-		if err != nil {
-			failures = append(failures, fmt.Sprintf("cleanup %s#%d: %s", record.Repo, record.Number, err))
-			continue
-		}
-		if archived {
-			result.Archived++
-		} else {
-			result.Completed++
-			result.CleanupNote = why
+		if err := p.settle(ctx, host, watch, record, task, exists, result); err != nil {
+			failures = append(failures, cleanupFailure(record, err))
 		}
 	}
 	return failures
 }
 
+// settle retires what is left of a finished pull request: its task, or its
+// record when the task is already gone.
+func (p *Poller) settle(ctx context.Context, host pluginsdk.Host, watch Watch, record TaskRecord, task pluginsdk.Task, exists bool, result *Result) error {
+	if !exists {
+		// The task is gone and the pull request is finished, so the record
+		// has no further use. Dropped only now: while the pull request is
+		// open the record is what stops the same request being filed again.
+		return host.DeleteState(ctx, stateScope, watch.WorkspaceID, record.Key)
+	}
+	archived, why, err := p.retire(ctx, host, task)
+	if err != nil {
+		return err
+	}
+	if archived {
+		result.Archived++
+		return nil
+	}
+	result.Completed++
+	result.CleanupNote = why
+	return nil
+}
+
+func cleanupFailure(record TaskRecord, err error) string {
+	return fmt.Sprintf("cleanup %s#%d: %s", record.Repo, record.Number, err)
+}
+
 // allTasks reads the workspace's tasks, archived ones included, in one walk.
 func (p *Poller) allTasks(ctx context.Context, host pluginsdk.Host, workspaceID string) (map[string]pluginsdk.Task, error) {
 	found := map[string]pluginsdk.Task{}
-	cursor := ""
-	for page := 0; page < maxTaskPages; page++ {
-		tasks, info, err := host.Tasks().List(ctx, pluginsdk.TaskFilter{
-			WorkspaceIDs: []string{workspaceID}, IncludeArchived: true,
-		}, pluginsdk.Page{Limit: taskPageSize, Cursor: cursor})
-		if err != nil {
-			return nil, fmt.Errorf("list tasks: %w", err)
-		}
-		for _, task := range tasks {
-			found[task.ID] = task
-		}
-		if info == nil || !info.HasMore || strings.TrimSpace(info.NextCursor) == "" {
-			break
-		}
-		cursor = info.NextCursor
+	err := walkTasks(ctx, host, pluginsdk.TaskFilter{
+		WorkspaceIDs: []string{workspaceID}, IncludeArchived: true,
+	}, func(task pluginsdk.Task) {
+		found[task.ID] = task
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list tasks: %w", err)
 	}
 	return found, nil
 }
