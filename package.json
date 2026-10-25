@@ -7,15 +7,18 @@
   },
   "scripts": {
     "build:ui": "npm run typecheck && esbuild ui/src/bundle.ts --bundle --format=esm --target=es2022 --external:react --external:react-dom --outfile=ui/bundle.js",
-    "lint": "npm run typecheck",
+    "lint": "npm run typecheck && eslint ui && depcruise ui/src ui/test --config .dependency-cruiser.cjs",
     "typecheck": "tsc --project ui/tsconfig.json --noEmit",
     "test": "npm run build:ui && vitest run"
   },
   "devDependencies": {
     "@kandev/plugin-sdk": "file:../kandev/apps/packages/plugin-sdk",
     "@types/node": "24.3.0",
+    "dependency-cruiser": "18.7.0",
     "esbuild": "0.28.1",
+    "eslint": "9.39.5",
     "typescript": "5.9.3",
+    "typescript-eslint": "8.72.0",
     "vitest": "4.1.12"
   }
 }

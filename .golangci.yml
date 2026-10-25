@@ -1,0 +1,75 @@
+# Lint gate for the Go half. The thresholds are documented, with the reasons,
+# in docs/architecture.md; raise one only by changing that page in the same
+# commit. Pinned in the Makefile and CI to one golangci-lint release.
+version: "2"
+
+run:
+  # Both SDK targets compile different archive files; lint the standard one.
+  build-tags: []
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - gocyclo
+    - gocognit
+    - nestif
+    - funlen
+    - dupl
+    - errorlint
+    - unparam
+    - misspell
+    - copyloopvar
+    - unconvert
+    - usestdlibvars
+  settings:
+    gocyclo:
+      min-complexity: 15
+    gocognit:
+      min-complexity: 20
+    nestif:
+      min-complexity: 5
+    funlen:
+      # Comments here carry the reasoning, so count statements, not lines.
+      lines: -1
+      statements: 50
+    dupl:
+      threshold: 150
+    staticcheck:
+      checks:
+        - all
+        # Style suggestions this codebase does not follow: explicit selectors
+        # through an embedded field read better here, and so do some
+        # negated conditions.
+        - -QF1001
+        - -QF1008
+        # The defaults golangci-lint turns off.
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+    errorlint:
+      # A provider error is never wrapped for a caller to match on: its text
+      # can echo the token. %v there is deliberate.
+      errorf: false
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      # Table-driven tests and fixtures are long and repetitive by design.
+      - path: _test\.go
+        linters: [funlen, dupl, gocognit, gocyclo, nestif, unparam]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - kandev-plugin-forgejo

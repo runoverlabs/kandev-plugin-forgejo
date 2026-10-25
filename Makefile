@@ -1,4 +1,5 @@
 .PHONY: build run test test-backend test-ui typecheck fmt vet lint \
+	lint-go lint-ui metrics deadcode \
 	security security-secrets security-deps claude-md \
 	package package-host verify-package verify-package-host clean
 
@@ -74,7 +75,45 @@ fmt:
 vet:
 	go vet ./...
 
-lint: fmt vet typecheck
+lint: fmt vet typecheck lint-go lint-ui
+
+# Pinned so a local run and CI check the same thing. Bump both here and in
+# .github/workflows/ci.yml; the checksum there is the release's own.
+GOLANGCI_LINT_VERSION := 2.15.0
+GOCYCLO := github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0
+GOCOGNIT := github.com/uudashr/gocognit/cmd/gocognit@v1.3.0
+DEADCODE := golang.org/x/tools/cmd/deadcode@v0.52.0
+
+## Static analysis and the complexity gate for the Go half (.golangci.yml).
+## The layer rules are a test (internal/archtest) and run with `make test`.
+## Needs golangci-lint on PATH: grab the v$(GOLANGCI_LINT_VERSION) release
+## binary; `go install` of it is not supported upstream.
+lint-go:
+	@command -v golangci-lint >/dev/null || { \
+		echo "golangci-lint not found: install v$(GOLANGCI_LINT_VERSION) from its GitHub release"; exit 1; }
+	golangci-lint run ./...
+	golangci-lint run --build-tags kandev_min ./...
+
+## The complexity gate and the module rules for the browser half.
+lint-ui:
+	npx eslint ui
+	npx depcruise ui/src ui/test --config .dependency-cruiser.cjs
+
+## The worst offenders, without failing: what a change made better or worse.
+metrics:
+	@echo "== cyclomatic complexity, top 10"
+	@go run $(GOCYCLO) -top 10 -ignore '_test|node_modules' .
+	@echo "== average"
+	@go run $(GOCYCLO) -avg -ignore '_test|node_modules' . | tail -1
+	@echo "== cognitive complexity, top 10"
+	@go run $(GOCOGNIT) -top 10 -ignore '_test|node_modules' . 2>/dev/null
+	@echo "== UI complexity above 8"
+	@npx eslint ui/src --rule 'complexity: [warn, 8]' 2>/dev/null | grep -E '^/|complexity' || true
+
+## Functions unreachable from the entry point. Exported code only used by
+## tests shows up here too; that is the point.
+deadcode:
+	go run $(DEADCODE) -test=false ./server
 
 # Pinned so a local run and CI check the same thing. Bump both here and in
 # .github/workflows/security.yml; the checksum is the release's own.
