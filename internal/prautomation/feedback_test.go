@@ -230,3 +230,15 @@ func TestSettingsValidation(t *testing.T) {
 	require.Equal(t, TrustNone, Settings{Trust: "maintainers"}.Normalize().Trust, "an unknown level fails closed")
 	require.Equal(t, DefaultTemplate, Settings{Template: "  "}.EffectiveTemplate())
 }
+
+func TestPruneCheckpointKeepsFeedbackStillPresent(t *testing.T) {
+	small := []string{"gone", "kept"}
+	require.Equal(t, small, pruneCheckpoint(small, nil), "below half the bound nothing is dropped")
+
+	var checkpoint []string
+	for i := 0; i <= maxCheckpointKeys/2; i++ {
+		checkpoint = append(checkpoint, fmt.Sprintf("gone:%d", i))
+	}
+	checkpoint = append(checkpoint, "kept")
+	require.Equal(t, []string{"kept"}, pruneCheckpoint(checkpoint, []Item{{Key: "kept"}, {Key: "new"}}))
+}

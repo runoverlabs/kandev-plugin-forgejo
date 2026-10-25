@@ -2,6 +2,7 @@ package prautomation
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -802,4 +803,35 @@ func TestOversizedFeedbackLeavesTheRestForTheNextRound(t *testing.T) {
 	record = h.evaluate()
 	require.Len(t, h.messenger.sent, 2, "what did not fit is still new")
 	require.NotContains(t, record.Attempt.Keys, textKey("comment", 1, strings.Repeat("x", maxItemRunes)))
+}
+
+func TestHandledFeedbackStillPresentIsNotResentOnALongPullRequest(t *testing.T) {
+	h := newHarness(t)
+	h.switches(Switches{AutoFix: true})
+	kept := Comment{ID: 1, Author: "alice", Body: "please rename foo"}
+	h.setObs(func(obs *Observation) { obs.Comments = []Comment{kept} })
+	h.evaluate()
+	report := func() {
+		t.Helper()
+		_, err := h.engine.Outcome(context.Background(), testWorkspace, testRef.TaskID, "s-1", "", OutcomeNonActionable, "seen")
+		require.NoError(t, err)
+	}
+	report()
+
+	// Edited comments are new feedback each round, and their old keys pile up
+	// in the checkpoint past its bound.
+	for round := 0; round < 5; round++ {
+		h.setObs(func(obs *Observation) {
+			obs.Comments = []Comment{kept}
+			for i := 0; i < 100; i++ {
+				obs.Comments = append(obs.Comments, Comment{ID: int64(100 + i), Author: "bob", Body: fmt.Sprintf("note %d v%d", i, round)})
+			}
+		})
+		h.evaluate()
+		require.Len(t, h.messenger.sent, round+2)
+		report()
+	}
+
+	h.evaluate()
+	require.Len(t, h.messenger.sent, 6, "nothing on the pull request is new")
 }

@@ -188,9 +188,31 @@ func Signature(items []Item) string {
 	return hex.EncodeToString(sum[:12])
 }
 
-// maxCheckpointKeys bounds the checkpoint. The oldest keys go first; a key
-// that drops out belongs to feedback old enough that it is no longer present.
+// maxCheckpointKeys bounds the checkpoint. Past half of it, pruneCheckpoint
+// drops the keys of feedback no longer on the pull request; the oldest keys go
+// first only if that is not enough. Feedback that stays (a comment, an open
+// conversation) keeps its key, or it would be sent again as new.
 const maxCheckpointKeys = 500
+
+// pruneCheckpoint keeps the checkpoint's keys that are among present, once the
+// checkpoint is past half its bound. Below that it is left alone, so feedback
+// that drops out briefly (a check re-running) is not taken for new on return.
+func pruneCheckpoint(checkpoint []string, present []Item) []string {
+	if len(checkpoint) <= maxCheckpointKeys/2 {
+		return checkpoint
+	}
+	keep := make(map[string]bool, len(present))
+	for _, item := range present {
+		keep[item.Key] = true
+	}
+	pruned := make([]string, 0, len(present))
+	for _, key := range checkpoint {
+		if keep[key] {
+			pruned = append(pruned, key)
+		}
+	}
+	return pruned
+}
 
 // mergeCheckpoint adds keys to a checkpoint, keeping it bounded.
 func mergeCheckpoint(checkpoint []string, items []Item) []string {

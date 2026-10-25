@@ -663,6 +663,9 @@ func (r *evaluation) autoFix() {
 	}
 	snapshot := BuildSnapshot(obs, r.settings.Trust)
 	record.Ignored = snapshot.Ignored
+	// Present at any trust level: narrowing it for a while must not make
+	// handled feedback new again once it is widened.
+	record.Checkpoint = pruneCheckpoint(record.Checkpoint, BuildSnapshot(obs, TrustEveryone).Items)
 
 	if attempt := record.Attempt; attempt != nil && attempt.State == AttemptDispatched {
 		if !r.attemptEnded(*attempt) {
