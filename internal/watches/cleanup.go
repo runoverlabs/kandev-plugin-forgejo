@@ -14,15 +14,9 @@ import (
 // one tick into hundreds of requests; the rest wait for the next tick.
 const maxCleanupChecks = 40
 
-// archiveOperation is the capability context's name for the exact archive
-// command, and the one this pass needs the operator to have granted.
-const archiveOperation = "ArchiveTaskExact"
-
 // ArchiveGrantNote is shown when tasks are completed because archiving is not
 // granted. The operator fixes it in the host's approvals, not here.
 const ArchiveGrantNote = "Tasks are completed, not archived: the host has not approved this plugin archiving tasks."
-
-const archiveFailedNote = "The host could not archive a task, so it was completed instead."
 
 const archiveUnsupportedNote = "This host cannot archive tasks from a plugin, so tasks are completed instead."
 
