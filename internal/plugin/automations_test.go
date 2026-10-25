@@ -29,13 +29,15 @@ type fakeInstance struct {
 	server   *httptest.Server
 	requests atomic.Int64
 
-	mu       sync.Mutex
-	userID   int64
-	version  string
-	forgejo  bool
-	repos    map[string]bool
-	failUser bool
-	failRepo bool
+	mu          sync.Mutex
+	userID      int64
+	version     string
+	forgejo     bool
+	repos       map[string]bool
+	failUser    bool
+	failRepo    bool
+	failVersion bool
+	failFlavor  bool
 }
 
 func newFakeInstance(t *testing.T, version string, forgejo bool) *fakeInstance {
@@ -54,8 +56,16 @@ func newFakeInstance(t *testing.T, version string, forgejo bool) *fakeInstance {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": instance.userID, "login": "kandev"})
 		case r.URL.Path == "/api/v1/version":
+			if instance.failVersion {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"version": instance.version})
 		case r.URL.Path == "/api/forgejo/v1/version":
+			if instance.failFlavor {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
 			if !instance.forgejo {
 				w.WriteHeader(http.StatusNotFound)
 				return
@@ -115,6 +125,16 @@ func TestDescribeListing(t *testing.T) {
 		require.False(t, response.Available)
 		require.Equal(t, reasonNotConfigured, response.Reason)
 	})
+	t.Run("invalid instance URL asks for a settings fix", func(t *testing.T) {
+		t.Parallel()
+		runtime, _ := automationRuntime(t, map[string]any{"base_url": "ftp://forge.example.com", "api_token": automationToken})
+		for _, settings := range []map[string]any{nil, {"repository": "owner/repo"}} {
+			response, err := describe(t, runtime, automations.ConditionPush, settings)
+			require.NoError(t, err, "an error would make the host retry a delivery that cannot succeed")
+			require.False(t, response.Available)
+			require.Equal(t, reasonInvalidConfig, response.Reason)
+		}
+	})
 	t.Run("unknown condition", func(t *testing.T) {
 		t.Parallel()
 		runtime, _ := automationRuntime(t, map[string]any{})
@@ -143,6 +163,14 @@ func TestDescribeListing(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, response.Available)
 		require.Equal(t, reasonDisabled, response.Reason)
+	})
+	t.Run("unreadable enabled state is an error", func(t *testing.T) {
+		t.Parallel()
+		instance := newFakeInstance(t, "15.0.10+gitea-1.22.0", true)
+		runtime, host := automationRuntime(t, map[string]any{"base_url": instance.server.URL, "api_token": automationToken})
+		host.failState = true
+		_, err := describe(t, runtime, automations.ConditionPush, map[string]any{"repository": "owner/repo"})
+		require.Error(t, err)
 	})
 	for _, tc := range []struct {
 		name, version string
@@ -181,12 +209,28 @@ func TestDescribeConfigured(t *testing.T) {
 		require.Equal(t, connectionRevision(instance.server.URL, 7), response.ConnectionRevision)
 		require.NotContains(t, response.ConnectionId, "127.0.0.1", "the host stores a digest, not the URL")
 
-		// The host describes twice per delivery: the account and version are
-		// cached, the repository is checked every time.
+		// The host describes twice per delivery: the second is served from
+		// cache, and push never asks for the version.
 		before := instance.requests.Load()
 		_, err = describe(t, runtime, automations.ConditionPush, settings)
 		require.NoError(t, err)
-		require.Equal(t, int64(1), instance.requests.Load()-before)
+		require.Equal(t, int64(0), instance.requests.Load()-before)
+	})
+	t.Run("a missing repository is not cached", func(t *testing.T) {
+		t.Parallel()
+		instance := newFakeInstance(t, "15.0.10+gitea-1.22.0", true)
+		runtime, _ := automationRuntime(t, map[string]any{"base_url": instance.server.URL, "api_token": automationToken})
+		missing := map[string]any{"repository": "owner/new"}
+		response, err := describe(t, runtime, automations.ConditionPush, missing)
+		require.NoError(t, err)
+		require.Equal(t, reasonRepoNotFound, response.Reason)
+
+		instance.mu.Lock()
+		instance.repos["owner/new"] = true
+		instance.mu.Unlock()
+		response, err = describe(t, runtime, automations.ConditionPush, missing)
+		require.NoError(t, err)
+		require.True(t, response.Available, response.Reason)
 	})
 	t.Run("token rotation keeps the revision, an account change moves it", func(t *testing.T) {
 		t.Parallel()
@@ -262,6 +306,41 @@ func TestDescribeConfigured(t *testing.T) {
 			require.NotContains(t, err.Error(), instance.server.URL)
 		})
 	}
+	// A failed version or flavor probe must not be cached as "no version" or
+	// "Gitea": ci_result would read unavailable, and the host would cancel the
+	// delivery instead of retrying it.
+	for name, mutate := range map[string]func(*fakeInstance, bool){
+		"version endpoint down": func(f *fakeInstance, fail bool) { f.failVersion = fail },
+		"flavor probe down":     func(f *fakeInstance, fail bool) { f.failFlavor = fail },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			// No "+gitea-" suffix: only the namespace probe can tell Forgejo.
+			instance := newFakeInstance(t, "15.0.10", true)
+			runtime, _ := automationRuntime(t, map[string]any{"base_url": instance.server.URL, "api_token": automationToken})
+			instance.mu.Lock()
+			mutate(instance, true)
+			instance.mu.Unlock()
+			_, err := describe(t, runtime, automations.ConditionCIResult, settings)
+			require.ErrorIs(t, err, errInstanceUnreachable)
+
+			instance.mu.Lock()
+			mutate(instance, false)
+			instance.mu.Unlock()
+			response, err := describe(t, runtime, automations.ConditionCIResult, settings)
+			require.NoError(t, err)
+			require.True(t, response.Available, response.Reason)
+		})
+	}
+	t.Run("version endpoint down does not affect push", func(t *testing.T) {
+		t.Parallel()
+		instance := newFakeInstance(t, "15.0.10", true)
+		instance.failVersion = true
+		runtime, _ := automationRuntime(t, map[string]any{"base_url": instance.server.URL, "api_token": automationToken})
+		response, err := describe(t, runtime, automations.ConditionPush, settings)
+		require.NoError(t, err)
+		require.True(t, response.Available, response.Reason)
+	})
 }
 
 // fixture loads a delivery captured from a real instance.
@@ -445,6 +524,23 @@ func TestVerifyAutomationWebhook(t *testing.T) {
 		setEnabled(t, runtime, "ws-1", false)
 		response := verify(t, runtime, request(automations.ConditionPush, pushBody, pushHeaders, settings(automations.ConditionPush, nil)))
 		require.Equal(t, outcomeIgnored, response.Outcome)
+	})
+
+	// The switch is a promise that nothing runs while it is off: an
+	// unreadable switch fails the delivery rather than reading as on.
+	t.Run("unreadable enabled state fails", func(t *testing.T) {
+		t.Parallel()
+		runtime, host := automationRuntime(t, config)
+		host.failState = true
+		_, err := runtime.VerifyAutomationWebhook(context.Background(), request(automations.ConditionPush, pushBody, pushHeaders, settings(automations.ConditionPush, nil)))
+		require.Error(t, err)
+	})
+
+	t.Run("invalid instance URL rejects", func(t *testing.T) {
+		t.Parallel()
+		runtime, _ := automationRuntime(t, map[string]any{"base_url": "ftp://forge.example.com", "api_token": automationToken})
+		response := verify(t, runtime, request(automations.ConditionPush, pushBody, pushHeaders, settings(automations.ConditionPush, nil)))
+		require.Equal(t, outcomeRejected, response.Outcome)
 	})
 
 	t.Run("unconfigured plugin rejects", func(t *testing.T) {

@@ -230,6 +230,9 @@ func TestDefaultsParse(t *testing.T) {
 		if key == ConditionPullRequest {
 			require.True(t, cfg.OnOpened)
 			require.True(t, cfg.ExcludeDraft)
+			// Anyone who can comment controls the comment text the agent
+			// reads, so a new condition must not fire on comments.
+			require.False(t, cfg.OnCommented)
 		}
 		if key == ConditionCIResult {
 			require.True(t, cfg.OnFailure)

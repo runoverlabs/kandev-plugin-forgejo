@@ -2,6 +2,7 @@ package automations
 
 import (
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -159,7 +160,7 @@ func matchPullRequest(cfg Config, pr PullRequest) bool {
 	if len(cfg.Authors) > 0 && !containsFold(cfg.Authors, pr.Author) {
 		return false
 	}
-	if len(cfg.Labels) > 0 && !anyFold(cfg.Labels, pr.Labels) {
+	if len(cfg.Labels) > 0 && !slices.ContainsFunc(pr.Labels, func(label string) bool { return containsFold(cfg.Labels, label) }) {
 		return false
 	}
 	return true
@@ -205,7 +206,7 @@ func matchRun(cfg Config, run Run) bool {
 	if run.Fork && !cfg.IncludeForks {
 		return false
 	}
-	if len(cfg.Workflows) > 0 && !contains(cfg.Workflows, run.Workflow) {
+	if len(cfg.Workflows) > 0 && !slices.Contains(cfg.Workflows, run.Workflow) {
 		return false
 	}
 	return matchGlobs(cfg.Branches, run.Branch)
@@ -228,29 +229,6 @@ func matchGlobs(globs []string, value string) bool {
 	return false
 }
 
-func contains(list []string, value string) bool {
-	for _, item := range list {
-		if item == value {
-			return true
-		}
-	}
-	return false
-}
-
 func containsFold(list []string, value string) bool {
-	for _, item := range list {
-		if strings.EqualFold(item, value) {
-			return true
-		}
-	}
-	return false
-}
-
-func anyFold(want, have []string) bool {
-	for _, item := range have {
-		if containsFold(want, item) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(list, func(item string) bool { return strings.EqualFold(item, value) })
 }

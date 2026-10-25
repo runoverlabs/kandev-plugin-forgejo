@@ -294,16 +294,18 @@ func draftOf(payload *hookPullRequest) bool {
 	return hasWIPPrefix(payload.Title)
 }
 
-// hookIsFork compares repository ids, which every captured host sends. A head
-// with no repository is a fork that has since been deleted, and counts as one.
+// hookIsFork applies headIsFork to a delivery. The delivery's repository is
+// the base, so it stands in when the base branch omits its own.
 func hookIsFork(base, head *hookBranch, repository *hookRepository) bool {
-	if head.RepoID != 0 && base.RepoID != 0 {
-		return head.RepoID != base.RepoID
+	baseName := repository.FullName
+	if base.Repo != nil && base.Repo.FullName != "" {
+		baseName = base.Repo.FullName
 	}
-	if head.Repo == nil || head.Repo.FullName == "" {
-		return true
+	headName := ""
+	if head.Repo != nil {
+		headName = head.Repo.FullName
 	}
-	return !strings.EqualFold(head.Repo.FullName, repository.FullName)
+	return headIsFork(head.RepoID, base.RepoID, headName, baseName)
 }
 
 type hookComment struct {

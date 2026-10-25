@@ -39,6 +39,7 @@ var errInstanceUnreachable = errors.New("kandev-plugin-forgejo: could not reach 
 const (
 	reasonDisabled       = "The Forgejo integration is turned off for this workspace."
 	reasonNotConfigured  = "Set the instance URL and access token in Settings > Plugins > Forgejo."
+	reasonInvalidConfig  = "The instance URL is not a valid http or https URL. Fix it in Settings > Plugins > Forgejo."
 	reasonTokenRejected  = "The instance rejected the access token."
 	reasonRepoNotFound   = "The repository was not found, or the access token cannot read it."
 	reasonUnknown        = "This condition is not offered by this version of the plugin."
@@ -46,8 +47,8 @@ const (
 	reasonVersionUnknown = "CI results need Forgejo 12 or later, and the instance did not report its version."
 )
 
-// automationInfoTTL bounds how long the account and version behind Describe
-// are reused. The host calls Describe with config twice per accepted delivery;
+// automationInfoTTL bounds how long the account, version and repository
+// checks behind Describe are reused. The host calls Describe with config twice per accepted delivery;
 // Kandev restarts the plugin when its config changes, so a cached answer never
 // outlives a token or URL change.
 const automationInfoTTL = time.Minute
@@ -57,7 +58,14 @@ const automationInfoTTL = time.Minute
 const maxRepositoryOptions = 50
 
 type instanceInfo struct {
-	userID  int64
+	userID int64
+	at     time.Time
+}
+
+// instanceVersion is what the instance reported about itself. An empty version
+// is a definitive answer (the instance did not report one), never a failed
+// request: those are not cached.
+type instanceVersion struct {
 	flavor  forgejo.Flavor
 	version string
 	at      time.Time
@@ -74,12 +82,17 @@ type automationCache struct {
 	mu           sync.Mutex
 	client       *forgejo.Client
 	info         *instanceInfo
+	version      *instanceVersion
 	repositories *repositoryOptions
+	// found maps a lowercased owner/name the token could read to when it
+	// was checked. Only a found repository is cached, so creating a missing
+	// one or granting the token access takes effect at once.
+	found map[string]time.Time
 }
 
 func (c *automationCache) forClient(client *forgejo.Client) {
 	if c.client != client {
-		c.client, c.info, c.repositories = client, nil, nil
+		c.client, c.info, c.version, c.repositories, c.found = client, nil, nil, nil, nil
 	}
 }
 
@@ -104,7 +117,7 @@ func (r *Runtime) DescribeAutomationCondition(ctx context.Context, request *plug
 		}
 		cfg = parsed
 	}
-	enabled, err := r.integrationEnabled(ctx, request.WorkspaceId)
+	enabled, err := r.integrationEnabledStrict(ctx, request.WorkspaceId)
 	if err != nil {
 		return nil, err
 	}
@@ -114,6 +127,9 @@ func (r *Runtime) DescribeAutomationCondition(ctx context.Context, request *plug
 	client, err := r.connection.Client(ctx)
 	if errors.Is(err, forgejo.ErrNotConfigured) {
 		return unavailable(reasonNotConfigured), nil
+	}
+	if errors.Is(err, forgejo.ErrInvalidConfig) {
+		return unavailable(reasonInvalidConfig), nil
 	}
 	if err != nil {
 		return nil, errInstanceUnreachable
@@ -130,8 +146,8 @@ func (r *Runtime) DescribeAutomationCondition(ctx context.Context, request *plug
 // check.
 func (r *Runtime) describeListing(ctx context.Context, client *forgejo.Client, key string) *pluginsdk.AutomationConditionResponse {
 	if key == automations.ConditionCIResult {
-		if info, err := r.instanceInfo(ctx, client); err == nil && info.version != "" &&
-			!forgejo.SupportsActionRunWebhooks(info.flavor, info.version) {
+		if v, err := r.instanceVersion(ctx, client); err == nil && v.version != "" &&
+			!forgejo.SupportsActionRunWebhooks(v.flavor, v.version) {
 			return unavailable(reasonCIUnsupported)
 		}
 	}
@@ -144,27 +160,44 @@ func (r *Runtime) describeListing(ctx context.Context, client *forgejo.Client, k
 	return response
 }
 
+// describeConfigured runs its lookups concurrently, so a cold cache costs one
+// round-trip of the host's five-second budget rather than four, then judges
+// them in a fixed order.
 func (r *Runtime) describeConfigured(ctx context.Context, client *forgejo.Client, cfg automations.Config) (*pluginsdk.AutomationConditionResponse, error) {
-	info, err := r.instanceInfo(ctx, client)
-	if errors.Is(err, forgejo.ErrUnauthorized) {
+	var (
+		wg                           sync.WaitGroup
+		info                         instanceInfo
+		version                      instanceVersion
+		infoErr, versionErr, repoErr error
+	)
+	wg.Go(func() { info, infoErr = r.instanceInfo(ctx, client) })
+	if cfg.Key == automations.ConditionCIResult {
+		wg.Go(func() { version, versionErr = r.instanceVersion(ctx, client) })
+	}
+	wg.Go(func() { repoErr = r.repositoryExists(ctx, client, cfg.Repository) })
+	wg.Wait()
+
+	if errors.Is(infoErr, forgejo.ErrUnauthorized) {
 		return unavailable(reasonTokenRejected), nil
 	}
-	if err != nil {
+	if infoErr != nil {
 		return nil, errInstanceUnreachable
 	}
 	if cfg.Key == automations.ConditionCIResult {
-		if info.version == "" {
+		if versionErr != nil {
+			return nil, errInstanceUnreachable
+		}
+		if version.version == "" {
 			return unavailable(reasonVersionUnknown), nil
 		}
-		if !forgejo.SupportsActionRunWebhooks(info.flavor, info.version) {
+		if !forgejo.SupportsActionRunWebhooks(version.flavor, version.version) {
 			return unavailable(reasonCIUnsupported), nil
 		}
 	}
-	owner, name, _ := strings.Cut(cfg.Repository, "/")
-	if _, err := client.Repo(ctx, owner, name); err != nil {
-		if errors.Is(err, forgejo.ErrNotFound) || errors.Is(err, forgejo.ErrUnauthorized) {
-			return unavailable(reasonRepoNotFound), nil
-		}
+	if errors.Is(repoErr, forgejo.ErrNotFound) || errors.Is(repoErr, forgejo.ErrUnauthorized) {
+		return unavailable(reasonRepoNotFound), nil
+	}
+	if repoErr != nil {
 		return nil, errInstanceUnreachable
 	}
 	return &pluginsdk.AutomationConditionResponse{
@@ -188,12 +221,13 @@ func (r *Runtime) VerifyAutomationWebhook(ctx context.Context, request *pluginsd
 		return outcome(outcomeRejected), nil
 	}
 	scope, err := r.connection.Scope(ctx)
-	if errors.Is(err, forgejo.ErrNotConfigured) {
+	if errors.Is(err, forgejo.ErrNotConfigured) || errors.Is(err, forgejo.ErrInvalidConfig) {
 		return outcome(outcomeRejected), nil
 	}
 	if err != nil {
-		// A host config read failure is transient; an error makes the host
-		// answer 503 and the instance retry.
+		// A host config read failure is transient. An error makes the host
+		// answer 503; neither the host nor Forgejo retries it, but the failed
+		// delivery stays on the hook's page for a manual redelivery.
 		return nil, err
 	}
 	if request.ConnectionId != connectionID(scope) {
@@ -220,7 +254,7 @@ func (r *Runtime) VerifyAutomationWebhook(ctx context.Context, request *pluginsd
 	if !strings.EqualFold(event.Repository, cfg.Repository) {
 		return outcome(outcomeIgnored), nil
 	}
-	enabled, err := r.integrationEnabled(ctx, request.WorkspaceId)
+	enabled, err := r.integrationEnabledStrict(ctx, request.WorkspaceId)
 	if err != nil {
 		return nil, err
 	}
@@ -253,9 +287,7 @@ func connectionRevision(scope string, userID int64) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// instanceInfo returns the account and version, from cache when fresh. The
-// account is required; the version is best effort, since only ci_result needs
-// it.
+// instanceInfo returns the account, from cache when fresh.
 func (r *Runtime) instanceInfo(ctx context.Context, client *forgejo.Client) (instanceInfo, error) {
 	cache := &r.automationCache
 	cache.mu.Lock()
@@ -271,16 +303,82 @@ func (r *Runtime) instanceInfo(ctx context.Context, client *forgejo.Client) (ins
 		return instanceInfo{}, err
 	}
 	info := instanceInfo{userID: user.ID, at: time.Now()}
-	if version, err := client.Version(ctx); err == nil && strings.TrimSpace(version) != "" {
-		info.version = version
-		info.flavor = client.DetectFlavor(ctx, version)
-	}
 
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	cache.forClient(client)
 	cache.info = &info
 	return info, nil
+}
+
+// instanceVersion returns the version and flavor, from cache when fresh. Only
+// ci_result needs them, so other conditions never pay for the requests. A
+// failed request is an error, not an empty version: the host cancels a
+// delivery on available=false, so a blip must not read as "no version".
+func (r *Runtime) instanceVersion(ctx context.Context, client *forgejo.Client) (instanceVersion, error) {
+	cache := &r.automationCache
+	cache.mu.Lock()
+	cache.forClient(client)
+	if v := cache.version; v != nil && time.Since(v.at) < automationInfoTTL {
+		cache.mu.Unlock()
+		return *v, nil
+	}
+	cache.mu.Unlock()
+
+	result := instanceVersion{at: time.Now()}
+	version, err := client.Version(ctx)
+	switch {
+	case errors.Is(err, forgejo.ErrNotFound), errors.Is(err, forgejo.ErrUnauthorized):
+		// The endpoint is hidden: a lasting answer, not a failure.
+	case err != nil:
+		return instanceVersion{}, err
+	case strings.TrimSpace(version) != "":
+		flavor, err := client.ProbeFlavor(ctx, version)
+		if err != nil {
+			return instanceVersion{}, err
+		}
+		result.version, result.flavor = version, flavor
+	}
+
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	cache.forClient(client)
+	cache.version = &result
+	return result, nil
+}
+
+// repositoryExists checks that the token can read a repository, from cache
+// when it was found recently.
+func (r *Runtime) repositoryExists(ctx context.Context, client *forgejo.Client, repository string) error {
+	key := strings.ToLower(repository)
+	cache := &r.automationCache
+	cache.mu.Lock()
+	cache.forClient(client)
+	if at, ok := cache.found[key]; ok && time.Since(at) < automationInfoTTL {
+		cache.mu.Unlock()
+		return nil
+	}
+	cache.mu.Unlock()
+
+	owner, name, _ := strings.Cut(repository, "/")
+	if _, err := client.Repo(ctx, owner, name); err != nil {
+		return err
+	}
+
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	cache.forClient(client)
+	now := time.Now()
+	for stale, at := range cache.found {
+		if now.Sub(at) >= automationInfoTTL {
+			delete(cache.found, stale)
+		}
+	}
+	if cache.found == nil {
+		cache.found = map[string]time.Time{}
+	}
+	cache.found[key] = now
+	return nil
 }
 
 // repositoryOptions suggests the repositories the token sees, most recently

@@ -17,6 +17,11 @@ import (
 // provider outage.
 var ErrNotConfigured = errors.New("forgejo: plugin is not configured with an instance URL and access token")
 
+// ErrInvalidConfig means the configured instance URL cannot be used (not an
+// absolute http or https URL). Like ErrNotConfigured it is fixed by editing
+// the settings, never by retrying.
+var ErrInvalidConfig = errors.New("forgejo: the configured instance URL is not valid")
+
 // HostProvider defers Host resolution to call time. The Host is injected from
 // a background goroutine after construction, so adapters must never capture it
 // eagerly.
@@ -77,7 +82,7 @@ func (c *Connection) Client(ctx context.Context) (*Client, error) {
 	}
 	client, err := NewClient(baseURL, token, c.httpClient)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
 	c.client, c.key = client, key
 	return client, nil

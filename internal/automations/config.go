@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"path"
 	"strings"
+
+	"kandev-plugin-forgejo/internal/watches"
 )
 
 // Condition keys. Each must match a manifest automation_conditions entry, and
@@ -167,18 +169,16 @@ func hasType(kind string, value any) bool {
 	return false
 }
 
-// parseRepository requires exactly `owner/name`. The repository is the only
-// thing tying a correctly signed delivery to this condition, so a missing one
-// matches nothing rather than everything.
+// parseRepository requires exactly `owner/name`, by the same rule as issue
+// watches. The repository is the only thing tying a correctly signed delivery
+// to this condition, so a missing one matches nothing rather than everything.
 func parseRepository(value any) (string, error) {
 	text, _ := value.(string)
-	text = strings.Trim(strings.TrimSpace(text), "/")
-	owner, name, found := strings.Cut(text, "/")
-	if !found || owner == "" || name == "" || strings.Contains(name, "/") ||
-		strings.ContainsAny(text, " \t\r\n") {
+	ref, err := watches.ParseRepoRef(text)
+	if err != nil {
 		return "", fmt.Errorf("%w: repository must be owner/name", ErrInvalidConfig)
 	}
-	return text, nil
+	return ref.FullName(), nil
 }
 
 func parseList(name string, value any) ([]string, error) {

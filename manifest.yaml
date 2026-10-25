@@ -277,7 +277,7 @@ automation_conditions:
         on_closed: { type: boolean, title: "When closed without merging" }
         on_merged: { type: boolean, title: "When merged" }
         on_review_requested: { type: boolean, title: "When a review is requested" }
-        on_commented: { type: boolean, title: "When commented on (Forgejo 11+, Gitea)" }
+        on_commented: { type: boolean, title: "When commented on (Forgejo 11+, Gitea). Warning: anyone who can comment, not only the authors listed above, starts a run and writes text the agent reads." }
         exclude_draft: { type: boolean, title: "Skip drafts" }
         include_forks: { type: boolean, title: "Include pull requests from forks" }
     default_config: { on_opened: true, exclude_draft: true }

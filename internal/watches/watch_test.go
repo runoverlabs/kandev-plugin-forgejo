@@ -13,10 +13,15 @@ func TestParseRepoRef(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, RepoRef{Owner: "acme", Name: "app"}, ref)
 	require.Equal(t, "acme/app", ref.FullName())
+	for _, raw := range []string{" acme / app ", " /acme/app/ "} {
+		ref, err = ParseRepoRef(raw)
+		require.NoError(t, err)
+		require.Equal(t, "acme/app", ref.FullName())
+	}
 
 	// A malformed entry is rejected rather than guessed at: it would otherwise
 	// become a 404 on every poll with no obvious cause.
-	for _, raw := range []string{"", "acme", "/app", "acme/", "acme/app/extra", "   "} {
+	for _, raw := range []string{"", "acme", "/app", "acme/", "acme/app/extra", "   ", "ac me/app", "acme/a\tpp"} {
 		_, err := ParseRepoRef(raw)
 		require.Errorf(t, err, "expected %q to be rejected", raw)
 	}

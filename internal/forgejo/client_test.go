@@ -155,4 +155,24 @@ func TestDetectFlavor(t *testing.T) {
 		require.Equal(t, FlavorForgejo, client.DetectFlavor(context.Background(), "16.0.5+gitea-1.22.0"))
 		require.Equal(t, FlavorGitea, client.DetectFlavor(context.Background(), "1.24.7"))
 	})
+
+	t.Run("probe reports an unreachable namespace instead of guessing", func(t *testing.T) {
+		t.Parallel()
+		api := newAPIServer(t)
+		api.handle(http.MethodGet, "/api/forgejo/v1/version", http.StatusBadGateway, nil)
+		client, err := NewClient(api.url(), "token", nil)
+		require.NoError(t, err)
+		_, err = client.ProbeFlavor(context.Background(), "20.0.0")
+		require.Error(t, err)
+	})
+
+	t.Run("probe treats a missing namespace as an answer", func(t *testing.T) {
+		t.Parallel()
+		api := newAPIServer(t)
+		client, err := NewClient(api.url(), "token", nil)
+		require.NoError(t, err)
+		flavor, err := client.ProbeFlavor(context.Background(), "1.24.7")
+		require.NoError(t, err)
+		require.Equal(t, FlavorGitea, flavor)
+	})
 }

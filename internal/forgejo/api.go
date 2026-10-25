@@ -2,6 +2,7 @@ package forgejo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -75,9 +76,10 @@ type Branch struct {
 
 // PullRequestRef is one side of a pull request.
 type PullRequestRef struct {
-	Ref  string `json:"ref"`
-	Sha  string `json:"sha"`
-	Repo *Repo  `json:"repo"`
+	Ref    string `json:"ref"`
+	Sha    string `json:"sha"`
+	RepoID int64  `json:"repo_id"`
+	Repo   *Repo  `json:"repo"`
 }
 
 // PullRequest mirrors the REST v1 pull request object.
@@ -213,12 +215,33 @@ const (
 // keeps working either way; the suffix is only a fallback for a deployment
 // that proxies away the Forgejo namespace.
 func (c *Client) DetectFlavor(ctx context.Context, version string) Flavor {
+	flavor, err := c.ProbeFlavor(ctx, version)
+	if err != nil {
+		return flavorFromVersion(version)
+	}
+	return flavor
+}
+
+// ProbeFlavor is DetectFlavor for callers that must not mistake a failed probe
+// for an answer. Only a 404 or 401/403 from the Forgejo namespace means the
+// instance does not serve it; any other failure is returned, since a Forgejo
+// that has dropped the "+gitea-" suffix would otherwise be classed as Gitea.
+func (c *Client) ProbeFlavor(ctx context.Context, version string) (Flavor, error) {
 	var payload struct {
 		Version string `json:"version"`
 	}
-	if err := c.do(ctx, http.MethodGet, apiForgejoV1, "/version", nil, nil, &payload); err == nil {
-		return FlavorForgejo
+	err := c.do(ctx, http.MethodGet, apiForgejoV1, "/version", nil, nil, &payload)
+	switch {
+	case err == nil:
+		return FlavorForgejo, nil
+	case errors.Is(err, ErrNotFound), errors.Is(err, ErrUnauthorized):
+		return flavorFromVersion(version), nil
+	default:
+		return "", err
 	}
+}
+
+func flavorFromVersion(version string) Flavor {
 	if strings.Contains(strings.ToLower(version), "+gitea-") {
 		return FlavorForgejo
 	}

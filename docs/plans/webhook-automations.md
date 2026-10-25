@@ -72,8 +72,9 @@ in v0.95.1, our CI minimum, so **the floor does not move**.
   - `VerifyAutomationWebhook(workspace, key, connection id and revision, config,
     body, headers, secret)`. Returns `rejected` (401), `malformed` (400),
     `ignored` (200) or `accepted` (202) with `event_kind` equal to the condition
-    key and `data`, a JSON object up to 1 MiB. An RPC error is a 503 and the
-    instance retries. 10 s deadline.
+    key and `data`, a JSON object up to 1 MiB. An RPC error is a 503, which
+    nothing retries: Forgejo and Gitea send a delivery once and keep a failed
+    one on the hook's page for a manual redelivery. 10 s deadline.
 - **The host owns the secret and the URL.** One binding per saved condition, at
   `/api/v1/automations/webhook-bindings/{id}`, with a vault-backed secret the
   user sees only through "reveal". The plugin receives the secret **only inside

@@ -210,22 +210,31 @@ func TestPullDetailFlagsDraftsByFieldAndByTitle(t *testing.T) {
 
 func TestPullDetailForkDetectionFailsClosed(t *testing.T) {
 	t.Parallel()
+	withID := map[string]any{"ref": "main", "repo_id": 1, "repo": map[string]any{"full_name": "acme/web"}}
 	cases := map[string]struct {
 		head any
 		fork bool
+		base any
 	}{
-		"same repo":            {map[string]any{"ref": "x", "repo": map[string]any{"full_name": "acme/web"}}, false},
-		"same repo other case": {map[string]any{"ref": "x", "repo": map[string]any{"full_name": "ACME/Web"}}, false},
-		"other repo":           {map[string]any{"ref": "x", "repo": map[string]any{"full_name": "mallory/web"}}, true},
-		"deleted fork":         {map[string]any{"ref": "x", "repo": nil}, true},
-		"no repo key":          {map[string]any{"ref": "x"}, true},
-		"empty name":           {map[string]any{"ref": "x", "repo": map[string]any{"full_name": ""}}, true},
+		"same repo":            {map[string]any{"ref": "x", "repo": map[string]any{"full_name": "acme/web"}}, false, nil},
+		"same repo other case": {map[string]any{"ref": "x", "repo": map[string]any{"full_name": "ACME/Web"}}, false, nil},
+		"other repo":           {map[string]any{"ref": "x", "repo": map[string]any{"full_name": "mallory/web"}}, true, nil},
+		"deleted fork":         {map[string]any{"ref": "x", "repo": nil}, true, nil},
+		"no repo key":          {map[string]any{"ref": "x"}, true, nil},
+		"empty name":           {map[string]any{"ref": "x", "repo": map[string]any{"full_name": ""}}, true, nil},
+		// Ids decide when both sides carry one, as in a webhook delivery.
+		"same id":             {map[string]any{"ref": "x", "repo_id": 1, "repo": nil}, false, withID},
+		"other id, same name": {map[string]any{"ref": "x", "repo_id": 2, "repo": map[string]any{"full_name": "acme/web"}}, true, withID},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			api := newAPIServer(t)
-			api.handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(map[string]any{"head": tc.head}))
+			overrides := map[string]any{"head": tc.head}
+			if tc.base != nil {
+				overrides["base"] = tc.base
+			}
+			api.handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(overrides))
 			detail, err := newReviewSource(t, api).PullDetail(context.Background(), watches.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
 			require.NoError(t, err)
 			require.Equal(t, tc.fork, detail.Fork)

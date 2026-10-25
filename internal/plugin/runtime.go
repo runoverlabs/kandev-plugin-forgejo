@@ -329,6 +329,18 @@ func (r *Runtime) setEnabled(ctx context.Context, request *pluginsdk.PluginActio
 // It fails open: a state read problem must not silently disable a working
 // integration.
 func (r *Runtime) integrationEnabled(ctx context.Context, workspaceID string) (bool, error) {
+	enabled, err := r.integrationEnabledStrict(ctx, workspaceID)
+	if err != nil && ctx.Err() == nil {
+		return true, nil
+	}
+	return enabled, err
+}
+
+// integrationEnabledStrict is integrationEnabled without the fail-open: a
+// state read error is returned. Automations use it, because starting an agent
+// run in a workspace whose operator turned the integration off is worse than
+// failing the delivery.
+func (r *Runtime) integrationEnabledStrict(ctx context.Context, workspaceID string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -337,7 +349,10 @@ func (r *Runtime) integrationEnabled(ctx context.Context, workspaceID string) (b
 		return true, nil
 	}
 	value, found, err := host.GetState(ctx, "workspace", workspaceID, enabledStateKey)
-	if err != nil || !found || value == nil {
+	if err != nil {
+		return false, fmt.Errorf("kandev-plugin-forgejo: read enabled state: %w", err)
+	}
+	if !found || value == nil {
 		return true, nil
 	}
 	enabled, ok := value["enabled"].(bool)

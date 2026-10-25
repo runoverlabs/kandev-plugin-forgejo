@@ -103,8 +103,15 @@ Tag pushes and branch deletions never fire.
 | Skip drafts (default on) | A draft is the `draft` flag, or on Forgejo 7, which sends none, a `WIP:` or `[WIP]` title prefix. |
 | Include pull requests from forks | Off by default. See [Forks](#forks). |
 
-"Commented on" fires for a new comment on the pull request's conversation. On
-Forgejo 7 the comment delivery does not include the pull request, so the
+"Commented on" is off by default. It fires for a new comment on the pull
+request's conversation, **whoever wrote it**: the Authors filter checks the pull
+request's author, not the commenter. On a repository where anyone can comment,
+turning it on lets anyone start a run and put text in front of the agent
+(`{{data.comment.body}}`), which is a prompt-injection path the fork default
+does not close. Turn it on only when you trust everyone who can comment, and
+write the prompt to treat the comment as data.
+
+On Forgejo 7 the comment delivery does not include the pull request, so the
 branch, draft and fork filters cannot be checked and the comment is ignored;
 Forgejo 11 and later, and Gitea, include it.
 
@@ -164,11 +171,16 @@ In this order, and nothing is parsed before the signature passes:
 5. **Repository, enable switch, filters.** A miss is ignored (200); a match is
    accepted (202) and the automation runs.
 
+A delivery Kandev cannot check (the plugin is stopped, or a host read fails)
+gets a 503. Neither Kandev nor Forgejo retries it: the failed delivery stays
+under the webhook's recent deliveries in Forgejo, which can send it again.
+
 Kandev answers a delivery it has already seen (the same bytes, within seven
 days) as a duplicate, so a redelivery from Forgejo's webhook page does not run
 the automation twice. The plugin makes no request to the instance while
 checking a delivery.
 
 The plugin switched off for the workspace (Settings > Integrations > Forgejo)
-means every delivery is ignored. The secret reaches the plugin only while a
+means every delivery is ignored; if the switch cannot be read, the delivery
+fails rather than run. The secret reaches the plugin only while a
 delivery is checked; it is never stored or logged.

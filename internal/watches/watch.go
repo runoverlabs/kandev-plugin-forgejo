@@ -117,12 +117,16 @@ func (r RepoRef) FullName() string { return r.Owner + "/" + r.Name }
 
 // ParseRepoRef reads an "owner/name" string. It rejects anything with a
 // different shape rather than guessing, because a malformed entry would
-// otherwise become a 404 on every poll with no obvious cause.
+// otherwise become a 404 on every poll with no obvious cause. It is the one
+// definition of a repository reference: automation conditions use it too.
 func ParseRepoRef(raw string) (RepoRef, error) {
-	trimmed := strings.TrimSpace(raw)
+	// A pasted path ("/owner/name/") loses its surrounding slashes; what is
+	// left must still be exactly owner/name.
+	trimmed := strings.Trim(strings.TrimSpace(raw), "/")
 	owner, name, found := strings.Cut(trimmed, "/")
 	owner, name = strings.TrimSpace(owner), strings.TrimSpace(name)
-	if !found || owner == "" || name == "" || strings.Contains(name, "/") {
+	if !found || owner == "" || name == "" || strings.Contains(name, "/") ||
+		strings.ContainsAny(owner+name, " \t\r\n") {
 		return RepoRef{}, ValidationError(fmt.Sprintf("watches: repository %q must be in owner/name form", raw))
 	}
 	return RepoRef{Owner: owner, Name: name}, nil
