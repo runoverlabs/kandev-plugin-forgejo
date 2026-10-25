@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/scm"
 	"sort"
 	"strconv"
@@ -46,15 +47,6 @@ const (
 // to enumerate them.
 const stateScope = "workspace"
 
-// HostProvider defers Host resolution to call time. The Host is injected from
-// a background goroutine after construction, so nothing may capture it
-// eagerly.
-type HostProvider func() pluginsdk.Host
-
-// ErrNoHost means the plugin has not finished connecting back to kandev. It is
-// transient: the broker dial happens once, shortly after start.
-var ErrNoHost = errors.New("watches: kandev host is not available yet")
-
 // ErrNotFound means no watch exists with the requested id in that workspace.
 var ErrNotFound = errors.New("watches: watch not found")
 
@@ -65,12 +57,12 @@ var ErrNotFound = errors.New("watches: watch not found")
 // state API has no compare-and-swap, so a shared list value would lose a
 // concurrent write — the same reason the association store is shaped this way.
 type Store struct {
-	hosts HostProvider
+	hosts kandev.Provider
 	now   func() time.Time
 }
 
 // NewStore returns a Host-state-backed store.
-func NewStore(hosts HostProvider) *Store {
+func NewStore(hosts kandev.Provider) *Store {
 	return &Store{hosts: hosts, now: time.Now}
 }
 
@@ -90,16 +82,7 @@ type TaskRecord struct {
 	CreatedAt string `json:"created_at"`
 }
 
-func (s *Store) host() (pluginsdk.Host, error) {
-	if s.hosts == nil {
-		return nil, ErrNoHost
-	}
-	host := s.hosts()
-	if host == nil {
-		return nil, ErrNoHost
-	}
-	return host, nil
-}
+func (s *Store) host() (pluginsdk.Host, error) { return s.hosts.Get() }
 
 // NewID returns an opaque identifier for a new watch. It is hex so it is
 // always a legal state key component.

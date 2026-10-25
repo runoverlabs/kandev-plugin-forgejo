@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
@@ -21,7 +22,7 @@ const branchPageLimit = 100
 // AttachedRepositoryResolver ports against one Forgejo/Gitea instance.
 type Repositories struct {
 	connection *Connection
-	hosts      HostProvider
+	hosts      kandev.Provider
 	providerID string
 }
 
@@ -32,7 +33,7 @@ var (
 )
 
 // NewRepositories returns the repository adapter for providerID.
-func NewRepositories(connection *Connection, hosts HostProvider, providerID string) *Repositories {
+func NewRepositories(connection *Connection, hosts kandev.Provider, providerID string) *Repositories {
 	return &Repositories{connection: connection, hosts: hosts, providerID: providerID}
 }
 

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"kandev-plugin-forgejo/internal/kandev"
 	"net/http"
 	"strings"
 
@@ -225,7 +226,7 @@ func (e *Extension) getAssociations(ctx context.Context, request *pluginsdk.Plug
 		}
 		associations[i].ProviderID = e.ProviderID
 	}
-	return jsonResponse(map[string]any{"associations": associations})
+	return kandev.JSON(map[string]any{"associations": associations})
 }
 
 func (e *Extension) getReviews(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -247,7 +248,7 @@ func (e *Extension) getReviews(ctx context.Context, request *pluginsdk.PluginAct
 		}
 		reviews[i].ProviderID = e.ProviderID
 	}
-	return jsonResponse(map[string]any{"reviews": reviews})
+	return kandev.JSON(map[string]any{"reviews": reviews})
 }
 
 func (e *Extension) listBranches(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -283,7 +284,7 @@ func (e *Extension) listBranches(ctx context.Context, request *pluginsdk.PluginA
 	if err != nil {
 		return nil, fmt.Errorf("source-control recipe: list branches: %w", err)
 	}
-	return jsonResponse(map[string]any{"branches": branches})
+	return kandev.JSON(map[string]any{"branches": branches})
 }
 
 func (e *Extension) inspectRepository(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -305,13 +306,13 @@ func (e *Extension) inspectRepository(ctx context.Context, request *pluginsdk.Pl
 		return nil, fmt.Errorf("source-control recipe: inspect repository URL: %w", err)
 	}
 	if repository == nil {
-		return jsonResponse(map[string]any{"repository": nil})
+		return kandev.JSON(map[string]any{"repository": nil})
 	}
 	bound := *repository
 	bound.ProviderID = e.ProviderID
 	// The host's inspection contract names the immutable identifier
 	// provider_repository_id; repository_id stays for the plugin UI.
-	return jsonResponse(map[string]any{"repository": struct {
+	return kandev.JSON(map[string]any{"repository": struct {
 		Repository
 		ProviderRepositoryID string `json:"provider_repository_id"`
 	}{bound, bound.RepositoryID}})
@@ -330,7 +331,7 @@ func (e *Extension) unlinkChangeRequest(ctx context.Context, request *pluginsdk.
 		Number          int64  `json:"number"`
 	}
 	if err := json.Unmarshal(request.Body, &input); err != nil {
-		return invalidBody("the unlink body must carry connection_scope, repository_id and number")
+		return kandev.Refuse(http.StatusUnprocessableEntity, "the unlink body must carry connection_scope, repository_id and number")
 	}
 	identity := ChangeRequestIdentity{
 		ConnectionScope: strings.TrimSpace(input.ConnectionScope),
@@ -343,7 +344,7 @@ func (e *Extension) unlinkChangeRequest(ctx context.Context, request *pluginsdk.
 	if err := e.Associations.Unlink(ctx, request.Context.TaskID, identity); err != nil {
 		return nil, fmt.Errorf("source-control recipe: unlink task association: %w", err)
 	}
-	return jsonResponse(map[string]any{"unlinked": true})
+	return kandev.JSON(map[string]any{"unlinked": true})
 }
 
 func (e *Extension) linkChangeRequest(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -357,11 +358,11 @@ func (e *Extension) linkChangeRequest(ctx context.Context, request *pluginsdk.Pl
 		Reference string `json:"reference"`
 	}
 	if err := json.Unmarshal(request.Body, &input); err != nil {
-		return invalidBody("the link body must be {\"reference\": \"<url or owner/repo#number>\"}")
+		return kandev.Refuse(http.StatusUnprocessableEntity, "the link body must be {\"reference\": \"<url or owner/repo#number>\"}")
 	}
 	input.Reference = strings.TrimSpace(input.Reference)
 	if input.Reference == "" {
-		return invalidBody("a change-request reference is required")
+		return kandev.Refuse(http.StatusUnprocessableEntity, "a change-request reference is required")
 	}
 	change, err := e.ChangeRequests.ResolveReference(ctx, request.Context.WorkspaceID, input.Reference)
 	if err != nil {
@@ -373,7 +374,7 @@ func (e *Extension) linkChangeRequest(ctx context.Context, request *pluginsdk.Pl
 	if err := e.Associations.Link(ctx, request.Context.TaskID, change.Identity); err != nil {
 		return nil, fmt.Errorf("source-control recipe: link task association: %w", err)
 	}
-	return jsonResponse(map[string]any{"linked": true, "change_request": change})
+	return kandev.JSON(map[string]any{"linked": true, "change_request": change})
 }
 
 func validateChangeRequestIdentity(identity ChangeRequestIdentity) error {
@@ -437,7 +438,7 @@ func (e *Extension) listRepositories(ctx context.Context, request *pluginsdk.Plu
 		}
 		result["next_cursor"] = cursor
 	}
-	return jsonResponse(result)
+	return kandev.JSON(result)
 }
 
 type repositoryCursorEnvelope struct {
@@ -503,34 +504,11 @@ func (e *Extension) createChangeRequest(ctx context.Context, request *pluginsdk.
 	if err := validateChangeRequestIdentity(created.Identity); err != nil {
 		result["linked"] = false
 		result["association_error"] = "task association could not be saved"
-		return jsonResponse(result)
+		return kandev.JSON(result)
 	}
 	if err := e.Associations.Link(ctx, action.TaskID, created.Identity); err != nil {
 		result["linked"] = false
 		result["association_error"] = "task association could not be saved"
 	}
-	return jsonResponse(result)
-}
-
-// invalidBody answers a malformed request with a 422 and its reason. The host
-// replaces a Go error with "plugin action unavailable", which would leave a
-// caller guessing which field was wrong.
-func invalidBody(message string) (*pluginsdk.PluginActionResponse, error) {
-	response, err := jsonResponse(map[string]string{"error": message})
-	if err != nil {
-		return nil, err
-	}
-	response.Status = http.StatusUnprocessableEntity
-	return response, nil
-}
-
-func jsonResponse(value any) (*pluginsdk.PluginActionResponse, error) {
-	body, err := json.Marshal(value)
-	if err != nil {
-		return nil, fmt.Errorf("source-control recipe: encode action response: %w", err)
-	}
-	return &pluginsdk.PluginActionResponse{
-		Body:    body,
-		Headers: map[string]string{"Content-Type": "application/json"},
-	}, nil
+	return kandev.JSON(result)
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/watches"
 
@@ -123,13 +124,13 @@ func (r *Runtime) handleWatchAction(ctx context.Context, request *pluginsdk.Plug
 	case err == nil:
 		return response, nil
 	case errors.As(err, &refusal):
-		return domainResponse(refusal.status, refusal.Error())
+		return kandev.Refuse(refusal.status, refusal.Error())
 	case errors.As(err, &invalid):
-		return domainResponse(http.StatusUnprocessableEntity, invalid.Error())
+		return kandev.Refuse(http.StatusUnprocessableEntity, invalid.Error())
 	case errors.Is(err, watches.ErrNotFound):
-		return domainResponse(http.StatusNotFound, "kandev-plugin-forgejo: no such watch in this workspace")
+		return kandev.Refuse(http.StatusNotFound, "kandev-plugin-forgejo: no such watch in this workspace")
 	case errors.Is(err, watches.ErrCleanupOff):
-		return domainResponse(http.StatusConflict, "kandev-plugin-forgejo: cleanup is off for this watch")
+		return kandev.Refuse(http.StatusConflict, "kandev-plugin-forgejo: cleanup is off for this watch")
 	default:
 		return nil, err
 	}
@@ -146,10 +147,10 @@ func (r *Runtime) routeWatchAction(ctx context.Context, request *pluginsdk.Plugi
 			// Say which field, not the whole decoder error: it can echo input.
 			var typeErr *json.UnmarshalTypeError
 			if errors.As(err, &typeErr) && typeErr.Field != "" {
-				return domainResponse(http.StatusUnprocessableEntity,
+				return kandev.Refuse(http.StatusUnprocessableEntity,
 					"kandev-plugin-forgejo: the field "+typeErr.Field+" has the wrong type")
 			}
-			return domainResponse(http.StatusUnprocessableEntity, "kandev-plugin-forgejo: the request body is not valid JSON")
+			return kandev.Refuse(http.StatusUnprocessableEntity, "kandev-plugin-forgejo: the request body is not valid JSON")
 		}
 	}
 
@@ -188,7 +189,7 @@ func (r *Runtime) listWatches(ctx context.Context, workspaceID string, kind watc
 			found = append(found, watch)
 		}
 	}
-	return jsonResponse(map[string]any{"watches": found})
+	return kandev.JSON(map[string]any{"watches": found})
 }
 
 func (r *Runtime) createWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -208,7 +209,7 @@ func (r *Runtime) createWatch(ctx context.Context, workspaceID string, body watc
 	if err != nil {
 		return nil, err
 	}
-	return jsonResponse(map[string]any{"watch": saved})
+	return kandev.JSON(map[string]any{"watch": saved})
 }
 
 func (r *Runtime) updateWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -227,7 +228,7 @@ func (r *Runtime) updateWatch(ctx context.Context, workspaceID string, body watc
 	if err != nil {
 		return nil, err
 	}
-	return jsonResponse(map[string]any{"watch": saved})
+	return kandev.JSON(map[string]any{"watch": saved})
 }
 
 func (r *Runtime) deleteWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -237,7 +238,7 @@ func (r *Runtime) deleteWatch(ctx context.Context, workspaceID string, body watc
 	if err := r.watchStore.Delete(ctx, workspaceID, body.ID); err != nil {
 		return nil, err
 	}
-	return jsonResponse(map[string]any{"deleted": body.ID})
+	return kandev.JSON(map[string]any{"deleted": body.ID})
 }
 
 func (r *Runtime) runWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -267,7 +268,7 @@ func (r *Runtime) runWatch(ctx context.Context, workspaceID string, body watchRe
 	if err != nil {
 		return nil, err
 	}
-	return jsonResponse(map[string]any{"result": result, "watch": refreshed})
+	return kandev.JSON(map[string]any{"result": result, "watch": refreshed})
 }
 
 func (r *Runtime) resetWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -279,7 +280,7 @@ func (r *Runtime) resetWatch(ctx context.Context, workspaceID string, body watch
 	if err != nil {
 		return nil, err
 	}
-	return jsonResponse(map[string]any{"forgotten": forgotten, "watch_id": watch.ID})
+	return kandev.JSON(map[string]any{"forgotten": forgotten, "watch_id": watch.ID})
 }
 
 func (r *Runtime) cleanupWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -302,7 +303,7 @@ func (r *Runtime) cleanupWatch(ctx context.Context, workspaceID string, body wat
 	if err != nil {
 		return nil, err
 	}
-	return jsonResponse(map[string]any{"result": result, "watch": refreshed})
+	return kandev.JSON(map[string]any{"result": result, "watch": refreshed})
 }
 
 // checkForkStep refuses a fork step that would start an agent on entry. It is
@@ -397,7 +398,7 @@ func (r *Runtime) watchOptions(ctx context.Context, workspaceID string) (*plugin
 		}
 	}
 
-	return jsonResponse(map[string]any{
+	return kandev.JSON(map[string]any{
 		"workflows":            rendered,
 		"agent_profiles":       renderedProfiles,
 		"executor_profiles":    renderedExecutors,

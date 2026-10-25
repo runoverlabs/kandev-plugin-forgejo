@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"kandev-plugin-forgejo/internal/kandev"
 	"os"
 	"sort"
 	"strings"
@@ -97,11 +98,11 @@ func (r *Runtime) listAudit(ctx context.Context, request *pluginsdk.PluginAction
 	workspaceID := strings.TrimSpace(request.Context.WorkspaceID)
 	host := r.Host()
 	if workspaceID == "" || host == nil {
-		return jsonResponse(map[string]any{"entries": []any{}})
+		return kandev.JSON(map[string]any{"entries": []any{}})
 	}
 	entries, err := host.ListState(ctx, "workspace", workspaceID)
 	if err != nil {
-		return domainResponse(502, "The audit trail could not be read.")
+		return kandev.Refuse(502, "The audit trail could not be read.")
 	}
 	byKey := make(map[string]map[string]any, len(entries))
 	for _, entry := range entries {
@@ -112,5 +113,5 @@ func (r *Runtime) listAudit(ctx context.Context, request *pluginsdk.PluginAction
 	for i := len(keys) - 1; i >= 0 && len(shown) < auditShown; i-- {
 		shown = append(shown, byKey[keys[i]])
 	}
-	return jsonResponse(map[string]any{"entries": shown})
+	return kandev.JSON(map[string]any{"entries": shown})
 }

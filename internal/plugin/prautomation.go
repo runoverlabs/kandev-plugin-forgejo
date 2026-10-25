@@ -8,10 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"kandev-plugin-forgejo/internal/forgejo"
+	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/prautomation"
 	"kandev-plugin-forgejo/internal/scm"
-	"kandev-plugin-forgejo/internal/watches"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"google.golang.org/grpc/codes"
@@ -37,7 +36,7 @@ const (
 )
 
 // newAutomationEngine wires the engine to the Host and the instance.
-func (r *Runtime) newAutomationEngine(hosts forgejo.HostProvider) *prautomation.Engine {
+func (r *Runtime) newAutomationEngine(hosts kandev.Provider) *prautomation.Engine {
 	return prautomation.NewEngine(prautomation.Config{
 		Store: prautomation.NewStore(func() prautomation.StateHost {
 			host := hosts()
@@ -61,21 +60,21 @@ func (r *Runtime) newAutomationEngine(hosts forgejo.HostProvider) *prautomation.
 func (r *Runtime) workspaceIDs(ctx context.Context) ([]string, error) {
 	host := r.Host()
 	if host == nil {
-		return nil, prautomation.ErrNoHost
+		return nil, kandev.ErrNoHost
 	}
-	return watches.WorkspaceIDs(ctx, host)
+	return kandev.WorkspaceIDs(ctx, host)
 }
 
 // automationMessenger reaches task agents through the Host. It needs
 // api_read: sessions and api_write: messages.
 type automationMessenger struct {
-	hosts forgejo.HostProvider
+	hosts kandev.Provider
 }
 
 func (m automationMessenger) Sessions(ctx context.Context, taskID string) ([]prautomation.Session, error) {
 	host := m.hosts()
 	if host == nil {
-		return nil, prautomation.ErrNoHost
+		return nil, kandev.ErrNoHost
 	}
 	// Every page: an attempt's session missing from the list reads as ended,
 	// and its prompt would be sent again while the agent still runs it.
@@ -115,7 +114,7 @@ var errTooManySessions = errors.New("kandev-plugin-forgejo: too many sessions on
 func (m automationMessenger) Send(ctx context.Context, taskID, sessionID, text string) (string, error) {
 	host := m.hosts()
 	if host == nil {
-		return "", prautomation.ErrNoHost
+		return "", kandev.ErrNoHost
 	}
 	dispatch, err := host.Messages().Send(ctx, taskID, sessionID, text)
 	if err != nil {
@@ -220,7 +219,7 @@ func (r *Runtime) OnEvent(_ context.Context, event *pluginsdk.Event) error {
 func (r *Runtime) handleAutomationAction(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
 	workspaceID := strings.TrimSpace(request.Context.WorkspaceID)
 	if workspaceID == "" {
-		return domainResponse(422, "This action needs a verified workspace.")
+		return kandev.Refuse(422, "This action needs a verified workspace.")
 	}
 	switch request.ActionKey {
 	case ActionAutomationSettings:
@@ -241,7 +240,7 @@ func (r *Runtime) handleAutomationAction(ctx context.Context, request *pluginsdk
 		// warning.
 		ConfirmFork bool `json:"confirm_fork"`
 	}
-	if bad := decodeActionBody(request, &input); bad != nil {
+	if bad := kandev.DecodeBody(request, &input); bad != nil {
 		return bad, nil
 	}
 	ref, err := r.automationRef(ctx, workspaceID, request.Context.TaskID, input.Number)
@@ -290,7 +289,7 @@ func (r *Runtime) handleAutomationAction(ctx context.Context, request *pluginsdk
 				return pullFailure(err)
 			}
 			if fork {
-				return domainResponse(http.StatusConflict, "This pull request comes from a fork. Confirm the warning in the panel to turn this on.")
+				return kandev.Refuse(http.StatusConflict, "This pull request comes from a fork. Confirm the warning in the panel to turn this on.")
 			}
 		}
 		// The defaults an unseeded record takes, as the loop would seed it: a
@@ -348,7 +347,7 @@ func (r *Runtime) handleAutomationAction(ctx context.Context, request *pluginsdk
 
 	case ActionAutomationRetry:
 		if input.What != "merge" && input.What != "rounds" {
-			return domainResponse(422, "what must be merge or rounds.")
+			return kandev.Refuse(422, "what must be merge or rounds.")
 		}
 		record, err := r.automation.Update(ctx, workspaceID, ref, func(record *prautomation.Record) error {
 			if input.What == "merge" {
@@ -360,7 +359,7 @@ func (r *Runtime) handleAutomationAction(ctx context.Context, request *pluginsdk
 			return nil
 		})
 		if errors.Is(err, prautomation.ErrNotFound) {
-			return domainResponse(409, "Automation has not looked at this pull request yet.")
+			return kandev.Refuse(409, "Automation has not looked at this pull request yet.")
 		}
 		if err != nil {
 			return nil, err
@@ -371,7 +370,7 @@ func (r *Runtime) handleAutomationAction(ctx context.Context, request *pluginsdk
 		})
 		return r.automationView(ctx, workspaceID, record)
 	}
-	return domainResponse(404, "Unknown automation action.")
+	return kandev.Refuse(404, "Unknown automation action.")
 }
 
 // automationFork reports whether a linked pull request comes from a fork: as
@@ -468,7 +467,7 @@ func (r *Runtime) automationView(ctx context.Context, workspaceID string, record
 	if attempt := record.Attempt; attempt != nil {
 		view["attempt"] = map[string]any{"round": attempt.Round, "state": attempt.State, "dispatch": attempt.Dispatch}
 	}
-	return jsonResponse(view)
+	return kandev.JSON(view)
 }
 
 func (r *Runtime) automationSettings(ctx context.Context, workspaceID string) (*pluginsdk.PluginActionResponse, error) {
@@ -476,7 +475,7 @@ func (r *Runtime) automationSettings(ctx context.Context, workspaceID string) (*
 	if err != nil {
 		return nil, err
 	}
-	return jsonResponse(settingsView(settings))
+	return kandev.JSON(settingsView(settings))
 }
 
 func settingsView(settings prautomation.Settings) map[string]any {
@@ -501,7 +500,7 @@ func (r *Runtime) automationSettingsSet(ctx context.Context, request *pluginsdk.
 		Trust    *string                `json:"trust"`
 		Template *string                `json:"template"`
 	}
-	if bad := decodeActionBody(request, &input); bad != nil {
+	if bad := kandev.DecodeBody(request, &input); bad != nil {
 		return bad, nil
 	}
 	settings, err := r.automation.Store().Settings(ctx, workspaceID)
@@ -518,7 +517,7 @@ func (r *Runtime) automationSettingsSet(ctx context.Context, request *pluginsdk.
 		settings.Template = *input.Template
 	}
 	if err := settings.Validate(); err != nil {
-		return domainResponse(422, strings.ToUpper(err.Error()[:1])+err.Error()[1:]+".")
+		return kandev.Refuse(422, strings.ToUpper(err.Error()[:1])+err.Error()[1:]+".")
 	}
 	if err := r.automation.Store().PutSettings(ctx, workspaceID, settings); err != nil {
 		return nil, err
@@ -548,7 +547,7 @@ func (r *Runtime) automationSettingsSet(ctx context.Context, request *pluginsdk.
 		Action: request.ActionKey, Actor: request.Context.ActorID, Workspace: workspaceID,
 		Outcome: strings.Join(changes, ","),
 	})
-	return jsonResponse(settingsView(settings.Normalize()))
+	return kandev.JSON(settingsView(settings.Normalize()))
 }
 
 // prOutcome records the agent's report on the auto-fix attempt in flight.

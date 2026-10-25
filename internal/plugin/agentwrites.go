@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
@@ -44,8 +45,8 @@ func (r *Runtime) setAgentMerge(ctx context.Context, request *pluginsdk.PluginAc
 	var input struct {
 		Enabled *bool `json:"enabled"`
 	}
-	if bad := decodeActionBody(request, &input); bad != nil || input.Enabled == nil {
-		return domainResponse(422, "enabled is required.")
+	if bad := kandev.DecodeBody(request, &input); bad != nil || input.Enabled == nil {
+		return kandev.Refuse(422, "enabled is required.")
 	}
 	host := r.Host()
 	if host == nil {
@@ -58,7 +59,7 @@ func (r *Runtime) setAgentMerge(ctx context.Context, request *pluginsdk.PluginAc
 		Action: request.ActionKey, Actor: request.Context.ActorID, Workspace: workspaceID,
 		Outcome: fmt.Sprintf("agent_merge=%t", *input.Enabled),
 	})
-	return jsonResponse(map[string]any{"agent_merge": *input.Enabled})
+	return kandev.JSON(map[string]any{"agent_merge": *input.Enabled})
 }
 
 // agentWriteWorkspace finds the workspace an agent call belongs to. The tool

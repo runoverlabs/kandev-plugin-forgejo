@@ -3,19 +3,13 @@ package forgejo
 import (
 	"context"
 	"fmt"
+	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/kandev/kandev/pkg/pluginsdk"
 )
-
-// HostProvider defers Host resolution to call time. The Host is injected from
-// a background goroutine after construction, so adapters must never capture it
-// eagerly.
-type HostProvider func() pluginsdk.Host
 
 // Connection turns the plugin's operator config into a ready REST client. The
 // resolved client is cached and rebuilt whenever the operator changes the
@@ -23,7 +17,7 @@ type HostProvider func() pluginsdk.Host
 // cache exists to avoid a GetConfig round trip per action, not to survive
 // rotation.
 type Connection struct {
-	hosts      HostProvider
+	hosts      kandev.Provider
 	httpClient *http.Client
 
 	mu     sync.Mutex
@@ -32,7 +26,7 @@ type Connection struct {
 }
 
 // NewConnection returns a Connection that resolves config through hosts.
-func NewConnection(hosts HostProvider) *Connection {
+func NewConnection(hosts kandev.Provider) *Connection {
 	return &Connection{
 		hosts: hosts,
 		httpClient: &http.Client{

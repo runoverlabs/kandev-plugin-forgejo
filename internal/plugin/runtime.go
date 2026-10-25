@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"kandev-plugin-forgejo/internal/forgejo"
+	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/prautomation"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
@@ -89,7 +90,7 @@ var (
 // closure rather than capturing it here.
 func NewRuntime() *Runtime {
 	runtime := &Runtime{}
-	hosts := forgejo.HostProvider(func() pluginsdk.Host { return runtime.Host() })
+	hosts := kandev.Provider(func() pluginsdk.Host { return runtime.Host() })
 
 	connection := forgejo.NewConnection(hosts)
 	repositories := forgejo.NewRepositories(connection, hosts, ProviderID)
@@ -104,10 +105,10 @@ func NewRuntime() *Runtime {
 	runtime.gitCredentials = forgejo.NewGitCredentials(connection)
 	runtime.pullActions = forgejo.NewPullActions(connection, repositories, associations, ProviderID)
 
-	runtime.watchStore = watches.NewStore(watches.HostProvider(hosts))
+	runtime.watchStore = watches.NewStore(kandev.Provider(hosts))
 	runtime.watchPoller = watches.NewPoller(
 		runtime.watchStore,
-		watches.HostProvider(hosts),
+		kandev.Provider(hosts),
 		forgejo.NewIssueSource(connection),
 		runtime.integrationEnabled,
 	).WithReviews(forgejo.NewReviewSource(connection))
@@ -286,7 +287,7 @@ func (r *Runtime) connectionStatus(ctx context.Context, workspaceID string, forc
 			status["message"] = safeMessage(err)
 		}
 		r.clearConnectionCache(ctx, workspaceID)
-		return jsonResponse(status)
+		return kandev.JSON(status)
 	}
 	status["configured"] = true
 	status["instance_url"] = client.Scope()
@@ -298,7 +299,7 @@ func (r *Runtime) connectionStatus(ctx context.Context, workspaceID string, forc
 				status[key] = value
 			}
 			status["cached"] = true
-			return jsonResponse(status)
+			return kandev.JSON(status)
 		}
 	}
 
@@ -309,13 +310,13 @@ func (r *Runtime) connectionStatus(ctx context.Context, workspaceID string, forc
 		}
 		status["message"] = safeMessage(err)
 		r.clearConnectionCache(ctx, workspaceID)
-		return jsonResponse(status)
+		return kandev.JSON(status)
 	}
 	for key, value := range probed {
 		status[key] = value
 	}
 	r.storeConnectionCache(ctx, workspaceID, client.Scope(), probed)
-	return jsonResponse(status)
+	return kandev.JSON(status)
 }
 
 // setEnabled records the operator's choice for one workspace.
@@ -342,7 +343,7 @@ func (r *Runtime) setEnabled(ctx context.Context, request *pluginsdk.PluginActio
 	}); err != nil {
 		return nil, fmt.Errorf("kandev-plugin-forgejo: store enabled state: %w", err)
 	}
-	return jsonResponse(map[string]any{"provider": ProviderID, "enabled": *input.Enabled})
+	return kandev.JSON(map[string]any{"provider": ProviderID, "enabled": *input.Enabled})
 }
 
 // integrationEnabled reports whether this integration is on for a workspace.
@@ -386,15 +387,15 @@ func (r *Runtime) integrationEnabledStrict(ctx context.Context, workspaceID stri
 func disabledResponse(actionKey string) (*pluginsdk.PluginActionResponse, error) {
 	switch actionKey {
 	case sourcecontrol.ActionRepositoriesList:
-		return jsonResponse(map[string]any{"repositories": []any{}})
+		return kandev.JSON(map[string]any{"repositories": []any{}})
 	case sourcecontrol.ActionRepositoriesInspect:
-		return jsonResponse(map[string]any{"repository": nil})
+		return kandev.JSON(map[string]any{"repository": nil})
 	case sourcecontrol.ActionRepositoriesBranches:
-		return jsonResponse(map[string]any{"branches": []any{}})
+		return kandev.JSON(map[string]any{"branches": []any{}})
 	case sourcecontrol.ActionChangeRequestsGet:
-		return jsonResponse(map[string]any{"reviews": []any{}})
+		return kandev.JSON(map[string]any{"reviews": []any{}})
 	case sourcecontrol.ActionChangeRequestAssociations:
-		return jsonResponse(map[string]any{"associations": []any{}})
+		return kandev.JSON(map[string]any{"associations": []any{}})
 	default:
 		return nil, errors.New("kandev-plugin-forgejo: the Forgejo integration is turned off for this workspace")
 	}
@@ -514,15 +515,4 @@ func writeReasonMessage(reason scm.Reason) string {
 	default:
 		return "The instance rejected the request."
 	}
-}
-
-func jsonResponse(value any) (*pluginsdk.PluginActionResponse, error) {
-	body, err := json.Marshal(value)
-	if err != nil {
-		return nil, fmt.Errorf("kandev-plugin-forgejo: encode action response: %w", err)
-	}
-	return &pluginsdk.PluginActionResponse{
-		Body:    body,
-		Headers: map[string]string{"Content-Type": "application/json"},
-	}, nil
 }

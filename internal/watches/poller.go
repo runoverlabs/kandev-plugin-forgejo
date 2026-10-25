@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/scm"
 	"strings"
 	"sync"
@@ -76,7 +77,7 @@ const taskPageSize = 200
 // rate-limit pressure without finishing sooner.
 type Poller struct {
 	store   *Store
-	hosts   HostProvider
+	hosts   kandev.Provider
 	issues  IssueSource
 	reviews ReviewSource
 	gate    WorkspaceGate
@@ -90,7 +91,7 @@ type Poller struct {
 }
 
 // NewPoller wires a poller. gate and logf may be nil.
-func NewPoller(store *Store, hosts HostProvider, issues IssueSource, gate WorkspaceGate) *Poller {
+func NewPoller(store *Store, hosts kandev.Provider, issues IssueSource, gate WorkspaceGate) *Poller {
 	return &Poller{
 		store:  store,
 		hosts:  hosts,
@@ -159,7 +160,7 @@ func (p *Poller) Tick(ctx context.Context) {
 		// The broker dial has not finished. The next tick will find it.
 		return
 	}
-	workspaces, err := WorkspaceIDs(ctx, host)
+	workspaces, err := kandev.WorkspaceIDs(ctx, host)
 	if err != nil {
 		p.logf("watches: list workspaces: %v", err)
 		return
@@ -200,32 +201,6 @@ func (p *Poller) tickWorkspace(ctx context.Context, workspaceID string) {
 			p.logf("watches: run %s: %v", watch.ID, err)
 		}
 	}
-}
-
-// maxWorkspacePages bounds the workspace walk, in case a host's cursor never
-// ends.
-const maxWorkspacePages = 50
-
-// WorkspaceIDs enumerates every workspace the host serves, page by page.
-func WorkspaceIDs(ctx context.Context, host pluginsdk.Host) ([]string, error) {
-	var ids []string
-	cursor := ""
-	for range maxWorkspacePages {
-		workspaces, pageInfo, err := host.Workspaces().List(ctx, pluginsdk.Page{Limit: taskPageSize, Cursor: cursor})
-		if err != nil {
-			return nil, err
-		}
-		for _, workspace := range workspaces {
-			if id := strings.TrimSpace(workspace.ID); id != "" {
-				ids = append(ids, id)
-			}
-		}
-		if pageInfo == nil || !pageInfo.HasMore || pageInfo.NextCursor == "" || pageInfo.NextCursor == cursor {
-			break
-		}
-		cursor = pageInfo.NextCursor
-	}
-	return ids, nil
 }
 
 // Result reports what one watch run did. It is returned to the panel's manual

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"kandev-plugin-forgejo/internal/kandev"
 	"sort"
 	"strings"
 	"sync"
@@ -578,7 +579,7 @@ func (r *evaluation) deliver(sessionID, text string) (string, bool) {
 // away, so nothing was queued.
 func refused(err error) bool {
 	return errors.Is(err, ErrNotApproved) || errors.Is(err, ErrNoSession) ||
-		errors.Is(err, ErrTaskInactive) || errors.Is(err, ErrNoHost)
+		errors.Is(err, ErrTaskInactive) || errors.Is(err, kandev.ErrNoHost)
 }
 
 func (r *evaluation) sendFailed(err error) {

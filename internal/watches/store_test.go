@@ -2,6 +2,7 @@ package watches
 
 import (
 	"context"
+	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/scm"
 	"strings"
 	"testing"
@@ -232,7 +233,7 @@ func TestStoreRequiresAHost(t *testing.T) {
 	t.Parallel()
 	store := NewStore(func() pluginsdk.Host { return nil })
 	_, err := store.List(context.Background(), "ws-1")
-	require.ErrorIs(t, err, ErrNoHost)
+	require.ErrorIs(t, err, kandev.ErrNoHost)
 }
 
 func TestReviewWatchesLiveUnderTheirOwnPrefix(t *testing.T) {

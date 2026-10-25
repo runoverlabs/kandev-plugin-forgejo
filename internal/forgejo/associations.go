@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
@@ -23,13 +24,13 @@ const associationKeyPrefix = "task:"
 // links never read-modify-write the same value. The Host state API has no
 // compare-and-swap, and a shared per-task list would lose a concurrent link.
 type Associations struct {
-	hosts HostProvider
+	hosts kandev.Provider
 }
 
 var _ sourcecontrol.AssociationStore = (*Associations)(nil)
 
 // NewAssociations returns the Host-state-backed association store.
-func NewAssociations(hosts HostProvider) *Associations {
+func NewAssociations(hosts kandev.Provider) *Associations {
 	return &Associations{hosts: hosts}
 }
 

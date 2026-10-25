@@ -9,6 +9,7 @@ import (
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 
+	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
@@ -26,7 +27,7 @@ func (r *Runtime) handlePullAction(ctx context.Context, request *pluginsdk.Plugi
 		return nil, err
 	}
 	if !enabled {
-		return domainResponse(http.StatusConflict, "The Forgejo integration is turned off for this workspace.")
+		return kandev.Refuse(http.StatusConflict, "The Forgejo integration is turned off for this workspace.")
 	}
 	switch request.ActionKey {
 	case sourcecontrol.ActionChangeRequestsDetails:
@@ -55,7 +56,7 @@ func (r *Runtime) changeRequestDetails(ctx context.Context, request *pluginsdk.P
 	}
 	if len(request.Body) > 0 {
 		if err := json.Unmarshal(request.Body, &body); err != nil || body.Number < 0 {
-			return domainResponse(http.StatusUnprocessableEntity, "The request body is not valid.")
+			return kandev.Refuse(http.StatusUnprocessableEntity, "The request body is not valid.")
 		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, detailsBudget)
@@ -64,23 +65,11 @@ func (r *Runtime) changeRequestDetails(ctx context.Context, request *pluginsdk.P
 	if err != nil {
 		return pullFailure(err)
 	}
-	return jsonResponse(details)
+	return kandev.JSON(details)
 }
 
 // writeBudget bounds a write. A merge may wait out a "still computing" answer.
 const writeBudget = 12 * time.Second
-
-// decodeActionBody reads an action body, answering 422 itself when it is not valid.
-func decodeActionBody(request *pluginsdk.PluginActionRequest, into any) *pluginsdk.PluginActionResponse {
-	if len(request.Body) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(request.Body, into); err != nil {
-		response, _ := domainResponse(http.StatusUnprocessableEntity, "The request body is not valid.")
-		return response
-	}
-	return nil
-}
 
 // finish turns a port result or error into the reply, auditing either way.
 func finish[T any](ctx context.Context, r *Runtime, request *pluginsdk.PluginActionRequest, number int64, result T, err error) (*pluginsdk.PluginActionResponse, error) {
@@ -95,7 +84,7 @@ func finish[T any](ctx context.Context, r *Runtime, request *pluginsdk.PluginAct
 	if err != nil {
 		return pullFailure(err)
 	}
-	return jsonResponse(result)
+	return kandev.JSON(result)
 }
 
 func (r *Runtime) changeRequestMerge(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -107,7 +96,7 @@ func (r *Runtime) changeRequestMerge(ctx context.Context, request *pluginsdk.Plu
 		WhenChecksSucceed bool   `json:"when_checks_succeed"`
 		CancelScheduled   bool   `json:"cancel_scheduled"`
 	}
-	if bad := decodeActionBody(request, &body); bad != nil {
+	if bad := kandev.DecodeBody(request, &body); bad != nil {
 		return bad, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, writeBudget)
@@ -127,7 +116,7 @@ func (r *Runtime) changeRequestReview(ctx context.Context, request *pluginsdk.Pl
 		HeadSHA  string                        `json:"head_sha"`
 		Comments []sourcecontrol.InlineComment `json:"comments"`
 	}
-	if bad := decodeActionBody(request, &body); bad != nil {
+	if bad := kandev.DecodeBody(request, &body); bad != nil {
 		return bad, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, writeBudget)
@@ -144,7 +133,7 @@ func (r *Runtime) changeRequestReviewers(ctx context.Context, request *pluginsdk
 		Add    []string `json:"add"`
 		Remove []string `json:"remove"`
 	}
-	if bad := decodeActionBody(request, &body); bad != nil {
+	if bad := kandev.DecodeBody(request, &body); bad != nil {
 		return bad, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, writeBudget)
@@ -160,7 +149,7 @@ func (r *Runtime) changeRequestUpdateBranch(ctx context.Context, request *plugin
 		Number int64  `json:"number"`
 		Style  string `json:"style"`
 	}
-	if bad := decodeActionBody(request, &body); bad != nil {
+	if bad := kandev.DecodeBody(request, &body); bad != nil {
 		return bad, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, writeBudget)
@@ -176,7 +165,7 @@ func (r *Runtime) changeRequestComment(ctx context.Context, request *pluginsdk.P
 		Number int64  `json:"number"`
 		Body   string `json:"body"`
 	}
-	if bad := decodeActionBody(request, &body); bad != nil {
+	if bad := kandev.DecodeBody(request, &body); bad != nil {
 		return bad, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, writeBudget)
@@ -195,19 +184,19 @@ func pullFailure(err error) (*pluginsdk.PluginActionResponse, error) {
 	var invalidErr *scm.InvalidError
 	switch {
 	case errors.Is(err, scm.ErrNotLinked):
-		return domainResponse(http.StatusNotFound, "That pull request is not linked to this task.")
+		return kandev.Refuse(http.StatusNotFound, "That pull request is not linked to this task.")
 	case errors.As(err, &invalidErr):
-		return domainResponse(http.StatusUnprocessableEntity, invalidErr.Message)
+		return kandev.Refuse(http.StatusUnprocessableEntity, invalidErr.Message)
 	case errors.Is(err, scm.ErrAmbiguous):
-		return domainResponse(http.StatusConflict, "This task links more than one pull request; say which one.")
+		return kandev.Refuse(http.StatusConflict, "This task links more than one pull request; say which one.")
 	case errors.As(err, &writeErr):
-		return domainResponse(writeStatus(writeErr), writeReasonMessage(writeErr.Reason))
+		return kandev.Refuse(writeStatus(writeErr), writeReasonMessage(writeErr.Reason))
 	case errors.Is(err, scm.ErrUnauthorized):
-		return domainResponse(http.StatusForbidden, safeMessage(err))
+		return kandev.Refuse(http.StatusForbidden, safeMessage(err))
 	case errors.Is(err, context.DeadlineExceeded):
-		return domainResponse(http.StatusGatewayTimeout, "The instance took too long to answer.")
+		return kandev.Refuse(http.StatusGatewayTimeout, "The instance took too long to answer.")
 	default:
-		return domainResponse(http.StatusBadGateway, safeMessage(err))
+		return kandev.Refuse(http.StatusBadGateway, safeMessage(err))
 	}
 }
 
@@ -222,15 +211,4 @@ func writeStatus(err *scm.WriteError) int {
 	default:
 		return http.StatusConflict
 	}
-}
-
-// domainResponse is an expected failure: a fixed message under an explicit
-// status, never provider text.
-func domainResponse(status int, message string) (*pluginsdk.PluginActionResponse, error) {
-	response, err := jsonResponse(map[string]string{"error": message})
-	if err != nil {
-		return nil, err
-	}
-	response.Status = status
-	return response, nil
 }
