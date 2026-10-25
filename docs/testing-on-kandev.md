@@ -21,6 +21,9 @@ tests, which talk only to Forgejo:
 | `AgentProfiles().List` | The watch form's agent picker | `api_read:agent_profiles` |
 | `ExecutorProfiles().List` | The watch form's executor picker | `api_read:executor_profiles` |
 | `Repositories().List` | The attached-repository resolver | `api_read:repositories` |
+| `Messages().Send` | Pull request automation prompting a task's agent | `api_write:messages` |
+| `Sessions().List` | Pull request automation choosing a session, and holding back on a fork's never-started one | `api_read:sessions` |
+| `OnEvent` (`turn.completed`, `task_session.state_changed`) | Pull request automation noticing a turn that ended without an outcome | `events` |
 
 Also untested anywhere but on a host: the capability **approval** flow, the
 plugin's own process lifecycle (`SetHost` → the poller goroutine), and whether
@@ -282,6 +285,39 @@ Kandev's address), and for the CI result a Forgejo 12+ with an Actions runner.
 - [ ] Upgrade the plugin (install the next candidate version): the same, every
       binding refuses deliveries until reconfigured.
 - [ ] Switch the integration off for the workspace: deliveries are ignored.
+
+### 13. Pull request automation
+
+Added with [pull request automation](pr-automation.md), which changes the
+capability set: re-approval comes first.
+
+- [ ] After the upgrade, before re-approving: the repository picker and review
+      panel are refused, and a pull request's Automation section reports that
+      approval is needed once a switch is on. Re-approve; both recover.
+- [ ] Turn on auto-fix for a task's pull request whose CI fails. Within a minute
+      the agent receives one prompt starting `[Forgejo auto-fix · … · round 1/10`,
+      with the failing check. It reports through `pr` `op: "outcome"`, and the
+      panel shows the outcome. Nothing else is sent while the round is with the
+      agent.
+- [ ] Stop the agent's turn before it reports: the next prompt (within about a
+      minute, sooner if the event arrives) says the previous turn ended without
+      an outcome, and the round count goes up.
+- [ ] A comment by another user on the pull request is the next round's
+      feedback; one by the plugin's own account is not. Switch the workspace's
+      feedback setting to "Official reviewers": a read-only user's comment is
+      left out and counted in the panel.
+- [ ] Turn on auto-merge on a pull request with an approval missing: the panel
+      names the gate. Approve it: it merges within a minute, and
+      `connection.audit` lists `automation.merge` by `auto-merge`. Push a commit
+      just as it becomes ready: the stale merge is refused and the new head is
+      evaluated.
+- [ ] Merged and closed prompts: each fires once; a pull request reopened and
+      closed again prompts again.
+- [ ] A fork's pull request in a column that does not start agents: turning
+      auto-fix on asks for confirmation, and with the task never started the
+      panel says the agent has not been started and nothing is sent.
+- [ ] Switch the integration off: nothing is prompted or merged; switching it
+      back on resumes.
 
 ## Rolling back
 

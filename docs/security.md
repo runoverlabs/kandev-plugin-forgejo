@@ -22,12 +22,15 @@ host, and what the pipeline checks on every change.
   descriptors, or error messages — provider error bodies are not forwarded,
   because some deployments echo the presented token.
 - **Declared capabilities are the whole trust surface.** `api_read` covers
-  `tasks`, `repositories`, `workspaces`, `workflows`, `agent_profiles` and
-  `executor_profiles`; `state` and `secrets` are held; `api_write` is
-  `["tasks"]` and nothing else. Task creation — issue watches filing a card —
-  is the plugin's only entity mutation; Kandev owns every other one. The
-  manifest claims neither `agent_invoke` nor `auth`, and `auth` in particular is
-  the highest-privilege capability a manifest can hold.
+  `tasks`, `repositories`, `workspaces`, `workflows`, `agent_profiles`,
+  `executor_profiles` and `sessions`; `state` and `secrets` are held;
+  `api_write` is `["tasks", "messages"]`; `events` subscribes to
+  `turn.completed` and `task_session.state_changed`. Task creation (watches
+  filing a card) and prompts to a task's agent ([pull request
+  automation](pr-automation.md)) are the plugin's only entity mutations; Kandev
+  owns every other one. The manifest claims neither `agent_invoke` nor `auth`,
+  and `auth` in particular is the highest-privilege capability a manifest can
+  hold.
 - **A capability grant is a permission gate, not a sandbox.** Plugin code runs
   privileged inside a Kandev installation, so `api_write: tasks` is a real trust
   step rather than a checkbox. `internal/plugin/manifest_test.go` asserts the
@@ -92,6 +95,43 @@ They add no capability.
   opened the pull request.
 - **Replays** are Kandev's: it records the SHA-256 of each delivered body per
   binding for seven days and answers a repeat as a duplicate.
+
+## Pull request automation
+
+[Pull request automation](pr-automation.md) prompts a task's agent and can
+merge. It is what `api_write: messages`, `api_read: sessions` and the two event
+subscriptions are for; adding them means an operator re-approves the whole
+capability set after upgrading.
+
+- **People turn it on.** Each switch is set per pull request in the review
+  panel, or copied from workspace defaults when a pull request is first linked.
+  The agent tools cannot set any switch. Nothing runs while the workspace
+  integration is off, and the loop checks that switch failing closed.
+- **Review text is untrusted input.** It reaches the agent's prompt marked as
+  data. The workspace's trust setting decides whose text counts. At the
+  default (everyone, as with Kandev's GitHub integration), anyone who can
+  comment on the pull request can put text in front of the agent; "official
+  reviewers" limits it to reviewers whose approval counts, which needs write
+  access. The operator account's own words are never fed back.
+- **Forks.** Defaults never turn on auto-fix or auto-merge for a fork's pull
+  request; a person must, after a confirmation. Kandev starts a never-run
+  session when it is messaged, so for a fork the plugin reads the task's session
+  states first and only prompts one already running or idle. As with review
+  watches, this is the plugin's own guard, not Kandev's manual-start marker,
+  which a plugin cannot set.
+- **Bounded.** At most one auto-fix prompt is in flight per pull request and at
+  most 10 rounds before it pauses; every prompt carries an attempt id, so a
+  resend after a crash is a replay Kandev collapses rather than a duplicate.
+- **Merges are pinned and audited.** Auto-merge checks its gates on one head
+  commit and sends that commit as `head_commit_id`, so a commit pushed in
+  between is refused by the instance rather than merged unseen. It does not use
+  the instance's scheduled merge, which on every supported host merges a head
+  pushed after scheduling. Each attempt is recorded in the audit trail as
+  `automation.merge` by `auto-merge`, and every switch change with the Kandev
+  user who made it.
+- **Outcome reports are bound.** The `pr` tool's `outcome` op only resolves the
+  attempt in flight on the calling task, sent to the calling session; with none,
+  it is refused.
 
 ## Write authority
 

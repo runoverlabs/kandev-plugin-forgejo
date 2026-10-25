@@ -11,9 +11,11 @@ surfaces.
 This is a Kandev runtime plugin. Repositories, pull requests and reviews are
 supplied through the source-control extension contracts and rendered by Kandev
 with the same UI it uses for the built-in code hosts. The only screens the
-plugin draws itself are on the integrations card: a connection panel, and the
-issue-watch list — Kandev's own issue-watch surfaces are compiled in per
-provider and have no extension point a plugin can register against.
+plugin draws itself are on the integrations card (a connection panel, the
+watch lists and the automation settings) and the automation section of the
+review panel: Kandev's own issue-watch and pull request automation surfaces are
+compiled in per provider and have no extension point a plugin can register
+against.
 
 ## What it adds
 
@@ -26,9 +28,10 @@ provider and have no extension point a plugin can register against.
 | Integrations card | Connection status and a per-workspace enable switch the plugin renders itself. |
 | Review panel + CI popover | Review state, approval counts, individual commit statuses, and unresolved review comments, on desktop and mobile. |
 | Composer `#` references | Search pull requests from the composer; access is re-checked live at submit time. |
-| [Agent tools (MCP)](docs/agent-tools.md) | Two tools on task sessions — read CI for a ref (optionally with each failing job's log) and get/open/ready the task's pull request. |
+| [Agent tools (MCP)](docs/agent-tools.md) | Two tools on task sessions — read CI for a ref (optionally with each failing job's log) and work with the task's pull request (get, open, ready, merge, review, comment, and report an auto-fix outcome). |
 | [Issue watches](docs/issue-watches.md) | Poll repositories for matching issues and file each new one as a Kanban task, with the column, profiles and prompt you choose. |
 | [Automation conditions](docs/automations.md) | Forgejo and Gitea webhooks as native triggers in Kandev's automation editor: a push, a pull request event, or (Forgejo 12+) a finished Actions run, with branch, author, label, draft, workflow and fork filters. Every delivery's signature is verified. |
+| [Pull request automation](docs/pr-automation.md) | Per pull request: prompt the agent with new CI failures, conflicts and review feedback in bounded rounds (auto-fix), merge once CI passes and reviews allow (auto-merge), and tell the agent when its review is requested or the pull request is merged or closed. A workspace setting decides whose review text reaches the agent. |
 | [Review watches](docs/review-watches.md) | File a task for every pull request that asks for your review, with an interpolated prompt and a checkout of the branch; fork pull requests never start an agent on their own; finished pull requests can have their task archived. |
 | Git credentials | HTTPS clone and push credentials for task sessions, via Kandev's Git credential broker. The configured token is issued only for `owner/repo` paths on the configured instance, only to complete task/session/repository scopes, and never while the workspace integration is switched off. Without this, Kandev cannot start a task on a Forgejo repository. |
 
@@ -70,9 +73,10 @@ provider and have no extension point a plugin can register against.
 
 Changing the configuration restarts the plugin; that is expected.
 
-> **Upgrading from 0.2.0 or earlier?** Releases that change the plugin's
-> declared capabilities require re-approving them in Kandev, and the existing
-> repository, review and pull-request features stay denied until you do. See
+> **Upgrading to the release with pull request automation, or from 0.2.0 or
+> earlier?** Releases that change the plugin's declared capabilities require
+> re-approving them in Kandev, and the existing repository, review and
+> pull-request features stay denied until you do. See
 > [Testing on a real Kandev](docs/testing-on-kandev.md#read-this-before-upgrading-an-existing-install).
 
 ## Forgejo and Gitea
@@ -124,6 +128,8 @@ commit status is also the only place CI from outside the forge appears.
 | Repository picker, pull request creation, linking, glyphs, review panel, composer references, git credentials | 7.0 | 1.27 |
 | Pull request actions (merge, review, request reviewers, comment, update branch) | 7.0 | 1.27 |
 | Issue watches, review watches | 7.0 | 1.27 |
+| Pull request automation (auto-fix, auto-merge, lifecycle prompts) | 7.0 | 1.27 |
+| Review-requested prompt for a request made to a team | 11.0 | 1.27 |
 | `ci` agent tool: overall state and each check | 7.0 | 1.27 |
 | `ci` agent tool: Actions jobs and their logs | 16.0 | 1.27 |
 | `pr` agent tool | 7.0 | 1.27 |
@@ -174,6 +180,7 @@ token scopes differ:
 | --- | --- |
 | [Issue watches](docs/issue-watches.md) | Turning Forgejo issues into Kanban tasks: every setting, what the feature guarantees, and the capabilities it needs. |
 | [Automation conditions](docs/automations.md) | Webhook triggers for Kandev automations: setting up the Forgejo webhook, every filter, the normalized `{{data.*}}` fields, and why an upgrade means reconfiguring the webhook. |
+| [Pull request automation](docs/pr-automation.md) | Per pull request: prompt the agent with new CI failures, conflicts and review feedback in bounded rounds (auto-fix), merge once CI passes and reviews allow (auto-merge), and tell the agent when its review is requested or the pull request is merged or closed. A workspace setting decides whose review text reaches the agent. |
 | [Review watches](docs/review-watches.md) | Filing a task per pull request awaiting your review: scope, drafts, fork handling, and cleanup by archiving or, where the host cannot, completing the task. |
 | [Agent tools](docs/agent-tools.md) | The two MCP tools on task sessions, what CI data each host version can actually serve, and what the pair costs in prompt tokens. |
 | [Configuration and operations](docs/configuration.md) | Connection scope, the per-workspace enable switch, headless install and action bodies over HTTP, and the unsigned badge. |

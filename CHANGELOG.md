@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **Pull request automation** ([#8](https://github.com/runoverlabs/kandev-plugin-forgejo/issues/8)):
+  the plugin's counterpart of Kandev's GitHub CI auto-fix, auto-merge and pull
+  request prompts. Per linked pull request, from a new Automation section in the
+  review panel:
+  - **Auto-fix** prompts the task's agent with new CI failures, conflicts and
+    review feedback, one round at a time, at most 10 rounds. The agent reports
+    `action_taken`, `non_actionable` or `blocked` through the `pr` tool's new
+    `outcome` op.
+  - **Auto-merge** merges once CI has passed, the branch merges cleanly, and
+    reviews and required approvals allow it. It is pinned to the head commit it
+    checked, and audited.
+  - **Lifecycle prompts** tell the agent when its review is requested, or when
+    the pull request is merged or closed.
+
+  Workspace defaults, a "review feedback the agent sees" setting (everyone,
+  official reviewers, or none) and the auto-fix prompt are in the integrations
+  card. Defaults never turn on auto-fix or auto-merge for a fork, and the plugin
+  never starts a fork's agent. See [docs/pr-automation.md](docs/pr-automation.md).
+- **Breaking: re-approve the plugin's capabilities after upgrading.** Pull
+  request automation adds `api_write: messages`, `api_read: sessions` and the
+  `turn.completed` and `task_session.state_changed` events. Kandev re-checks
+  the whole capability set, so **every gated feature (repository picker, review
+  panel, watches) is refused until an administrator re-approves** in Settings →
+  Plugins → Forgejo.
+- The `pr` agent tool's schema no longer describes `title` ("required for
+  open" is still the answer when it is missing), to make room for `outcome`
+  within the same size budget.
+
 - **Automation conditions** ([#7](https://github.com/runoverlabs/kandev-plugin-forgejo/issues/7)):
   Forgejo and Gitea webhooks can start a Kandev automation. Three conditions
   appear in the automation editor: a push to a branch, a pull request event

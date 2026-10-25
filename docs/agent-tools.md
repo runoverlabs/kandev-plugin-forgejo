@@ -9,7 +9,7 @@ filtering can ask for `ci` instead.
 | Tool | Arguments | Answers |
 | --- | --- | --- |
 | `ci` | `ref` (branch or SHA), `logs?` (tail lines per failed job), `repo?` | Overall state (`success`/`failure`/`running`/`pending`/`none`) and each job, with the tail of each failed job's log when `logs` is set. |
-| `pr` | `op` = `get` / `open` / `ready` / `merge` / `review` / `request_review` / `update` / `comment`, plus `head`, `base`, `title`, `body`, `draft`, `sha`, `event`, `style`, `reviewers`, `delete_branch`, `repo` | The task's pull request. `open` records the Kandev task association, so the review sidebar sees it too. The last five act on the task's linked pull request; see "Acting on a pull request". |
+| `pr` | `op` = `get` / `open` / `ready` / `merge` / `review` / `request_review` / `update` / `comment` / `outcome`, plus `head`, `base`, `title`, `body`, `draft`, `sha`, `event`, `style`, `reviewers`, `delete_branch`, `outcome`, `repo` | The task's pull request. `open` records the Kandev task association, so the review sidebar sees it too. `merge` to `comment` act on the task's linked pull request; see "Acting on a pull request". `outcome` reports on an auto-fix round; see "Reporting an auto-fix outcome". |
 
 A few properties worth knowing before you write a prompt against them:
 
@@ -96,6 +96,22 @@ not own. `get` now prints `sha=` for the head commit.
   not repeatable. Kandev passes them on to the agent's MCP client as hints; they
   can change how a client prompts for approval.
 
+## Reporting an auto-fix outcome
+
+[Pull request automation](pr-automation.md)'s auto-fix prompts end with an
+instruction to call `pr` with `op: "outcome"`, `outcome` set to
+`action_taken`, `non_actionable` or `blocked`, and a short `body`. It is the
+plugin's counterpart of Kandev's own outcome tool, which accepts only GitHub
+and GitLab.
+
+- It answers only while an auto-fix round is in flight on the task, sent to the
+  calling session. Otherwise it is refused with "no auto-fix attempt is waiting
+  for an outcome on this task", so it cannot be used to poke automation state.
+- With several linked pull requests waiting at once, `repo` picks one.
+- The `outcome` values are not an enum in the schema: the prompt spells them
+  out, and the tool refuses anything else and lists them. Leaving the enum out
+  kept `pr` inside its byte ceiling.
+
 ## Context cost
 
 Every plugin tool is added to the agent's prompt and nothing can be removed to
@@ -115,6 +131,10 @@ tokens by the byte ratio (re-measure with the estimator before a release). That
 fits the existing ceilings (1,024 bytes a tool, 1,536 together), which were not
 raised: the descriptions were compressed instead, and the semantics live in this
 page.
+
+The `outcome` op takes `pr` to 1,011 bytes, and both tools to 1,506. It fit by
+leaving out the `outcome` enum and the `title` hint (`open` without a title
+says it is required); the ceilings were not raised.
 
 For scale, Kandev's own `show_rich_output_kandev` is around 2k tokens by itself.
 

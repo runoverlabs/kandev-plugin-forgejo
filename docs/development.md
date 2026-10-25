@@ -198,6 +198,29 @@ Token scopes and branch protection, probed on all four on 2026-10-09:
 | Merge blocked by required approvals | **405** on all four. `not allowed to merge [reason: Does not have enough approvals]` on Gitea 1.20 and both Forgejos, bare `Does not have enough approvals` on Gitea 1.27. Classified as blocked by protection, ahead of "not allowed to merge" (a read-only user's message, which is forbidden) |
 | `GET .../branches/main` on a protected branch | `protected`, `required_approvals`, `user_can_merge` as expected; a writer with an approval merges (200) |
 
+Pull request automation, probed on Forgejo 7.0.16, 11.0.16, 15.0.10 and 17.0.0
+and Gitea 1.27.3 on 2026-10-25. `TestLiveAutomationObservation` and
+`TestLiveAutomationMergePinsTheHead` pin what the code relies on; the scheduled
+merge rows are why it does not use that feature.
+
+| Fact | Result |
+|---|---|
+| `merge_when_checks_succeed` when the head's checks are already green | **Forgejo 11, 15, 17: 201 and never merges** (no merge within 20 s, three runs each); it waits for a new status event. Forgejo 7: merged at once (200), once. Gitea 1.27: merges |
+| `merge_when_checks_succeed` on a repository with no CI or statuses | **Forgejo: 201 and never merges.** Gitea 1.27: merges at once |
+| Scheduled, then a new commit is pushed and goes green | **Merges the new head on all five**, though it was scheduled with the old `head_commit_id` |
+| Scheduled with a stale `head_commit_id` | 201 (accepted) on Forgejo 11, 15, 17; 405 "try again later" on Forgejo 7 and Gitea, which is mergeability recomputing, not a check |
+| Scheduling twice | 409 `pull request is already scheduled to auto merge…` on all |
+| Cancelling a scheduled merge | 204, then 404 for a second cancel, on all |
+| Plain merge with a stale `head_commit_id` | 409 `head out of date` (Forgejo 15, 17), or the transient 405 while mergeability recomputes (Forgejo 11); never merged |
+| `GET .../collaborators/{user}/permission` | **403 for a non-admin token** asking about anyone but itself, on all five. Repository admins and the user itself get `permission` and `role_name` |
+| `GET .../collaborators/{user}` | 204 / 404 to any collaborator, but says nothing about the level and misses owners and org members |
+| A review's `official` | `true` for a collaborator with write access, `false` for a read-only one, on all five, visible to any token that can read the pull request |
+| A review comment's `resolver` | Present (`null` until resolved) on all five. There is no API to resolve one |
+| `comments_count` on a review | Present on all five |
+| Bot marker on users | None on any host: no `type` field. The Actions user (`-2`) and the ghost user (`-1`) have negative ids, read from source |
+| A team review request on the pull request | `requested_reviewers_teams` lists the team on Forgejo 11, 15, 17 and Gitea; **Forgejo 7 lists neither the team nor its members** (`requested_reviewers: [null]`) |
+| `GET /user/teams` | 200 with the plugin's documented scopes (Forgejo 17, Gitea 1.27); lists `organization.username` and `name` |
+
 The CI `live` job seeds a write-access `reviewer` and a read-only `readonly`
 user; `TestLivePullRequestActions`, `TestLiveReviewerFlow` and
 `TestLiveReadOnlyUserIsForbidden` re-check the rest on each run.
@@ -208,11 +231,12 @@ user; `TestLivePullRequestActions`, `TestLiveReviewerFlow` and
 | --- | --- |
 | `manifest.yaml` | The declarative host contract: actions, provider ownership, reference source, capabilities, automation conditions, config schema. |
 | `internal/sourcecontrol/` | The provider-neutral source-control recipe — the Kandev boundary. Adapted from `kandev-plugin-template`. |
-| `internal/forgejo/` | Concrete Forgejo/Gitea adapters: REST client, repositories, pull requests, reviews, references, associations, the Actions/CI resolution chain, and webhook signature checking and decoding (`webhooks.go`, with captured deliveries in `testdata/webhooks/`). |
+| `internal/forgejo/` | Concrete Forgejo/Gitea adapters: REST client, repositories, pull requests, reviews, references, associations, the Actions/CI resolution chain, webhook signature checking and decoding (`webhooks.go`, with captured deliveries in `testdata/webhooks/`), and the pull request automation source (`probserve.go`). |
 | `internal/automations/` | The provider-neutral half of the automation conditions: the condition keys and settings, the event model, the filters, and the normalized `{{data.*}}` payload. |
+| `internal/prautomation/` | The provider-neutral half of pull request automation: switches and workspace settings, the per pull request record and attempt ledger, feedback collection by trust level, the auto-fix, auto-merge and lifecycle decisions, prompt rendering, and the loop. Reaches Forgejo through the `Observer`, `Links` and `Merger` ports and Kandev through `Messenger`. |
 | `internal/watches/` | The provider-neutral watch half: the watch model (issue and review kinds), the dedup ledger, the poll loop, review placement and fork rules, and cleanup. Reaches Forgejo only through the `IssueSource` and `ReviewSource` ports. |
-| `internal/plugin/` | Wires the adapters into the extension, owns the connection and watch actions, serves the agent tools, and implements the automation adapter (`DescribeAutomationCondition`, `VerifyAutomationWebhook`). |
-| `ui/src/` | The browser half: the recipe registration plus the Forgejo icon, reference parsing, detail adapter, connection panel, and the issue-watch panel. |
+| `internal/plugin/` | Wires the adapters into the extension, owns the connection, watch and pull request automation actions, serves the agent tools, receives bus events (`OnEvent`), and implements the automation adapter (`DescribeAutomationCondition`, `VerifyAutomationWebhook`). |
+| `ui/src/` | The browser half: the recipe registration plus the Forgejo icon, reference parsing, detail adapter, review panel, connection panel, the watch panels, and the pull request automation section and settings (`automation.ts`). |
 | `server/` | The `pluginsdk.Serve` entry point Kandev spawns. |
 
 ## Approach
@@ -233,11 +257,15 @@ The practical consequence is that anything Kandev renders per provider at
 compile time has no extension point a plugin can register against. Repositories,
 pull requests and reviews do have neutral contracts and therefore appear in
 Kandev's own UI; issue watches do not, which is why their entire UI is a panel
-this plugin draws itself.
+this plugin draws itself. The same holds for CI auto-fix, auto-merge and pull
+request prompts: Kandev's are compiled into its GitHub integration (its outcome
+tool accepts only `github` and `gitlab`, through v0.98.0), so the plugin runs
+its own loop and reaches the agent through the message API.
 
 ### Ports in the neutral package, adapters in the provider package
 
-`internal/sourcecontrol`, `internal/watches` and `internal/automations` declare narrow interfaces and
+`internal/sourcecontrol`, `internal/watches`, `internal/automations` and
+`internal/prautomation` declare narrow interfaces and
 own the decisions; `internal/forgejo` implements them and owns every URL,
 pagination token, authentication detail and error mapping.
 
