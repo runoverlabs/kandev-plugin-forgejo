@@ -98,19 +98,19 @@ jobs:
         working-directory: kandev-plugin-forgejo
         run: make verify-package
 
-  # The live contract tests run against real instances of both hosts, at the
-  # floor and the current release of each.
+  # The live contract tests run against real instances of both hosts: every
+  # Forgejo LTS from the floor up plus the current Forgejo, and the current
+  # Gitea (Gitea supports only its newest release, so its floor is its current
+  # one). Releases between two LTS are assumed to behave like the LTS before.
   live:
     runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          # The floor and the current release of each host. The floor entries
-          # are the versions README.md's supported range promises.
-          - flavor: gitea
-            binary: gitea
-            image: gitea/gitea:1.20
+          # Keep in step with README.md's "Supported versions": add each new
+          # Forgejo LTS, move the current entry each quarter, and drop an LTS
+          # only together with a floor change.
           - flavor: gitea
             binary: gitea
             image: gitea/gitea:1.27
@@ -119,7 +119,13 @@ jobs:
             image: codeberg.org/forgejo/forgejo:7
           - flavor: forgejo
             binary: forgejo
-            image: codeberg.org/forgejo/forgejo:16
+            image: codeberg.org/forgejo/forgejo:11
+          - flavor: forgejo
+            binary: forgejo
+            image: codeberg.org/forgejo/forgejo:15
+          - flavor: forgejo
+            binary: forgejo
+            image: codeberg.org/forgejo/forgejo:17
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -167,8 +173,8 @@ jobs:
             --email kandev@example.com --must-change-password=false
           # Mint through the admin CLI rather than HTTP basic auth: no
           # credential pair ever appears in a command line, and the CLI's
-          # 'all' scope is the one spelling that works across every supported
-          # version (the 1.20+ scope names do not exist on older hosts).
+          # 'all' scope keeps the seed independent of the scope vocabulary,
+          # which has changed between releases before.
           token="$(docker exec -u git instance "$BINARY" admin user generate-access-token \
             --username kandev --token-name ci --scopes 'all' --raw | tr -d '\r\n')"
           echo "::add-mask::$token"

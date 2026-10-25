@@ -4,6 +4,14 @@
 
 - Release binaries are built with Go 1.26.10, which fixes GO-2026-6809
   (compromised intermediate certificates trusted by `crypto/x509`).
+- **Breaking: Gitea's supported floor is now 1.27**, its current release (was
+  1.20). Gitea supports only its most recent release upstream, and the plugin
+  follows it. Plugin 0.4 is the last release line supporting Gitea 1.20 to 1.26:
+  on those, install the newest 0.4.x and stay on it. Forgejo's floor stays at 7.
+  The plugin now targets recent Forgejo first, and a feature Gitea cannot serve
+  may ship for Forgejo only. The README's "Supported versions" table lists each
+  feature's minimum release per host.
+- CI now tests Forgejo 7, 11, 15 and 17 and Gitea 1.27.
 
 ## 0.4.0
 

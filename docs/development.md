@@ -198,9 +198,10 @@ Flavor detection exists for display only — **no behaviour branches on it**.
 
 Where the hosts genuinely diverge, the code resolves through a chain and takes
 the first surface that answers rather than assuming a shape: `ci` walks
-`/actions/runs` → `/actions/tasks` → the combined commit status, because at the
-supported floor of either host there is no Actions API at all. The live contract
-matrix in CI is what keeps that claim honest.
+`/actions/runs` → `/actions/tasks` → the combined commit status, because the
+Actions API varies between releases and only the combined status sees CI running
+outside the forge. The live contract matrix in CI is what keeps that claim
+honest.
 
 ## Conventions worth matching
 
