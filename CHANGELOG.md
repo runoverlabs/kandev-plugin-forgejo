@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Release binaries are built with Go 1.26.10, which fixes GO-2026-6809
+  (compromised intermediate certificates trusted by `crypto/x509`).
+
 ## 0.4.0
 
 Pull request actions (merge, review, request reviewers, comment, update branch)
