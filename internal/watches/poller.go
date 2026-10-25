@@ -158,7 +158,7 @@ func (p *Poller) Tick(ctx context.Context) {
 		// The broker dial has not finished. The next tick will find it.
 		return
 	}
-	workspaces, err := p.workspaceIDs(ctx, host)
+	workspaces, err := WorkspaceIDs(ctx, host)
 	if err != nil {
 		p.logf("watches: list workspaces: %v", err)
 		return
@@ -201,17 +201,28 @@ func (p *Poller) tickWorkspace(ctx context.Context, workspaceID string) {
 	}
 }
 
-// workspaceIDs enumerates the workspaces this host serves.
-func (p *Poller) workspaceIDs(ctx context.Context, host pluginsdk.Host) ([]string, error) {
-	workspaces, _, err := host.Workspaces().List(ctx, pluginsdk.Page{Limit: taskPageSize})
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(workspaces))
-	for _, workspace := range workspaces {
-		if strings.TrimSpace(workspace.ID) != "" {
-			ids = append(ids, workspace.ID)
+// maxWorkspacePages bounds the workspace walk, in case a host's cursor never
+// ends.
+const maxWorkspacePages = 50
+
+// WorkspaceIDs enumerates every workspace the host serves, page by page.
+func WorkspaceIDs(ctx context.Context, host pluginsdk.Host) ([]string, error) {
+	var ids []string
+	cursor := ""
+	for range maxWorkspacePages {
+		workspaces, pageInfo, err := host.Workspaces().List(ctx, pluginsdk.Page{Limit: taskPageSize, Cursor: cursor})
+		if err != nil {
+			return nil, err
 		}
+		for _, workspace := range workspaces {
+			if id := strings.TrimSpace(workspace.ID); id != "" {
+				ids = append(ids, id)
+			}
+		}
+		if pageInfo == nil || !pageInfo.HasMore || pageInfo.NextCursor == "" || pageInfo.NextCursor == cursor {
+			break
+		}
+		cursor = pageInfo.NextCursor
 	}
 	return ids, nil
 }

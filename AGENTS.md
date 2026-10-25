@@ -69,6 +69,7 @@ implements them and owns every Forgejo detail.
 | `internal/sourcecontrol/` | The source-control recipe: ports, no Forgejo |
 | `internal/watches/` | Issue and review watch model, dedup ledger, poll loop, fork placement, cleanup: ports, no Forgejo |
 | `internal/automations/` | Automation condition settings, the neutral webhook event, the filters, the `{{data.*}}` payload: no Forgejo |
+| `internal/prautomation/` | Pull request automation: switches, settings, the per pull request record, feedback and trust, auto-fix rounds, merge gates, lifecycle prompts, the loop: ports, no Forgejo |
 | `internal/forgejo/` | Every URL, pagination token, auth detail, error mapping, webhook header and payload shape |
 | `internal/plugin/` | Wires adapters to the SDK, owns actions and agent tools |
 | `ui/src/` | The browser half |
@@ -212,6 +213,24 @@ Verified in the sibling checkout; each cost real debugging time.
   and a field schema cannot carry `default` (the host refuses the manifest);
   defaults go in the condition's `default_config`, which is copied once into a
   new trigger. Read an absent boolean as false.
+- **`Messages().Send` (`api_write: messages`) is the only way to prompt an
+  existing task's agent.** An empty session id targets the primary session
+  (`NotFound` when there is none); a RUNNING or STARTING session queues the
+  text; a never-launched one (CREATED, or WAITING_FOR_INPUT with no execution)
+  is **started** with it; an idle or completed one is prompted. Its idempotency
+  key is derived from task, session, source and **text**, so an identical text
+  is a replay: put an id in every prompt. It carries no metadata and cannot
+  replace a queued message. `Sessions().List` (`api_read: sessions`) gives
+  states but not which session is primary.
+- **Event delivery is best-effort.** `capabilities.events` patterns are
+  subscribed and pushed to `OnEvent` from an in-memory queue that drops on
+  overflow and does not survive a restart, so an event is a hint and polling
+  stays the source of truth. `events` is part of the capability digest.
+  `turn.completed` carries `task_id`, `session_id`, `started_at`;
+  `task_session.state_changed` carries `task_id`, `session_id`, `new_state`.
+- Kandev's CI auto-fix, auto-merge and pull request prompts are GitHub-only in
+  the host through v0.98.0 (the outcome tool accepts `github` and `gitlab`); the
+  plugin runs its own (`internal/prautomation`).
 - `SetHost` is the only lifecycle hook, called once from a background goroutine
   after the broker dial. It is where background work starts.
 
@@ -237,9 +256,24 @@ Where the hosts diverge, resolve through a chain and take the first surface that
 answers rather than assuming a shape (`ci` walks `/actions/runs` →
 `/actions/tasks` → combined commit status).
 
-Verify a provider claim against a real instance before encoding it. Two found
+Verify a provider claim against a real instance before encoding it. Some found
 that way and easy to get wrong:
 
+- **Do not use `merge_when_checks_succeed` for unattended merges.** On Forgejo
+  it never fires when checks were already green or the repository has no CI,
+  and on every host it merges a head pushed after scheduling. A plain merge
+  with `head_commit_id` is refused (409) when the head moved.
+- **An issue's conversation comments are not paged** (Forgejo 7 to 17, Gitea
+  1.27): `page` and `limit` are ignored and every request returns them all, so
+  walking pages repeats the list. Reviews are paged. Both send
+  `X-Total-Count`, which `pageNewest` uses to keep the newest entries.
+- **The combined commit status pages** (30 contexts by default, 50 at most), and
+  its `total_count` and `state` describe the page alone: `X-Total-Count` is the
+  real count. A failing check can sit on page 2.
+- A review comment's `resolver` is set only on the comment the conversation
+  was resolved from; the web UI uses the first. Replies are not marked.
+- A non-admin token gets 403 from `collaborators/{user}/permission` for anyone
+  but itself. A review's `official` flag is the trust signal every token sees.
 - The per-repository issues endpoint takes **`q`**, not `keyword` — and
   *silently ignores* `keyword`, so the wrong spelling filters nothing instead of
   erroring.

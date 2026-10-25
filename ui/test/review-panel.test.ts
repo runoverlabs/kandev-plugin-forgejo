@@ -201,7 +201,19 @@ describe("review panel", () => {
     await t.settle();
     const tree = t.render();
     expect(mergeButton(tree).props.disabled).toBe(true);
-    expect(tree.props.notice.children[0]).toContain("conflicts");
+    const notice = find(tree.props.notice, (n) => n.props?.["data-testid"] === "forgejo-merge-notice");
+    expect(notice.children[0]).toContain("conflicts");
+  });
+
+  it("puts the pull request's automation section in the notice area", async () => {
+    const t = mount({ "change_requests.details": () => DETAILS });
+    t.render();
+    await t.settle();
+    const tree = t.render();
+    const section = find(tree.props.notice, (n) => n.props?.taskId === "task-1" && n.props?.number === 7);
+    expect(section).not.toBeNull();
+    expect(section.props.workspaceId).toBe("ws-1");
+    expect(section.props.refreshKey).toBeGreaterThan(0);
   });
 
   it("still renders a merge button when the repository reported no styles", async () => {

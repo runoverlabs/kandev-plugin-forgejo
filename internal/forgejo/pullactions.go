@@ -191,6 +191,87 @@ func pageAll[T any](ctx context.Context, c *Client, path string, limit int) ([]T
 	return all, true, nil
 }
 
+// pageNewest returns the newest limit items of a list endpoint that serves
+// oldest first, still oldest first, and reports whether older ones were left
+// out. X-Total-Count, which every supported host sends, locates the last pages;
+// the page size is taken from the first answer, as the host may cap it below
+// the one asked for.
+//
+// Not every list pages: an issue's conversation comments ignore page and limit
+// (Forgejo 7 to 17, Gitea 1.27) and come back whole, which shows as a first
+// page holding the total. Walking such a list page by page would repeat it.
+func pageNewest[T any](ctx context.Context, c *Client, path string, limit int) ([]T, bool, error) {
+	first, total, err := listPage[T](ctx, c, path, 1)
+	if err != nil {
+		return nil, false, err
+	}
+	if total < 0 {
+		return pageNewestUncounted(ctx, c, path, limit, first)
+	}
+	if len(first) == 0 || len(first) >= total {
+		items := newestItems(first, limit)
+		return items, len(first) > len(items), nil
+	}
+	size := len(first)
+	last := (total + size - 1) / size
+	from := 1
+	if total > limit {
+		from = (total-limit)/size + 1
+	}
+	from = max(from, last-maxPullListPages+1)
+	var all []T
+	if from == 1 {
+		all = first
+	}
+	for page := max(from, 2); page <= last; page++ {
+		batch, _, err := listPage[T](ctx, c, path, page)
+		if err != nil {
+			return nil, false, err
+		}
+		all = append(all, batch...)
+		if len(batch) < size {
+			break
+		}
+	}
+	items := newestItems(all, limit)
+	return items, total > len(items), nil
+}
+
+// pageNewestUncounted is pageNewest for an answer without a count: it walks
+// forward from the first page, keeping the newest limit items.
+func pageNewestUncounted[T any](ctx context.Context, c *Client, path string, limit int, first []T) ([]T, bool, error) {
+	all, dropped := first, false
+	batch := first
+	for page := 2; len(batch) == pullListPageSize && page <= maxPullListPages; page++ {
+		var err error
+		if batch, _, err = listPage[T](ctx, c, path, page); err != nil {
+			return nil, false, err
+		}
+		all = append(all, batch...)
+		if len(all) > limit {
+			all, dropped = newestItems(all, limit), true
+		}
+	}
+	items := newestItems(all, limit)
+	return items, dropped || len(all) > len(items) || len(batch) == pullListPageSize, nil
+}
+
+func listPage[T any](ctx context.Context, c *Client, path string, page int) ([]T, int, error) {
+	query := url.Values{}
+	query.Set("page", strconv.Itoa(page))
+	query.Set("limit", strconv.Itoa(pullListPageSize))
+	var batch []T
+	total, err := c.getCounted(ctx, path, query, &batch)
+	return batch, total, err
+}
+
+func newestItems[T any](items []T, limit int) []T {
+	if len(items) <= limit {
+		return items
+	}
+	return append([]T(nil), items[len(items)-limit:]...)
+}
+
 // PullFiles lists changed files, up to limit; truncated reports more existed.
 func (c *Client) PullFiles(ctx context.Context, owner, name string, number int64, limit int) ([]ChangedFile, bool, error) {
 	return pageAll[ChangedFile](ctx, c, pullPath(owner, name, number, "/files"), limit)
@@ -278,8 +359,8 @@ type IssueComment struct {
 	User      User   `json:"user"`
 }
 
-// IssueComments lists conversation comments, oldest first, up to limit;
-// truncated reports more existed.
+// IssueComments lists the newest limit conversation comments, oldest first;
+// truncated reports older ones existed.
 func (c *Client) IssueComments(ctx context.Context, owner, name string, number int64, limit int) ([]IssueComment, bool, error) {
-	return pageAll[IssueComment](ctx, c, issuePath(owner, name, number, "/comments"), limit)
+	return pageNewest[IssueComment](ctx, c, issuePath(owner, name, number, "/comments"), limit)
 }

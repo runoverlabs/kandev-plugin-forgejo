@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"kandev-plugin-forgejo/internal/forgejo"
+	"kandev-plugin-forgejo/internal/prautomation"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 	"kandev-plugin-forgejo/internal/watches"
 
@@ -67,6 +68,11 @@ type Runtime struct {
 
 	// The account and version behind the automation conditions' Describe.
 	automationCache automationCache
+
+	// Pull request automation: auto-fix, auto-merge and lifecycle prompts.
+	// The engine owns a background loop, started with the watch poller.
+	automationSource *forgejo.AutomationSource
+	automation       *prautomation.Engine
 }
 
 var (
@@ -104,6 +110,8 @@ func NewRuntime() *Runtime {
 		forgejo.NewIssueSource(connection),
 		runtime.integrationEnabled,
 	).WithReviews(forgejo.NewReviewSource(connection))
+	runtime.automationSource = forgejo.NewAutomationSource(connection, associations)
+	runtime.automation = runtime.newAutomationEngine(hosts)
 	runtime.extension = &sourcecontrol.Extension{
 		ProviderID:           ProviderID,
 		ReferenceSource:      ReferenceSource,
@@ -146,6 +154,11 @@ func (r *Runtime) HandleAction(ctx context.Context, request *pluginsdk.PluginAct
 		// The poller and the manual run both refuse separately, which is where
 		// the toggle has to bite.
 		return r.handleWatchAction(ctx, request)
+	case ActionAutomationGet, ActionAutomationSet, ActionAutomationRetry,
+		ActionAutomationSettings, ActionAutomationSettingsSet:
+		// Reachable while the integration is off, like watch management: the
+		// loop is what the switch stops.
+		return r.handleAutomationAction(ctx, request)
 	default:
 		// A disabled integration contributes nothing to its workspace. The
 		// toggle would otherwise be decorative: it would move a badge while
@@ -162,7 +175,7 @@ func (r *Runtime) HandleAction(ctx context.Context, request *pluginsdk.PluginAct
 }
 
 // SetHost receives the Host once kandev's broker connection is established and
-// starts the watch poller.
+// starts the watch poller and the pull request automation loop.
 //
 // This is the only lifecycle hook the SDK offers: Serve dials the host from a
 // background goroutine after the plugin is already serving, so there is no
@@ -173,6 +186,9 @@ func (r *Runtime) SetHost(host pluginsdk.Host) {
 	if r.watchPoller != nil {
 		r.watchPoller.Start()
 	}
+	if r.automation != nil {
+		r.automation.Start()
+	}
 }
 
 // Stop halts background work. pluginsdk.Serve does not call this — kandev
@@ -181,6 +197,9 @@ func (r *Runtime) SetHost(host pluginsdk.Host) {
 func (r *Runtime) Stop() {
 	if r.watchPoller != nil {
 		r.watchPoller.Stop()
+	}
+	if r.automation != nil {
+		r.automation.Stop()
 	}
 }
 

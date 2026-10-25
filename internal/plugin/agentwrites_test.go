@@ -23,7 +23,7 @@ func linkedPullFixture(t *testing.T) *agentFixture {
 		}))
 	fixture.json("GET", "/api/v1/repos/kandev/demo/pulls/12",
 		`{"number":12,"title":"Add thing","html_url":"http://forge/pr/12","state":"open","mergeable":true,
-		  "head":{"ref":"feature","sha":"`+agentSHA+`"},"base":{"ref":"main"},"user":{"login":"bot"}}`)
+		  "head":{"ref":"feature","sha":"`+agentSHA+`","repo_id":77},"base":{"ref":"main","repo_id":77},"user":{"login":"bot"}}`)
 	fixture.json("GET", "/api/v1/user", `{"login":"kandev"}`)
 	fixture.json("GET", "/api/v1/repos/kandev/demo/branches/main", `{"name":"main","protected":false}`)
 	fixture.json("GET", "/api/v1/repos/kandev/demo/commits/"+agentSHA+"/status", `{"state":"success","statuses":[]}`)

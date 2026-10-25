@@ -20,8 +20,10 @@ type fakeHost struct {
 	state map[string]map[string]any
 
 	workspaces []pluginsdk.Workspace
-	tasks      []pluginsdk.Task
-	created    []pluginsdk.CreateTaskInput
+	// workspacePage, when set, pages the workspace list by that many.
+	workspacePage int
+	tasks         []pluginsdk.Task
+	created       []pluginsdk.CreateTaskInput
 
 	steps     map[string][]pluginsdk.WorkflowStep
 	updated   []pluginsdk.UpdateTaskInput
@@ -133,10 +135,19 @@ func (h *fakeHost) Tasks() pluginsdk.TaskReader           { return fakeTasks{hos
 
 type fakeWorkspaces struct{ host *fakeHost }
 
-func (w fakeWorkspaces) List(context.Context, pluginsdk.Page) ([]pluginsdk.Workspace, *pluginsdk.PageInfo, error) {
+func (w fakeWorkspaces) List(_ context.Context, page pluginsdk.Page) ([]pluginsdk.Workspace, *pluginsdk.PageInfo, error) {
 	w.host.mu.Lock()
 	defer w.host.mu.Unlock()
-	return w.host.workspaces, &pluginsdk.PageInfo{}, nil
+	if w.host.workspacePage == 0 {
+		return w.host.workspaces, &pluginsdk.PageInfo{}, nil
+	}
+	from, _ := strconv.Atoi(page.Cursor)
+	to := min(from+w.host.workspacePage, len(w.host.workspaces))
+	info := &pluginsdk.PageInfo{}
+	if to < len(w.host.workspaces) {
+		info.HasMore, info.NextCursor = true, strconv.Itoa(to)
+	}
+	return w.host.workspaces[from:to], info, nil
 }
 
 type fakeTasks struct {

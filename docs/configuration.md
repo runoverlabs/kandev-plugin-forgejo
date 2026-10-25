@@ -35,8 +35,10 @@ association reads return nothing, so the native pickers render empty instead of
 showing a provider the operator turned off, and pull-request create, link and
 unlink refuse outright rather than silently doing nothing. Webhook deliveries
 for the workspace's [automation conditions](automations.md) are ignored, and the
-editor shows those conditions unavailable. Turning it back on restores
-everything. A workspace with no stored choice is enabled — installing
+editor shows those conditions unavailable. [Pull request
+automation](pr-automation.md) stops: no pull request is observed, prompted or
+merged, and the switches resume when the integration is back on. Turning it
+back on restores everything. A workspace with no stored choice is enabled — installing
 the plugin is the opt-in.
 
 Disabling is not uninstalling: config, credentials and stored task links all
@@ -74,8 +76,9 @@ curl -sf -X POST "$KANDEV/api/plugins/$ID/actions/connection.test" \
   -d '{"workspaceId":"<workspace-id>"}'
 ```
 
-Every action in this plugin is `scope: "workspace"`, so **`workspaceId` is
-required on all of them**. Kandev validates the envelope before dispatching, so
+**`workspaceId` is required on every action**, and the task-scoped ones
+(`change_requests.*` on a task, `automation.get`, `.set` and `.retry`) also
+need `taskId`. Kandev validates the envelope before dispatching, so
 a missing selector fails with a 400 that never reaches the plugin process.
 
 Action bodies:
@@ -99,6 +102,11 @@ Action bodies:
 | `change_requests.create` | `{"title","description","destination","draft"}` (also needs `taskId`, `sessionId`, `repositoryId`) |
 | `change_requests.link` | `{"reference":"owner/repo#1"}` (also needs `taskId`) |
 | `change_requests.unlink` | `{"connection_scope","repository_id","number"}` (also needs `taskId`) |
+| `automation.get` | `{"number"}` (also needs `taskId`; `number` is optional when the task links one pull request). The pull request's switches, rounds, attempt, last outcome, merge failure, status line and error |
+| `automation.set` | `{"number","auto_fix","auto_merge","on_review_requested","on_merged","on_closed"}`, any subset, booleans (also needs `taskId`). Turning `auto_fix` on resets the rounds. Audited with the actor |
+| `automation.retry` | `{"number","what"}` (also needs `taskId`). `what` is `merge` (one more attempt after a refused merge) or `rounds` (start auto-fix's round count again). 409 before automation has looked at the pull request |
+| `automation.settings` | none. The workspace's `defaults`, `trust`, `template`, and the `default_template` |
+| `automation.settings_set` | `{"defaults":{…the five switches…},"trust","template"}`, any subset. `trust` is `everyone`, `official` or `none`; `template` up to 16 KiB, empty for the default. Audited with the fields set; the template only as `custom` or `default` |
 
 > **`DELETE /api/plugins/{id}` uninstalls immediately.** There is no
 > confirmation step and it removes the plugin's config, state, and secrets. It

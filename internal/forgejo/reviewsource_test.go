@@ -306,3 +306,21 @@ func TestSearchReviewRequestsChecksLabelsItself(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, found)
 }
+
+func TestIsForkReadsTheEmbeddedRepositoryID(t *testing.T) {
+	same := PullRequest{
+		Head: PullRequestRef{Repo: &Repo{ID: 4, FullName: "o/r"}},
+		Base: PullRequestRef{RepoID: 4, Repo: &Repo{ID: 4, FullName: "o/r"}},
+	}
+	require.False(t, isFork(same))
+	fork := PullRequest{
+		Head: PullRequestRef{Repo: &Repo{ID: 9, FullName: "o/r"}},
+		Base: PullRequestRef{Repo: &Repo{ID: 4, FullName: "o/r"}},
+	}
+	require.True(t, isFork(fork), "the ids decide when both are known")
+	unnumbered := PullRequest{
+		Head: PullRequestRef{Repo: &Repo{FullName: "someone/r"}},
+		Base: PullRequestRef{Repo: &Repo{FullName: "o/r"}},
+	}
+	require.True(t, isFork(unnumbered), "without ids the names decide")
+}

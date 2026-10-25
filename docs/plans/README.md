@@ -12,9 +12,10 @@ instance before they are encoded.
 | [Review watches and cleanup](review-watches.md) | Watches that file a task for each PR awaiting your review, plus cleanup of the tasks they create |
 | [Webhook automation conditions](webhook-automations.md) | Forgejo/Gitea push, pull request and CI webhooks as native automation conditions ([#7](https://github.com/runoverlabs/kandev-plugin-forgejo/issues/7)) |
 
-Deferred, not planned here:
+Not planned here:
 [#8](https://github.com/runoverlabs/kandev-plugin-forgejo/issues/8) (CI auto-fix,
-auto-merge and PR lifecycle prompts).
+auto-merge and PR lifecycle prompts), whose plan is on the issue and which is
+documented in [pr-automation.md](../pr-automation.md).
 
 ## How these were produced, and how far to trust them
 
