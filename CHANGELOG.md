@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Release binaries are built with Go 1.26.10, which fixes GO-2026-6809
+  (compromised intermediate certificates trusted by `crypto/x509`).
 - **Breaking: Gitea's supported floor is now 1.27**, its current release (was
   1.20). Gitea supports only its most recent release upstream, and the plugin
   follows it. Plugin 0.4 is the last release line supporting Gitea 1.20 to 1.26:
