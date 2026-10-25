@@ -1,0 +1,7 @@
+{
+  "x-forgejo-event": "pull_request",
+  "x-forgejo-signature": "eb740a6b4f3520b159f4d5db84c2ad21a38f560073666d192b58761e6c387778",
+  "x-gitea-event": "pull_request",
+  "x-gitea-signature": "eb740a6b4f3520b159f4d5db84c2ad21a38f560073666d192b58761e6c387778",
+  "x-hub-signature-256": "sha256=eb740a6b4f3520b159f4d5db84c2ad21a38f560073666d192b58761e6c387778"
+}

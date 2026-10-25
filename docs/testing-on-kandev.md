@@ -254,6 +254,35 @@ starts an agent on entry and one that does not.
 - [ ] Downgrade check (optional): install the previous release over the top. Issue
       watches still work and the review watches are simply absent.
 
+### 12. Automation conditions
+
+Added with the automation conditions ([automations.md](automations.md)). Needs a
+Forgejo that can reach the Kandev (on a LAN, its `ALLOWED_HOST_LIST` must allow
+Kandev's address), and for the CI result a Forgejo 12+ with an Actions runner.
+
+- [ ] The automation editor lists "Forgejo push", "Forgejo pull request" and
+      "Forgejo CI result". On Gitea, or Forgejo older than 12, the CI result is
+      shown unavailable.
+- [ ] A push condition on a throwaway repository: the repository field suggests
+      repositories; saving `owner/missing` is refused. Save a real one,
+      **Configure webhook**, create the Forgejo webhook with the URL and the
+      revealed secret, and push: one delivery accepted and one run of the
+      automation. **Test delivery** from Forgejo twice: the second is a
+      duplicate.
+- [ ] Change the secret in the Forgejo webhook: the next delivery is a 401 in
+      Forgejo's delivery log and does not appear as accepted in Kandev.
+- [ ] A pull request condition with defaults: opening a pull request fires, a
+      `WIP:` one does not, and a pull request from a fork does not until
+      "Include pull requests from forks" is on.
+- [ ] A CI result condition with defaults: a failing run fires, a passing one is
+      ignored.
+- [ ] Edit a saved condition's filters: deliveries are refused (401) until
+      **Configure webhook** is clicked again and the new secret pasted into
+      Forgejo.
+- [ ] Upgrade the plugin (install the next candidate version): the same, every
+      binding refuses deliveries until reconfigured.
+- [ ] Switch the integration off for the workspace: deliveries are ignored.
+
 ## Rolling back
 
 Know the exit before you need it:

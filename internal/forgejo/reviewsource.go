@@ -147,15 +147,31 @@ func (s *ReviewSource) PullState(ctx context.Context, repo watches.RepoRef, numb
 	}
 }
 
-// isFork reports whether the head lives somewhere other than the base
-// repository. A head with no repository (a deleted fork, or an AGit-flow pull
-// request) is treated as a fork: unknown identity fails closed.
+// isFork reports whether a REST pull request's head is a fork.
 func isFork(pull PullRequest) bool {
-	head, base := pull.Head.Repo, pull.Base.Repo
-	if head == nil || base == nil || head.FullName == "" || base.FullName == "" {
+	return headIsFork(pull.Head.RepoID, pull.Base.RepoID, repoFullName(pull.Head.Repo), repoFullName(pull.Base.Repo))
+}
+
+func repoFullName(repo *Repo) string {
+	if repo == nil {
+		return ""
+	}
+	return repo.FullName
+}
+
+// headIsFork reports whether a pull request's head lives somewhere other than
+// its base repository. It is the one fork rule, shared by review watches and
+// the pull_request automation condition. Repository ids decide when both are
+// known; otherwise the full names do, and a missing one (a deleted fork, an
+// AGit-flow pull request) counts as a fork: unknown identity fails closed.
+func headIsFork(headID, baseID int64, headName, baseName string) bool {
+	if headID != 0 && baseID != 0 {
+		return headID != baseID
+	}
+	if headName == "" || baseName == "" {
 		return true
 	}
-	return !strings.EqualFold(head.FullName, base.FullName)
+	return !strings.EqualFold(headName, baseName)
 }
 
 // hasWIPPrefix is the draft signal on instances that predate the draft field

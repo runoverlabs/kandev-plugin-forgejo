@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"kandev-plugin-forgejo/internal/automations"
+	"kandev-plugin-forgejo/internal/forgejo"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/stretchr/testify/require"
@@ -55,6 +57,15 @@ type manifest struct {
 		Bundle string   `yaml:"bundle"`
 		Styles []string `yaml:"styles"`
 	} `yaml:"ui"`
+	AutomationConditions []struct {
+		Key                 string         `yaml:"key"`
+		Access              string         `yaml:"access"`
+		ConfigVersion       int            `yaml:"config_version"`
+		Label               string         `yaml:"label"`
+		VerificationHeaders []string       `yaml:"verification_headers"`
+		ConfigSchema        map[string]any `yaml:"config_schema"`
+		DefaultConfig       map[string]any `yaml:"default_config"`
+	} `yaml:"automation_conditions"`
 	ConfigSchema struct {
 		Required   []string `yaml:"required"`
 		Properties map[string]struct {
@@ -258,4 +269,89 @@ func TestManifestUIAssetsExist(t *testing.T) {
 		_, err := os.Stat(filepath.Join("..", "..", filepath.FromSlash(asset)))
 		require.NoError(t, err, "manifest references missing UI asset %q", asset)
 	}
+}
+
+// The automation conditions are a contract twice over: the host validates the
+// declaration at install time with a deliberately small schema dialect, and
+// every trigger a user saves is bound to a condition's key and fields. These
+// assertions hold the manifest to the code (keys, headers, fields, defaults)
+// and to the host's rules (manifest/automation.go in Kandev v0.97.0).
+func TestManifestAutomationConditionsMatchCode(t *testing.T) {
+	t.Parallel()
+	parsed := loadManifest(t)
+	require.Len(t, parsed.AutomationConditions, len(automations.Conditions))
+	for i, condition := range parsed.AutomationConditions {
+		require.Equal(t, automations.Conditions[i], condition.Key)
+		require.Equal(t, "public", condition.Access, "the host accepts only public conditions")
+		require.Equal(t, 1, condition.ConfigVersion,
+			"bumping config_version strands every saved trigger; do it deliberately")
+		require.NotEmpty(t, condition.Label)
+		require.LessOrEqual(t, len(condition.Label), 200)
+
+		require.Equal(t, forgejo.WebhookHeaders, condition.VerificationHeaders,
+			"a header the verifier reads but the manifest omits never reaches the plugin")
+		require.LessOrEqual(t, len(condition.VerificationHeaders), 16)
+		for _, header := range condition.VerificationHeaders {
+			require.Regexp(t, `^x-[a-z0-9-]+$`, header)
+			require.NotRegexp(t, `^x-kandev-`, header)
+		}
+
+		require.Equal(t, "object", condition.ConfigSchema["type"])
+		require.Equal(t, false, condition.ConfigSchema["additionalProperties"])
+		require.Equal(t, []any{"repository"}, condition.ConfigSchema["required"],
+			"the repository ties a signed delivery to the condition; it cannot be optional")
+		properties, ok := condition.ConfigSchema["properties"].(map[string]any)
+		require.True(t, ok)
+		require.LessOrEqual(t, len(properties), 32)
+		declared := map[string]string{}
+		for name, raw := range properties {
+			field, ok := raw.(map[string]any)
+			require.True(t, ok)
+			for attribute := range field {
+				// No `default`, `description` or anything else: the host
+				// refuses the whole manifest over one unknown attribute.
+				require.Containsf(t, []string{"type", "title", "title_key", "enum", "items"}, attribute,
+					"%s.%s", condition.Key, name)
+			}
+			kind, _ := field["type"].(string)
+			if kind == "array" {
+				require.Equal(t, map[string]any{"type": "string"}, field["items"])
+			}
+			declared[name] = kind
+		}
+		require.Equal(t, automations.Fields(condition.Key), declared,
+			"the manifest's fields and the settings parser drifted")
+
+		want := automations.Defaults[condition.Key]
+		require.Equal(t, normalizeJSON(t, want), normalizeJSON(t, condition.DefaultConfig),
+			"default_config and automations.Defaults drifted")
+		for name, value := range condition.DefaultConfig {
+			_, isBool := value.(bool)
+			require.Truef(t, isBool, "%s default %s: only booleans have defaults", condition.Key, name)
+		}
+		_, err := automations.Parse(condition.Key, mustJSON(t, withRepository(condition.DefaultConfig)))
+		require.NoError(t, err, "the default settings must parse once a repository is filled in")
+	}
+}
+
+func withRepository(values map[string]any) map[string]any {
+	out := map[string]any{"repository": "owner/name"}
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	require.NoError(t, err)
+	return encoded
+}
+
+func normalizeJSON(t *testing.T, value map[string]any) map[string]any {
+	t.Helper()
+	out := map[string]any{}
+	require.NoError(t, json.Unmarshal(mustJSON(t, value), &out))
+	return out
 }

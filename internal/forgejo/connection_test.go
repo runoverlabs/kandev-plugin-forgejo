@@ -70,4 +70,5 @@ func TestConnectionRejectsInvalidInstanceURL(t *testing.T) {
 	host := newFakeHost(map[string]any{"base_url": "ftp://forge.example.com", "api_token": "t"})
 	_, err := NewConnection(func() pluginsdk.Host { return host }).Client(context.Background())
 	require.ErrorContains(t, err, "must be http or https")
+	require.ErrorIs(t, err, ErrInvalidConfig, "a bad URL is fixed in settings, not by a retry")
 }

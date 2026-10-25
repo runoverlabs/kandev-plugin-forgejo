@@ -148,11 +148,15 @@ jobs:
         env:
           IMAGE: ${{ matrix.image }}
           PREFIX: ${{ matrix.flavor == 'forgejo' && 'FORGEJO' || 'GITEA' }}
+        # Host networking and a loopback webhook allow-list let the instance
+        # deliver to TestLiveWebhookDeliveries' receiver on 127.0.0.1. The
+        # default allow-list ("external") refuses loopback addresses.
         run: |
-          docker run -d --name instance -p 3000:3000 \
+          docker run -d --name instance --network host \
             -e ${PREFIX}__security__INSTALL_LOCK=true \
             -e ${PREFIX}__database__DB_TYPE=sqlite3 \
             -e ${PREFIX}__server__ROOT_URL=http://localhost:3000/ \
+            -e ${PREFIX}__webhook__ALLOWED_HOST_LIST=loopback \
             -e SSH_PORT=2222 -e SSH_LISTEN_PORT=2222 \
             "$IMAGE"
           for _ in $(seq 1 90); do

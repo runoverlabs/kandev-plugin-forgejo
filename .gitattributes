@@ -1,0 +1,2 @@
+# Captured webhook bodies are signed byte for byte: never convert line endings.
+internal/forgejo/testdata/webhooks/** -text

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Automation conditions** ([#7](https://github.com/runoverlabs/kandev-plugin-forgejo/issues/7)):
+  Forgejo and Gitea webhooks can start a Kandev automation. Three conditions
+  appear in the automation editor: a push to a branch, a pull request event
+  (opened, reopened, new commits, closed, merged, review requested, commented),
+  and the result of a Forgejo Actions run (Forgejo 12+, not Gitea). Each has
+  repository, branch, author, label, draft, workflow and fork filters as
+  applicable; pull requests and runs from forks are ignored unless a condition
+  opts in. Every delivery's HMAC signature is verified and anything unsigned or
+  mis-signed is refused. Set up one Forgejo webhook per condition with the URL
+  and secret Kandev shows; see [docs/automations.md](docs/automations.md).
+  Adds no capability, so there is no re-approval prompt.
+- **About upgrades from now on:** Kandev ties each webhook binding to the
+  installed plugin version and to the condition's saved settings. After every
+  plugin upgrade or reinstall, and after editing a condition, its webhook
+  answers 401 until you click "Configure webhook" again and paste the new secret
+  into the Forgejo webhook.
 - Release binaries are built with Go 1.26.10, which fixes GO-2026-6809
   (compromised intermediate certificates trusted by `crypto/x509`).
 - **Breaking: Gitea's supported floor is now 1.27**, its current release (was

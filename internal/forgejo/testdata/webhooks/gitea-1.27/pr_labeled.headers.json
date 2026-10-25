@@ -1,0 +1,5 @@
+{
+  "x-gitea-event": "pull_request",
+  "x-gitea-signature": "22c13115292e6283cc31c99f31ca5a459023be3c6ea4c18cdd546c82a8917ae4",
+  "x-hub-signature-256": "sha256=22c13115292e6283cc31c99f31ca5a459023be3c6ea4c18cdd546c82a8917ae4"
+}

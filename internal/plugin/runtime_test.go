@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -22,8 +23,9 @@ type configHost struct {
 	pluginsdk.UnimplementedHostData
 	config map[string]any
 
-	mu    sync.Mutex
-	state map[string]map[string]any
+	mu        sync.Mutex
+	state     map[string]map[string]any
+	failState bool
 }
 
 func newConfigHost(config map[string]any) *configHost {
@@ -38,6 +40,9 @@ func (h *configHost) stateKey(scope, scopeID, key string) string {
 func (h *configHost) GetState(_ context.Context, scope, scopeID, key string) (map[string]any, bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.failState {
+		return nil, false, errors.New("state store unavailable")
+	}
 	value, ok := h.state[h.stateKey(scope, scopeID, key)]
 	return value, ok, nil
 }

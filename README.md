@@ -28,6 +28,7 @@ provider and have no extension point a plugin can register against.
 | Composer `#` references | Search pull requests from the composer; access is re-checked live at submit time. |
 | [Agent tools (MCP)](docs/agent-tools.md) | Two tools on task sessions — read CI for a ref (optionally with each failing job's log) and get/open/ready the task's pull request. |
 | [Issue watches](docs/issue-watches.md) | Poll repositories for matching issues and file each new one as a Kanban task, with the column, profiles and prompt you choose. |
+| [Automation conditions](docs/automations.md) | Forgejo and Gitea webhooks as native triggers in Kandev's automation editor: a push, a pull request event, or (Forgejo 12+) a finished Actions run, with branch, author, label, draft, workflow and fork filters. Every delivery's signature is verified. |
 | [Review watches](docs/review-watches.md) | File a task for every pull request that asks for your review, with an interpolated prompt and a checkout of the branch; fork pull requests never start an agent on their own; finished pull requests can have their task archived. |
 | Git credentials | HTTPS clone and push credentials for task sessions, via Kandev's Git credential broker. The configured token is issued only for `owner/repo` paths on the configured instance, only to complete task/session/repository scopes, and never while the workspace integration is switched off. Without this, Kandev cannot start a task on a Forgejo repository. |
 
@@ -87,8 +88,9 @@ Every request/response shape this plugin depends on was compared field by field
 across Forgejo 13.0.5, Forgejo 16.0.5, and Gitea 1.24.7. They are identical;
 the only difference is the version string itself.
 
-The connection panel labels which flavor it detected, but **no behavior
-branches on it**. Detection asks for Forgejo's own `/api/forgejo/v1/version`
+The connection panel labels which flavor it detected. **One behaviour branches
+on it**: the CI result automation condition, which only Forgejo 12+ can serve
+(see "Supported versions"). Detection asks for Forgejo's own `/api/forgejo/v1/version`
 namespace, which Gitea does not serve, rather than matching on the
 `+gitea-<compat>` suffix — that suffix is a compatibility declaration Forgejo
 could stop publishing as it diverges further, and the namespace probe keeps
@@ -125,6 +127,9 @@ commit status is also the only place CI from outside the forge appears.
 | `ci` agent tool: overall state and each check | 7.0 | 1.27 |
 | `ci` agent tool: Actions jobs and their logs | 16.0 | 1.27 |
 | `pr` agent tool | 7.0 | 1.27 |
+| Push and pull request automation conditions | 7.0 | 1.27 |
+| Pull request condition: "when commented on" | 11.0 | 1.27 |
+| CI result automation condition | 12.0 | not supported |
 
 How the matrix is tested: CI runs the live contract suite against **every
 Forgejo long-term-support release from the floor up (7, 11, 15) and the current
@@ -168,6 +173,7 @@ token scopes differ:
 | Document | What is in it |
 | --- | --- |
 | [Issue watches](docs/issue-watches.md) | Turning Forgejo issues into Kanban tasks: every setting, what the feature guarantees, and the capabilities it needs. |
+| [Automation conditions](docs/automations.md) | Webhook triggers for Kandev automations: setting up the Forgejo webhook, every filter, the normalized `{{data.*}}` fields, and why an upgrade means reconfiguring the webhook. |
 | [Review watches](docs/review-watches.md) | Filing a task per pull request awaiting your review: scope, drafts, fork handling, and cleanup by archiving or, where the host cannot, completing the task. |
 | [Agent tools](docs/agent-tools.md) | The two MCP tools on task sessions, what CI data each host version can actually serve, and what the pair costs in prompt tokens. |
 | [Configuration and operations](docs/configuration.md) | Connection scope, the per-workspace enable switch, headless install and action bodies over HTTP, and the unsigned badge. |

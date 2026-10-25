@@ -63,6 +63,36 @@ host, and what the pipeline checks on every change.
   most 40 pull requests per pass, and stops the whole pass at the first rate
   limit or refused token.
 
+## Automation conditions
+
+[Automation conditions](automations.md) are the plugin's only inbound path: a
+Forgejo webhook posts to a Kandev URL and Kandev asks the plugin to verify it.
+They add no capability.
+
+- **Verification fails closed.** The HMAC-SHA256 of the raw body must match in
+  every signature header present (`X-Forgejo-Signature`, `X-Gitea-Signature`,
+  `X-Hub-Signature-256`), at least one must be present, and the comparison is
+  constant-time. A missing or wrong signature, an empty secret, or a binding to
+  an instance the plugin is no longer configured for is a 401, decided before
+  the body is parsed.
+- **The secret is Kandev's.** Kandev generates one per condition, keeps it in its
+  vault, and passes it to the plugin only for the verification call. The plugin
+  does not store or log it, and cannot register a webhook with it, which is why
+  the operator creates the Forgejo webhook by hand.
+- **Verification makes no provider request.** The outcome depends only on the
+  delivery and the plugin config, so a slow instance cannot hold Kandev's webhook
+  handling. The access token is not involved.
+- **A signed delivery for another repository is ignored**, not accepted: the
+  repository in the payload must equal the one configured on the condition.
+- **Forks are out by default.** Pull requests and Actions runs from forks are
+  ignored unless the condition opts in, for the same reason review watches never
+  start an agent on one.
+- **Delivery content is data.** The normalized summary (`{{data.*}}`) and the
+  raw body (`{{webhook.*}}`) are untrusted input, chosen by whoever pushed or
+  opened the pull request.
+- **Replays** are Kandev's: it records the SHA-256 of each delivered body per
+  binding for seven days and answers a repeat as a duplicate.
+
 ## Write authority
 
 The review panel can merge, review, request reviewers, update the branch and

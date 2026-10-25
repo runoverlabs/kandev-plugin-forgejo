@@ -2,6 +2,7 @@ package forgejo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,8 +14,10 @@ import (
 // fields Forgejo and Gitea both populate. The README's "Verified against"
 // table records which releases that has been checked on.
 
-// User is the subset of a Forgejo user this plugin displays.
+// User is the subset of a Forgejo user this plugin reads. ID is immutable;
+// Login can be renamed.
 type User struct {
+	ID    int64  `json:"id"`
 	Login string `json:"login"`
 }
 
@@ -73,9 +76,10 @@ type Branch struct {
 
 // PullRequestRef is one side of a pull request.
 type PullRequestRef struct {
-	Ref  string `json:"ref"`
-	Sha  string `json:"sha"`
-	Repo *Repo  `json:"repo"`
+	Ref    string `json:"ref"`
+	Sha    string `json:"sha"`
+	RepoID int64  `json:"repo_id"`
+	Repo   *Repo  `json:"repo"`
 }
 
 // PullRequest mirrors the REST v1 pull request object.
@@ -189,9 +193,10 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 	return payload.Version, nil
 }
 
-// Flavor names the software serving this instance, for display only. No
-// behavior branches on it: the plugin targets the REST v1 surface both hosts
-// share.
+// Flavor names the software serving this instance. Only one behaviour
+// branches on it, the ci_result automation condition (see
+// SupportsActionRunWebhooks); everything else targets the REST v1 surface both
+// hosts share.
 type Flavor string
 
 const (
@@ -210,12 +215,33 @@ const (
 // keeps working either way; the suffix is only a fallback for a deployment
 // that proxies away the Forgejo namespace.
 func (c *Client) DetectFlavor(ctx context.Context, version string) Flavor {
+	flavor, err := c.ProbeFlavor(ctx, version)
+	if err != nil {
+		return flavorFromVersion(version)
+	}
+	return flavor
+}
+
+// ProbeFlavor is DetectFlavor for callers that must not mistake a failed probe
+// for an answer. Only a 404 or 401/403 from the Forgejo namespace means the
+// instance does not serve it; any other failure is returned, since a Forgejo
+// that has dropped the "+gitea-" suffix would otherwise be classed as Gitea.
+func (c *Client) ProbeFlavor(ctx context.Context, version string) (Flavor, error) {
 	var payload struct {
 		Version string `json:"version"`
 	}
-	if err := c.do(ctx, http.MethodGet, apiForgejoV1, "/version", nil, nil, &payload); err == nil {
-		return FlavorForgejo
+	err := c.do(ctx, http.MethodGet, apiForgejoV1, "/version", nil, nil, &payload)
+	switch {
+	case err == nil:
+		return FlavorForgejo, nil
+	case errors.Is(err, ErrNotFound), errors.Is(err, ErrUnauthorized):
+		return flavorFromVersion(version), nil
+	default:
+		return "", err
 	}
+}
+
+func flavorFromVersion(version string) Flavor {
 	if strings.Contains(strings.ToLower(version), "+gitea-") {
 		return FlavorForgejo
 	}

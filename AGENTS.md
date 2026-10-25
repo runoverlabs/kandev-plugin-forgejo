@@ -68,7 +68,8 @@ implements them and owns every Forgejo detail.
 | --- | --- |
 | `internal/sourcecontrol/` | The source-control recipe: ports, no Forgejo |
 | `internal/watches/` | Issue and review watch model, dedup ledger, poll loop, fork placement, cleanup: ports, no Forgejo |
-| `internal/forgejo/` | Every URL, pagination token, auth detail, error mapping |
+| `internal/automations/` | Automation condition settings, the neutral webhook event, the filters, the `{{data.*}}` payload: no Forgejo |
+| `internal/forgejo/` | Every URL, pagination token, auth detail, error mapping, webhook header and payload shape |
 | `internal/plugin/` | Wires adapters to the SDK, owns actions and agent tools |
 | `ui/src/` | The browser half |
 
@@ -196,6 +197,21 @@ Verified in the sibling checkout; each cost real debugging time.
   returns neither `draft` nor `requested_reviewers`; per-pull-request detail is
   needed for both. They are stored under `rwatch.`, not `watch.`, so an older
   binary does not read them as issue watches.
+- **Automation conditions** (`automation_conditions` in the manifest) need no
+  capability. The host calls `DescribeAutomationCondition` with the saved
+  settings when a trigger is saved, when its binding is configured, and **twice
+  more for every accepted delivery** before running it; a changed
+  `connection_id`/`connection_revision` or `available: false` cancels the
+  delivery, an RPC error makes the worker retry. So a transient provider failure
+  in `Describe` must be an error, not `available: false`. The binding revision
+  also hashes the plugin version and install time and the trigger's
+  `updated_at` and settings: **every plugin upgrade, and every edit of a
+  condition, breaks its webhook** until the user reconfigures it and pastes the
+  new secret into Forgejo.
+- The automation editor renders a boolean setting as on only when it is `true`,
+  and a field schema cannot carry `default` (the host refuses the manifest);
+  defaults go in the condition's `default_config`, which is copied once into a
+  new trigger. Read an absent boolean as false.
 - `SetHost` is the only lifecycle hook, called once from a background goroutine
   after the broker dial. It is where background work starts.
 
@@ -208,9 +224,11 @@ Gitea. README.md's "Supported versions" table, the CI matrix and this paragraph
 move together; raising a floor is a breaking change with a CHANGELOG entry that
 names the last plugin release for the hosts it drops.
 
-**Recent Forgejo comes first.** Every feature so far uses only the REST v1
-surface both hosts share, and flavor detection is for display only: **no
-behaviour branches on it** yet. A new feature has one minimum release per host,
+**Recent Forgejo comes first.** Every feature but one uses only the REST v1
+surface both hosts share. The exception is the `ci_result` automation condition:
+it needs Forgejo Actions run events (Forgejo 12+), so `Describe` reports it
+unavailable on Gitea and older Forgejo (`forgejo.SupportsActionRunWebhooks`).
+That is the only behaviour that branches on flavor. A new feature has one minimum release per host,
 recorded in the README table. Below it, report the feature unavailable with a
 reason; do not build a reduced mode. Where a feature can be built on Forgejo but
 not on Gitea, ship it Forgejo-only rather than holding it back.

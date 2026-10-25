@@ -1,0 +1,7 @@
+{
+  "x-forgejo-event": "issue_comment",
+  "x-forgejo-signature": "9b1c5346e3059b82b22c8f6820edae47d9e75a8e7a40addcd5bae7c5c6b350e0",
+  "x-gitea-event": "issue_comment",
+  "x-gitea-signature": "9b1c5346e3059b82b22c8f6820edae47d9e75a8e7a40addcd5bae7c5c6b350e0",
+  "x-hub-signature-256": "sha256=9b1c5346e3059b82b22c8f6820edae47d9e75a8e7a40addcd5bae7c5c6b350e0"
+}

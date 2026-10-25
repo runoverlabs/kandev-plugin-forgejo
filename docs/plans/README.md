@@ -29,10 +29,13 @@ Forgejo/Gitea API offers.
   were checked against Gitea's published swagger. Where a plan says "verified from
   swagger" that is what it means.
 - **Forgejo facts** are mostly **unverified**. codeberg.org was not reachable from
-  the development sandbox when these plans were written (it is now). Anything about Forgejo 7 or 16, and anything a plan
-  marks "assumed", must be pinned by a live test against the CI containers
-  (Gitea 1.20 and 1.27, Forgejo 7 and 16) before it is encoded. This is the
-  repo's own rule: verify a provider claim against a real instance first.
+  the development sandbox when these plans were written (it is now). Anything
+  about a specific Forgejo release, and anything a plan marks "assumed", must be
+  pinned by a live test against the CI containers before it is encoded. The
+  matrix is in [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)
+  (Forgejo 7, 11, 15 and 17 and Gitea 1.27 since #29); the plans written before
+  that name the older one. This is the repo's own rule: verify a provider claim
+  against a real instance first.
 
 ## Order of work
 
