@@ -17,8 +17,6 @@ import (
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )
 
-var _ pluginsdk.AutomationAdapter = (*Runtime)(nil)
-
 // Verification outcomes the host maps onto HTTP statuses: rejected 401,
 // malformed 400, ignored 200, accepted 202.
 const (
@@ -46,9 +44,17 @@ const (
 	reasonVersionUnknown = "CI results need Forgejo 12 or later, and the instance did not report its version."
 )
 
+// conditionHandler serves the automation adapter RPCs: describing a
+// condition for the editor and verifying each webhook delivery.
+type conditionHandler struct {
+	conditions automations.Instance
+	webhooks   automations.Webhooks
+	switches   workspaceSwitches
+}
+
 // DescribeAutomationCondition reports whether a condition can be used and, for
 // a saved configuration, the connection identity the host binds it to.
-func (r *Runtime) DescribeAutomationCondition(ctx context.Context, request *pluginsdk.AutomationConditionRequest) (*pluginsdk.AutomationConditionResponse, error) {
+func (h *conditionHandler) DescribeAutomationCondition(ctx context.Context, request *pluginsdk.AutomationConditionRequest) (*pluginsdk.AutomationConditionResponse, error) {
 	if request == nil {
 		return nil, errors.New("kandev-plugin-forgejo: condition request is required")
 	}
@@ -67,14 +73,14 @@ func (r *Runtime) DescribeAutomationCondition(ctx context.Context, request *plug
 		}
 		cfg = parsed
 	}
-	enabled, err := r.integrationEnabledStrict(ctx, request.WorkspaceId)
+	enabled, err := h.switches.EnabledStrict(ctx, request.WorkspaceId)
 	if err != nil {
 		return nil, err
 	}
 	if !enabled {
 		return unavailable(reasonDisabled), nil
 	}
-	scope, err := r.conditions.Scope(ctx)
+	scope, err := h.conditions.Scope(ctx)
 	if errors.Is(err, scm.ErrNotConfigured) {
 		return unavailable(reasonNotConfigured), nil
 	}
@@ -85,23 +91,23 @@ func (r *Runtime) DescribeAutomationCondition(ctx context.Context, request *plug
 		return nil, errInstanceUnreachable
 	}
 	if listing {
-		return r.describeListing(ctx, key), nil
+		return h.describeListing(ctx, key), nil
 	}
-	return r.describeConfigured(ctx, scope, cfg)
+	return h.describeConfigured(ctx, scope, cfg)
 }
 
 // describeListing answers the editor's condition list. The host gives every
 // condition of every plugin five seconds together, so a provider failure here
 // leaves the condition available without suggestions; saving it runs the full
 // check.
-func (r *Runtime) describeListing(ctx context.Context, key string) *pluginsdk.AutomationConditionResponse {
+func (h *conditionHandler) describeListing(ctx context.Context, key string) *pluginsdk.AutomationConditionResponse {
 	if key == automations.ConditionCIResult {
-		if supported, known, err := r.conditions.CIEvents(ctx); err == nil && known && !supported {
+		if supported, known, err := h.conditions.CIEvents(ctx); err == nil && known && !supported {
 			return unavailable(reasonCIUnsupported)
 		}
 	}
 	response := &pluginsdk.AutomationConditionResponse{Available: true}
-	if names := r.conditions.RepositoryNames(ctx); len(names) > 0 {
+	if names := h.conditions.RepositoryNames(ctx); len(names) > 0 {
 		if encoded, err := json.Marshal(map[string][]string{"repository": names}); err == nil {
 			response.ConfigOptions = encoded
 		}
@@ -112,18 +118,18 @@ func (r *Runtime) describeListing(ctx context.Context, key string) *pluginsdk.Au
 // describeConfigured runs its lookups concurrently, so a cold cache costs one
 // round-trip of the host's five-second budget rather than four, then judges
 // them in a fixed order.
-func (r *Runtime) describeConfigured(ctx context.Context, scope string, cfg automations.Config) (*pluginsdk.AutomationConditionResponse, error) {
+func (h *conditionHandler) describeConfigured(ctx context.Context, scope string, cfg automations.Config) (*pluginsdk.AutomationConditionResponse, error) {
 	var (
 		wg                           sync.WaitGroup
 		accountID                    int64
 		ciSupported, ciKnown         bool
 		infoErr, versionErr, repoErr error
 	)
-	wg.Go(func() { accountID, infoErr = r.conditions.AccountID(ctx) })
+	wg.Go(func() { accountID, infoErr = h.conditions.AccountID(ctx) })
 	if cfg.Key == automations.ConditionCIResult {
-		wg.Go(func() { ciSupported, ciKnown, versionErr = r.conditions.CIEvents(ctx) })
+		wg.Go(func() { ciSupported, ciKnown, versionErr = h.conditions.CIEvents(ctx) })
 	}
-	wg.Go(func() { repoErr = r.conditions.RepositoryExists(ctx, cfg.Repository) })
+	wg.Go(func() { repoErr = h.conditions.RepositoryExists(ctx, cfg.Repository) })
 	wg.Wait()
 
 	if errors.Is(infoErr, scm.ErrUnauthorized) {
@@ -160,32 +166,47 @@ func (r *Runtime) describeConfigured(ctx context.Context, scope string, cfg auto
 // no provider request: a slow instance must not hold the host's ten-second
 // webhook window, and the outcome stays a function of the request and the
 // plugin config.
-func (r *Runtime) VerifyAutomationWebhook(ctx context.Context, request *pluginsdk.AutomationWebhookRequest) (*pluginsdk.AutomationWebhookResponse, error) {
+func (h *conditionHandler) VerifyAutomationWebhook(ctx context.Context, request *pluginsdk.AutomationWebhookRequest) (*pluginsdk.AutomationWebhookResponse, error) {
 	if request == nil || !automations.Known(request.ConditionKey) {
 		return outcome(outcomeRejected), nil
 	}
-	key := request.ConditionKey
-	// Nothing is parsed before the signature verifies.
-	if err := r.webhooks.Verify(request.Secret, request.Body, request.Headers); err != nil {
+	authentic, err := h.authentic(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	if !authentic {
 		return outcome(outcomeRejected), nil
 	}
-	scope, err := r.conditions.Scope(ctx)
+	return h.classify(ctx, request)
+}
+
+// authentic reports whether a delivery is signed with the binding's secret
+// and bound to the configured instance.
+func (h *conditionHandler) authentic(ctx context.Context, request *pluginsdk.AutomationWebhookRequest) (bool, error) {
+	// Nothing is parsed before the signature verifies.
+	if err := h.webhooks.Verify(request.Secret, request.Body, request.Headers); err != nil {
+		return false, nil
+	}
+	scope, err := h.conditions.Scope(ctx)
 	if errors.Is(err, scm.ErrNotConfigured) || errors.Is(err, scm.ErrInvalidConfig) {
-		return outcome(outcomeRejected), nil
+		return false, nil
 	}
 	if err != nil {
 		// A host config read failure is transient. An error makes the host
 		// answer 503; neither the host nor Forgejo retries it, but the failed
 		// delivery stays on the hook's page for a manual redelivery.
-		return nil, err
+		return false, err
 	}
-	if request.ConnectionId != connectionID(scope) {
-		return outcome(outcomeRejected), nil
-	}
-	if r.webhooks.Kind(request.Headers) != key {
+	return request.ConnectionId == connectionID(scope), nil
+}
+
+// classify decides what an authentic delivery means for its condition.
+func (h *conditionHandler) classify(ctx context.Context, request *pluginsdk.AutomationWebhookRequest) (*pluginsdk.AutomationWebhookResponse, error) {
+	key := request.ConditionKey
+	if h.webhooks.Kind(request.Headers) != key {
 		return outcome(outcomeIgnored), nil
 	}
-	event, err := r.webhooks.Decode(request.Body, request.Headers)
+	event, err := h.webhooks.Decode(request.Body, request.Headers)
 	if err != nil {
 		return outcome(outcomeMalformed), nil
 	}
@@ -203,7 +224,7 @@ func (r *Runtime) VerifyAutomationWebhook(ctx context.Context, request *pluginsd
 	if !strings.EqualFold(event.Repository, cfg.Repository) {
 		return outcome(outcomeIgnored), nil
 	}
-	enabled, err := r.integrationEnabledStrict(ctx, request.WorkspaceId)
+	enabled, err := h.switches.EnabledStrict(ctx, request.WorkspaceId)
 	if err != nil {
 		return nil, err
 	}

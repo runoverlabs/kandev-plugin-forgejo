@@ -456,7 +456,7 @@ func TestVerifyAutomationWebhook(t *testing.T) {
 		t.Parallel()
 		runtime, _ := automationRuntime(t, config)
 		cfg := settings(automations.ConditionPush, nil)
-		otherRepo := []byte(strings.Replace(string(pushBody), repository, "someone/else", -1))
+		otherRepo := []byte(strings.ReplaceAll(string(pushBody), repository, "someone/else"))
 		for name, req := range map[string]*pluginsdk.AutomationWebhookRequest{
 			"empty secret": func() *pluginsdk.AutomationWebhookRequest {
 				r := request(automations.ConditionPush, pushBody, pushHeaders, cfg)
@@ -489,7 +489,7 @@ func TestVerifyAutomationWebhook(t *testing.T) {
 	t.Run("signed but not for this condition is ignored", func(t *testing.T) {
 		t.Parallel()
 		runtime, _ := automationRuntime(t, config)
-		otherRepo := []byte(strings.Replace(string(pushBody), repository, "someone/else", -1))
+		otherRepo := []byte(strings.ReplaceAll(string(pushBody), repository, "someone/else"))
 		headers := resign(otherRepo, fixtureSecret)
 		headers["x-forgejo-event"] = "push"
 		prBody, prHeaders, _ := fixture(t, "forgejo-15", "pr_opened")

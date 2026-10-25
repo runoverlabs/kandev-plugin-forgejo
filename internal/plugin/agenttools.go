@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/kandev"
+	"kandev-plugin-forgejo/internal/prautomation"
 	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
@@ -34,7 +36,28 @@ const (
 	ciLogMaxLines   = 2000
 )
 
-var _ pluginsdk.AgentToolPlugin = (*Runtime)(nil)
+// agentTools serve the MCP tools this plugin gives task agents. Each call
+// carries a task, not a VerifiedActionContext, so the tools resolve the
+// repository and the linked pull requests themselves.
+type agentTools struct {
+	hosts          kandev.Provider
+	switches       workspaceSwitches
+	audit          *auditTrail
+	connection     sourcecontrol.Connection
+	repositories   sourcecontrol.AttachedRepositoryResolver
+	changeRequests sourcecontrol.ChangeRequestService
+	associations   taskLinks
+	pulls          sourcecontrol.PullRequestReader
+	ci             sourcecontrol.CIReader
+	pullActions    linkedPullRequests
+	automation     outcomeRecorder
+}
+
+// outcomeRecorder records the agent's report on the auto-fix attempt in
+// flight; the pull request automation engine is the one implementation.
+type outcomeRecorder interface {
+	Outcome(ctx context.Context, workspaceID, taskID, sessionID, repository, outcome, summary string) (prautomation.Record, error)
+}
 
 // InvokeAgentTool serves the MCP tools this plugin exposes to task agents.
 //
@@ -43,11 +66,11 @@ var _ pluginsdk.AgentToolPlugin = (*Runtime)(nil)
 // because an agent can read those and adapt. A Go error is reserved for faults
 // the agent cannot do anything about. Text is never empty: the host rejects a
 // result without it.
-func (r *Runtime) InvokeAgentTool(ctx context.Context, request *pluginsdk.AgentToolRequest) (*pluginsdk.AgentToolResult, error) {
+func (h *agentTools) InvokeAgentTool(ctx context.Context, request *pluginsdk.AgentToolRequest) (*pluginsdk.AgentToolResult, error) {
 	if request == nil {
 		return nil, errors.New("kandev-plugin-forgejo: agent tool request is required")
 	}
-	enabled, err := r.integrationEnabled(ctx, request.Context.WorkspaceID)
+	enabled, err := h.switches.Enabled(ctx, request.Context.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -56,9 +79,9 @@ func (r *Runtime) InvokeAgentTool(ctx context.Context, request *pluginsdk.AgentT
 	}
 	switch request.Name {
 	case ToolCI:
-		return r.toolCI(ctx, request)
+		return h.toolCI(ctx, request)
 	case ToolPR:
-		return r.toolPR(ctx, request)
+		return h.toolPR(ctx, request)
 	default:
 		return nil, fmt.Errorf("kandev-plugin-forgejo: unknown agent tool %q", request.Name)
 	}
@@ -72,7 +95,7 @@ func (r *Runtime) InvokeAgentTool(ctx context.Context, request *pluginsdk.AgentT
 // answered it in two round trips while costing a permanent slice of every
 // agent's prompt. Logs stay opt-in through `logs`, so the cheap read stays
 // cheap.
-func (r *Runtime) toolCI(ctx context.Context, request *pluginsdk.AgentToolRequest) (*pluginsdk.AgentToolResult, error) {
+func (h *agentTools) toolCI(ctx context.Context, request *pluginsdk.AgentToolRequest) (*pluginsdk.AgentToolResult, error) {
 	ref := argString(request.Arguments, "ref")
 	if ref == "" {
 		return toolError("ref is required: pass a branch name or commit SHA."), nil
@@ -86,12 +109,12 @@ func (r *Runtime) toolCI(ctx context.Context, request *pluginsdk.AgentToolReques
 			lines = int(requested)
 		}
 	}
-	repository, failure := r.agentRepository(ctx, request)
+	repository, failure := h.agentRepository(ctx, request)
 	if failure != nil {
 		return failure, nil
 	}
 
-	status, err := r.ci.CIStatus(ctx, repository, ref)
+	status, err := h.ci.CIStatus(ctx, repository, ref)
 	if err != nil {
 		return toolError(safeMessage(err)), nil
 	}
@@ -117,7 +140,7 @@ func (r *Runtime) toolCI(ctx context.Context, request *pluginsdk.AgentToolReques
 
 	entries := jobsToAny(status.Jobs)
 	if lines > 0 {
-		appendFailedJobLogs(ctx, r.ci, repository, status, lines, &text, entries)
+		appendFailedJobLogs(ctx, h.ci, repository, status, lines, &text, entries)
 	}
 
 	return &pluginsdk.AgentToolResult{
@@ -188,25 +211,25 @@ func appendFailedJobLogs(ctx context.Context, ci sourcecontrol.CIReader, reposit
 }
 
 // toolPR reads, opens, or readies the pull request for a task.
-func (r *Runtime) toolPR(ctx context.Context, request *pluginsdk.AgentToolRequest) (*pluginsdk.AgentToolResult, error) {
+func (h *agentTools) toolPR(ctx context.Context, request *pluginsdk.AgentToolRequest) (*pluginsdk.AgentToolResult, error) {
 	op := strings.ToLower(argString(request.Arguments, "op"))
 	if op == "outcome" {
 		// Bound to the auto-fix attempt in flight, not to a repository.
-		return r.prOutcome(ctx, request)
+		return h.prOutcome(ctx, request)
 	}
-	repository, failure := r.agentRepository(ctx, request)
+	repository, failure := h.agentRepository(ctx, request)
 	if failure != nil {
 		return failure, nil
 	}
 	switch op {
 	case "get":
-		return r.prGet(ctx, request, repository)
+		return h.prGet(ctx, request, repository)
 	case "open":
-		return r.prOpen(ctx, request, repository)
+		return h.prOpen(ctx, request, repository)
 	case "ready":
-		return r.prReady(ctx, request, repository)
+		return h.prReady(ctx, request, repository)
 	case "merge", "review", "request_review", "update", "comment":
-		return r.prWrite(ctx, request, op)
+		return h.prWrite(ctx, request, op)
 	default:
 		return toolError("op must be get, open, ready, merge, review, request_review, update, comment, or outcome."), nil
 	}
@@ -214,21 +237,10 @@ func (r *Runtime) toolPR(ctx context.Context, request *pluginsdk.AgentToolReques
 
 // prGet returns the pull requests already linked to this task, falling back to
 // a head-branch search when nothing is linked yet.
-func (r *Runtime) prGet(ctx context.Context, request *pluginsdk.AgentToolRequest, repository sourcecontrol.Repository) (*pluginsdk.AgentToolResult, error) {
-	pulls, err := r.taskPullRequests(ctx, request.Context.TaskID, request.Context.WorkspaceID, repository)
+func (h *agentTools) prGet(ctx context.Context, request *pluginsdk.AgentToolRequest, repository sourcecontrol.Repository) (*pluginsdk.AgentToolResult, error) {
+	pulls, err := h.linkedOrHead(ctx, request, repository)
 	if err != nil {
 		return toolError(safeMessage(err)), nil
-	}
-	if len(pulls) == 0 {
-		if head := argString(request.Arguments, "head"); head != "" {
-			found, err := r.pulls.OpenPullRequestForHead(ctx, repository, head)
-			if err != nil {
-				return toolError(safeMessage(err)), nil
-			}
-			if found != nil {
-				pulls = []sourcecontrol.PullRequestSummary{*found}
-			}
-		}
 	}
 	if len(pulls) == 0 {
 		return &pluginsdk.AgentToolResult{
@@ -245,7 +257,7 @@ func (r *Runtime) prGet(ctx context.Context, request *pluginsdk.AgentToolRequest
 // request for the same head is returned as-is. Kandev never retries an agent
 // tool call, precisely because it cannot know whether the side effect already
 // happened — so this tool makes "already happened" the same answer as "done".
-func (r *Runtime) prOpen(ctx context.Context, request *pluginsdk.AgentToolRequest, repository sourcecontrol.Repository) (*pluginsdk.AgentToolResult, error) {
+func (h *agentTools) prOpen(ctx context.Context, request *pluginsdk.AgentToolRequest, repository sourcecontrol.Repository) (*pluginsdk.AgentToolResult, error) {
 	head := argString(request.Arguments, "head")
 	if head == "" {
 		return toolError("head is required for op=open: pass the branch holding the changes."), nil
@@ -255,14 +267,14 @@ func (r *Runtime) prOpen(ctx context.Context, request *pluginsdk.AgentToolReques
 		return toolError("title is required for op=open."), nil
 	}
 
-	if existing, err := r.pulls.OpenPullRequestForHead(ctx, repository, head); err != nil {
+	if existing, err := h.pulls.OpenPullRequestForHead(ctx, repository, head); err != nil {
 		return toolError(safeMessage(err)), nil
 	} else if existing != nil {
-		r.linkPullRequest(ctx, request.Context.TaskID, repository, existing.Number)
+		h.linkPullRequest(ctx, request.Context.TaskID, repository, existing.Number)
 		return pullResult([]sourcecontrol.PullRequestSummary{*existing}, repository, "already open")
 	}
 
-	created, err := r.changeRequests.Create(ctx, repository, head, sourcecontrol.CreateChangeRequestInput{
+	created, err := h.changeRequests.Create(ctx, repository, head, sourcecontrol.CreateChangeRequestInput{
 		Title:       title,
 		Description: argString(request.Arguments, "body"),
 		Destination: argString(request.Arguments, "base"),
@@ -271,15 +283,15 @@ func (r *Runtime) prOpen(ctx context.Context, request *pluginsdk.AgentToolReques
 	if err != nil {
 		// The create may still have landed — a duplicate-head rejection means
 		// exactly that. Look before reporting a failure the agent would retry.
-		if existing, lookupErr := r.pulls.OpenPullRequestForHead(ctx, repository, head); lookupErr == nil && existing != nil {
-			r.linkPullRequest(ctx, request.Context.TaskID, repository, existing.Number)
+		if existing, lookupErr := h.pulls.OpenPullRequestForHead(ctx, repository, head); lookupErr == nil && existing != nil {
+			h.linkPullRequest(ctx, request.Context.TaskID, repository, existing.Number)
 			return pullResult([]sourcecontrol.PullRequestSummary{*existing}, repository, "already open")
 		}
 		return toolError(safeMessage(err)), nil
 	}
-	r.linkPullRequest(ctx, request.Context.TaskID, repository, created.Identity.Number)
+	h.linkPullRequest(ctx, request.Context.TaskID, repository, created.Identity.Number)
 
-	pull, err := r.pulls.PullRequest(ctx, repository, created.Identity.Number)
+	pull, err := h.pulls.PullRequest(ctx, repository, created.Identity.Number)
 	if err != nil {
 		// The pull request exists; only the read-back failed.
 		return &pluginsdk.AgentToolResult{
@@ -294,21 +306,10 @@ func (r *Runtime) prOpen(ctx context.Context, request *pluginsdk.AgentToolReques
 
 // prReady clears the work-in-progress marker. Readying an already-ready pull
 // request is a no-op success.
-func (r *Runtime) prReady(ctx context.Context, request *pluginsdk.AgentToolRequest, repository sourcecontrol.Repository) (*pluginsdk.AgentToolResult, error) {
-	pulls, err := r.taskPullRequests(ctx, request.Context.TaskID, request.Context.WorkspaceID, repository)
+func (h *agentTools) prReady(ctx context.Context, request *pluginsdk.AgentToolRequest, repository sourcecontrol.Repository) (*pluginsdk.AgentToolResult, error) {
+	pulls, err := h.linkedOrHead(ctx, request, repository)
 	if err != nil {
 		return toolError(safeMessage(err)), nil
-	}
-	if len(pulls) == 0 {
-		if head := argString(request.Arguments, "head"); head != "" {
-			found, err := r.pulls.OpenPullRequestForHead(ctx, repository, head)
-			if err != nil {
-				return toolError(safeMessage(err)), nil
-			}
-			if found != nil {
-				pulls = []sourcecontrol.PullRequestSummary{*found}
-			}
-		}
 	}
 	if len(pulls) == 0 {
 		return toolError("No pull request is linked to this task. Open one first, or pass head."), nil
@@ -318,7 +319,7 @@ func (r *Runtime) prReady(ctx context.Context, request *pluginsdk.AgentToolReque
 	}
 
 	pull := pulls[0]
-	updated, changed, err := r.pulls.MarkReady(ctx, repository, pull)
+	updated, changed, err := h.pulls.MarkReady(ctx, repository, pull)
 	if err != nil {
 		return toolError(safeMessage(err)), nil
 	}
@@ -328,14 +329,32 @@ func (r *Runtime) prReady(ctx context.Context, request *pluginsdk.AgentToolReque
 	return pullResult([]sourcecontrol.PullRequestSummary{updated}, repository, "ready")
 }
 
+// linkedOrHead is the task's linked pull requests or, when none is linked yet,
+// the open one for the `head` argument.
+func (h *agentTools) linkedOrHead(ctx context.Context, request *pluginsdk.AgentToolRequest, repository sourcecontrol.Repository) ([]sourcecontrol.PullRequestSummary, error) {
+	pulls, err := h.taskPullRequests(ctx, request.Context.TaskID, request.Context.WorkspaceID, repository)
+	if err != nil || len(pulls) > 0 {
+		return pulls, err
+	}
+	head := argString(request.Arguments, "head")
+	if head == "" {
+		return nil, nil
+	}
+	found, err := h.pulls.OpenPullRequestForHead(ctx, repository, head)
+	if err != nil || found == nil {
+		return nil, err
+	}
+	return []sourcecontrol.PullRequestSummary{*found}, nil
+}
+
 // taskPullRequests resolves the pull requests this plugin has associated with
 // a task, in the repository the tool is acting on.
-func (r *Runtime) taskPullRequests(ctx context.Context, taskID, workspaceID string, repository sourcecontrol.Repository) ([]sourcecontrol.PullRequestSummary, error) {
+func (h *agentTools) taskPullRequests(ctx context.Context, taskID, workspaceID string, repository sourcecontrol.Repository) ([]sourcecontrol.PullRequestSummary, error) {
 	if strings.TrimSpace(taskID) == "" {
 		return nil, nil
 	}
 	if strings.TrimSpace(workspaceID) == "" {
-		host := r.Host()
+		host := h.hosts()
 		if host == nil {
 			return nil, scm.ErrNotConfigured
 		}
@@ -345,7 +364,7 @@ func (r *Runtime) taskPullRequests(ctx context.Context, taskID, workspaceID stri
 		}
 		workspaceID = task.WorkspaceID
 	}
-	identities, err := r.associations.ListForTask(ctx, workspaceID, taskID)
+	identities, err := h.associations.ListForTask(ctx, workspaceID, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +373,7 @@ func (r *Runtime) taskPullRequests(ctx context.Context, taskID, workspaceID stri
 		if identity.ConnectionScope != repository.ConnectionScope || identity.RepositoryID != repository.RepositoryID {
 			continue
 		}
-		pull, err := r.pulls.PullRequest(ctx, repository, identity.Number)
+		pull, err := h.pulls.PullRequest(ctx, repository, identity.Number)
 		if errors.Is(err, scm.ErrNotFound) {
 			continue
 		}
@@ -370,11 +389,11 @@ func (r *Runtime) taskPullRequests(ctx context.Context, taskID, workspaceID stri
 // linkPullRequest records the task association so Kandev's own review sidebar
 // sees a pull request an agent opened, exactly as if it had been opened from
 // the UI. A failure here does not fail the tool: the pull request exists.
-func (r *Runtime) linkPullRequest(ctx context.Context, taskID string, repository sourcecontrol.Repository, number int64) {
+func (h *agentTools) linkPullRequest(ctx context.Context, taskID string, repository sourcecontrol.Repository, number int64) {
 	if strings.TrimSpace(taskID) == "" || number <= 0 {
 		return
 	}
-	_ = r.associations.Link(ctx, taskID, sourcecontrol.ChangeRequestIdentity{
+	_ = h.associations.Link(ctx, taskID, sourcecontrol.ChangeRequestIdentity{
 		ConnectionScope: repository.ConnectionScope,
 		RepositoryID:    repository.RepositoryID,
 		Number:          number,
@@ -384,11 +403,11 @@ func (r *Runtime) linkPullRequest(ctx context.Context, taskID string, repository
 // agentRepository resolves the repository an agent tool acts on. It returns a
 // ready IsError result rather than an error whenever the agent could fix the
 // situation itself.
-func (r *Runtime) agentRepository(ctx context.Context, request *pluginsdk.AgentToolRequest) (sourcecontrol.Repository, *pluginsdk.AgentToolResult) {
-	if _, err := r.connection.Info(ctx); err != nil {
+func (h *agentTools) agentRepository(ctx context.Context, request *pluginsdk.AgentToolRequest) (sourcecontrol.Repository, *pluginsdk.AgentToolResult) {
+	if _, err := h.connection.Info(ctx); err != nil {
 		return sourcecontrol.Repository{}, toolError(safeMessage(err))
 	}
-	repository, err := r.resolveTaskRepository(ctx, request.Context.TaskID, request.Context.WorkspaceID,
+	repository, err := h.resolveTaskRepository(ctx, request.Context.TaskID, request.Context.WorkspaceID,
 		argString(request.Arguments, "repo"))
 	if err != nil {
 		return sourcecontrol.Repository{}, toolError(err.Error())
@@ -396,32 +415,42 @@ func (r *Runtime) agentRepository(ctx context.Context, request *pluginsdk.AgentT
 	return repository, nil
 }
 
+// toolRefusal is a sentence an agent can act on, returned as the tool's
+// IsError text.
+type toolRefusal string
+
+func (r toolRefusal) Error() string { return string(r) }
+
 // resolveTaskRepository finds the task's Forgejo repository. A task with
 // several is not guessed at: the caller names one with `repo`.
-func (r *Runtime) resolveTaskRepository(ctx context.Context, taskID, workspaceID, hint string) (sourcecontrol.Repository, error) {
+func (h *agentTools) resolveTaskRepository(ctx context.Context, taskID, workspaceID, hint string) (sourcecontrol.Repository, error) {
 	if strings.TrimSpace(taskID) == "" {
-		return sourcecontrol.Repository{}, errors.New("This tool runs on a task session and none was supplied.")
+		return sourcecontrol.Repository{}, toolRefusal("This tool runs on a task session and none was supplied.")
 	}
-	host := r.Host()
+	host := h.hosts()
 	if host == nil {
-		return sourcecontrol.Repository{}, errors.New("The Forgejo plugin is not connected to Kandev right now.")
+		return sourcecontrol.Repository{}, toolRefusal("The Forgejo plugin is not connected to Kandev right now.")
 	}
 	task, err := host.Tasks().Get(ctx, taskID)
 	if err != nil {
-		return sourcecontrol.Repository{}, errors.New("Could not read this task from Kandev.")
+		return sourcecontrol.Repository{}, toolRefusal("Could not read this task from Kandev.")
 	}
 	if task == nil || len(task.Repositories) == 0 {
-		return sourcecontrol.Repository{}, errors.New("This task has no repository attached.")
+		return sourcecontrol.Repository{}, toolRefusal("This task has no repository attached.")
 	}
 	if strings.TrimSpace(workspaceID) == "" {
 		workspaceID = task.WorkspaceID
 	}
+	return pickRepository(h.attachedRepositories(ctx, workspaceID, taskID, task.Repositories), hint)
+}
 
-	candidates := make([]sourcecontrol.Repository, 0, len(task.Repositories))
-	for _, attached := range task.Repositories {
+// attachedRepositories resolves the task's repositories on this connection.
+func (h *agentTools) attachedRepositories(ctx context.Context, workspaceID, taskID string, attachedRepositories []pluginsdk.TaskRepository) []sourcecontrol.Repository {
+	candidates := make([]sourcecontrol.Repository, 0, len(attachedRepositories))
+	for _, attached := range attachedRepositories {
 		// A task may mix providers. ResolveAttached rejects anything that is
 		// not this connection's, which is the filter rather than an error.
-		resolved, err := r.repositories.ResolveAttached(ctx, pluginsdk.VerifiedActionContext{
+		resolved, err := h.repositories.ResolveAttached(ctx, pluginsdk.VerifiedActionContext{
 			WorkspaceID:  workspaceID,
 			TaskID:       taskID,
 			RepositoryID: attached.RepositoryID,
@@ -431,10 +460,15 @@ func (r *Runtime) resolveTaskRepository(ctx context.Context, taskID, workspaceID
 		}
 		candidates = append(candidates, resolved)
 	}
-	if len(candidates) == 0 {
-		return sourcecontrol.Repository{}, errors.New("This task has no Forgejo repository attached.")
-	}
+	return candidates
+}
 
+// pickRepository chooses among the task's repositories: the one hint names,
+// or the only one.
+func pickRepository(candidates []sourcecontrol.Repository, hint string) (sourcecontrol.Repository, error) {
+	if len(candidates) == 0 {
+		return sourcecontrol.Repository{}, toolRefusal("This task has no Forgejo repository attached.")
+	}
 	if trimmed := strings.TrimSpace(hint); trimmed != "" {
 		for _, candidate := range candidates {
 			full := candidate.OwnerOrProject + "/" + candidate.Name
@@ -442,12 +476,12 @@ func (r *Runtime) resolveTaskRepository(ctx context.Context, taskID, workspaceID
 				return candidate, nil
 			}
 		}
-		return sourcecontrol.Repository{}, fmt.Errorf("No Forgejo repository named %q on this task. Attached: %s.",
-			trimmed, strings.Join(repositoryNames(candidates), ", "))
+		return sourcecontrol.Repository{}, toolRefusal(fmt.Sprintf("No Forgejo repository named %q on this task. Attached: %s.",
+			trimmed, strings.Join(repositoryNames(candidates), ", ")))
 	}
 	if len(candidates) > 1 {
-		return sourcecontrol.Repository{}, fmt.Errorf("This task has several Forgejo repositories; pass repo. Attached: %s.",
-			strings.Join(repositoryNames(candidates), ", "))
+		return sourcecontrol.Repository{}, toolRefusal(fmt.Sprintf("This task has several Forgejo repositories; pass repo. Attached: %s.",
+			strings.Join(repositoryNames(candidates), ", ")))
 	}
 	return candidates[0], nil
 }

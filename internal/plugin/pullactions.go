@@ -10,7 +10,6 @@ import (
 	"github.com/kandev/kandev/pkg/pluginsdk"
 
 	"kandev-plugin-forgejo/internal/kandev"
-	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
 
@@ -18,11 +17,19 @@ import (
 // timeout, with room to write the reply.
 const detailsBudget = 12 * time.Second
 
+// pullRequestActions serve the change_requests.* actions this plugin owns
+// beyond the recipe's: the review panel's details and its writes.
+type pullRequestActions struct {
+	pullActions linkedPullRequests
+	switches    workspaceSwitches
+	audit       *auditTrail
+}
+
 // handlePullAction routes the pull request actions this plugin owns beyond the
 // recipe's. The workspace enable switch is checked here for the same reason the
 // default dispatch branch does: a disabled integration contributes nothing.
-func (r *Runtime) handlePullAction(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
-	enabled, err := r.integrationEnabled(ctx, request.Context.WorkspaceID)
+func (h *pullRequestActions) handlePullAction(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
+	enabled, err := h.switches.Enabled(ctx, request.Context.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -31,17 +38,17 @@ func (r *Runtime) handlePullAction(ctx context.Context, request *pluginsdk.Plugi
 	}
 	switch request.ActionKey {
 	case sourcecontrol.ActionChangeRequestsDetails:
-		return r.changeRequestDetails(ctx, request)
+		return h.changeRequestDetails(ctx, request)
 	case sourcecontrol.ActionChangeRequestsMerge:
-		return r.changeRequestMerge(ctx, request)
+		return h.changeRequestMerge(ctx, request)
 	case sourcecontrol.ActionChangeRequestsReview:
-		return r.changeRequestReview(ctx, request)
+		return h.changeRequestReview(ctx, request)
 	case sourcecontrol.ActionChangeRequestsRequestReviewers:
-		return r.changeRequestReviewers(ctx, request)
+		return h.changeRequestReviewers(ctx, request)
 	case sourcecontrol.ActionChangeRequestsUpdateBranch:
-		return r.changeRequestUpdateBranch(ctx, request)
+		return h.changeRequestUpdateBranch(ctx, request)
 	case sourcecontrol.ActionChangeRequestsComment:
-		return r.changeRequestComment(ctx, request)
+		return h.changeRequestComment(ctx, request)
 	default:
 		return nil, errors.New("kandev-plugin-forgejo: unsupported pull request action")
 	}
@@ -50,7 +57,7 @@ func (r *Runtime) handlePullAction(ctx context.Context, request *pluginsdk.Plugi
 // changeRequestDetails returns the full panel model for a pull request linked
 // to the verified task. The body may name which one when the task links
 // several; a number the task does not own is refused, whatever it points at.
-func (r *Runtime) changeRequestDetails(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
+func (h *pullRequestActions) changeRequestDetails(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
 	var body struct {
 		Number int64 `json:"number"`
 	}
@@ -61,7 +68,7 @@ func (r *Runtime) changeRequestDetails(ctx context.Context, request *pluginsdk.P
 	}
 	ctx, cancel := context.WithTimeout(ctx, detailsBudget)
 	defer cancel()
-	details, err := r.pullActions.Details(ctx, request.Context.WorkspaceID, request.Context.TaskID, body.Number)
+	details, err := h.pullActions.Details(ctx, request.Context.WorkspaceID, request.Context.TaskID, body.Number)
 	if err != nil {
 		return pullFailure(err)
 	}
@@ -72,12 +79,12 @@ func (r *Runtime) changeRequestDetails(ctx context.Context, request *pluginsdk.P
 const writeBudget = 12 * time.Second
 
 // finish turns a port result or error into the reply, auditing either way.
-func finish[T any](ctx context.Context, r *Runtime, request *pluginsdk.PluginActionRequest, number int64, result T, err error) (*pluginsdk.PluginActionResponse, error) {
+func finish[T any](ctx context.Context, h *pullRequestActions, request *pluginsdk.PluginActionRequest, number int64, result T, err error) (*pluginsdk.PluginActionResponse, error) {
 	outcome := "ok"
 	if err != nil {
 		outcome = "refused"
 	}
-	r.audit(ctx, auditRecord{
+	h.audit.Record(ctx, auditRecord{
 		Action: request.ActionKey, Actor: request.Context.ActorID, Workspace: request.Context.WorkspaceID,
 		Task: request.Context.TaskID, Number: number, Outcome: outcome,
 	})
@@ -87,7 +94,7 @@ func finish[T any](ctx context.Context, r *Runtime, request *pluginsdk.PluginAct
 	return kandev.JSON(result)
 }
 
-func (r *Runtime) changeRequestMerge(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
+func (h *pullRequestActions) changeRequestMerge(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
 	var body struct {
 		Number            int64  `json:"number"`
 		HeadSHA           string `json:"head_sha"`
@@ -101,14 +108,14 @@ func (r *Runtime) changeRequestMerge(ctx context.Context, request *pluginsdk.Plu
 	}
 	ctx, cancel := context.WithTimeout(ctx, writeBudget)
 	defer cancel()
-	result, err := r.pullActions.Merge(ctx, request.Context.WorkspaceID, request.Context.TaskID, sourcecontrol.MergeRequest{
+	result, err := h.pullActions.Merge(ctx, request.Context.WorkspaceID, request.Context.TaskID, sourcecontrol.MergeRequest{
 		Number: body.Number, HeadSHA: body.HeadSHA, Style: body.Style, DeleteBranch: body.DeleteBranch,
 		WhenChecksSucceed: body.WhenChecksSucceed, CancelScheduled: body.CancelScheduled,
 	})
-	return finish(ctx, r, request, body.Number, result, err)
+	return finish(ctx, h, request, body.Number, result, err)
 }
 
-func (r *Runtime) changeRequestReview(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
+func (h *pullRequestActions) changeRequestReview(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
 	var body struct {
 		Number   int64                         `json:"number"`
 		Event    string                        `json:"event"`
@@ -121,13 +128,13 @@ func (r *Runtime) changeRequestReview(ctx context.Context, request *pluginsdk.Pl
 	}
 	ctx, cancel := context.WithTimeout(ctx, writeBudget)
 	defer cancel()
-	result, err := r.pullActions.Review(ctx, request.Context.WorkspaceID, request.Context.TaskID, sourcecontrol.ReviewRequest{
+	result, err := h.pullActions.Review(ctx, request.Context.WorkspaceID, request.Context.TaskID, sourcecontrol.ReviewRequest{
 		Number: body.Number, Event: body.Event, Body: body.Body, HeadSHA: body.HeadSHA, Comments: body.Comments,
 	})
-	return finish(ctx, r, request, body.Number, result, err)
+	return finish(ctx, h, request, body.Number, result, err)
 }
 
-func (r *Runtime) changeRequestReviewers(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
+func (h *pullRequestActions) changeRequestReviewers(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
 	var body struct {
 		Number int64    `json:"number"`
 		Add    []string `json:"add"`
@@ -138,13 +145,13 @@ func (r *Runtime) changeRequestReviewers(ctx context.Context, request *pluginsdk
 	}
 	ctx, cancel := context.WithTimeout(ctx, writeBudget)
 	defer cancel()
-	result, err := r.pullActions.RequestReviewers(ctx, request.Context.WorkspaceID, request.Context.TaskID, sourcecontrol.ReviewersRequest{
+	result, err := h.pullActions.RequestReviewers(ctx, request.Context.WorkspaceID, request.Context.TaskID, sourcecontrol.ReviewersRequest{
 		Number: body.Number, Add: body.Add, Remove: body.Remove,
 	})
-	return finish(ctx, r, request, body.Number, result, err)
+	return finish(ctx, h, request, body.Number, result, err)
 }
 
-func (r *Runtime) changeRequestUpdateBranch(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
+func (h *pullRequestActions) changeRequestUpdateBranch(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
 	var body struct {
 		Number int64  `json:"number"`
 		Style  string `json:"style"`
@@ -154,13 +161,13 @@ func (r *Runtime) changeRequestUpdateBranch(ctx context.Context, request *plugin
 	}
 	ctx, cancel := context.WithTimeout(ctx, writeBudget)
 	defer cancel()
-	result, err := r.pullActions.UpdateBranch(ctx, request.Context.WorkspaceID, request.Context.TaskID, sourcecontrol.UpdateBranchRequest{
+	result, err := h.pullActions.UpdateBranch(ctx, request.Context.WorkspaceID, request.Context.TaskID, sourcecontrol.UpdateBranchRequest{
 		Number: body.Number, Style: body.Style,
 	})
-	return finish(ctx, r, request, body.Number, result, err)
+	return finish(ctx, h, request, body.Number, result, err)
 }
 
-func (r *Runtime) changeRequestComment(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
+func (h *pullRequestActions) changeRequestComment(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
 	var body struct {
 		Number int64  `json:"number"`
 		Body   string `json:"body"`
@@ -170,45 +177,8 @@ func (r *Runtime) changeRequestComment(ctx context.Context, request *pluginsdk.P
 	}
 	ctx, cancel := context.WithTimeout(ctx, writeBudget)
 	defer cancel()
-	result, err := r.pullActions.Comment(ctx, request.Context.WorkspaceID, request.Context.TaskID, sourcecontrol.CommentRequest{
+	result, err := h.pullActions.Comment(ctx, request.Context.WorkspaceID, request.Context.TaskID, sourcecontrol.CommentRequest{
 		Number: body.Number, Body: body.Body,
 	})
-	return finish(ctx, r, request, body.Number, result, err)
-}
-
-// pullFailure turns an adapter error into an explicit domain status with a
-// fixed message. The host masks a plain Go error as an internal error, which
-// would hide a failure the user can act on.
-func pullFailure(err error) (*pluginsdk.PluginActionResponse, error) {
-	var writeErr *scm.WriteError
-	var invalidErr *scm.InvalidError
-	switch {
-	case errors.Is(err, scm.ErrNotLinked):
-		return kandev.Refuse(http.StatusNotFound, "That pull request is not linked to this task.")
-	case errors.As(err, &invalidErr):
-		return kandev.Refuse(http.StatusUnprocessableEntity, invalidErr.Message)
-	case errors.Is(err, scm.ErrAmbiguous):
-		return kandev.Refuse(http.StatusConflict, "This task links more than one pull request; say which one.")
-	case errors.As(err, &writeErr):
-		return kandev.Refuse(writeStatus(writeErr), writeReasonMessage(writeErr.Reason))
-	case errors.Is(err, scm.ErrUnauthorized):
-		return kandev.Refuse(http.StatusForbidden, safeMessage(err))
-	case errors.Is(err, context.DeadlineExceeded):
-		return kandev.Refuse(http.StatusGatewayTimeout, "The instance took too long to answer.")
-	default:
-		return kandev.Refuse(http.StatusBadGateway, safeMessage(err))
-	}
-}
-
-// writeStatus keeps expected write failures in the 403/409/422 band the host
-// passes through.
-func writeStatus(err *scm.WriteError) int {
-	switch err.Reason {
-	case scm.ReasonForbidden, scm.ReasonBlockedByProtection:
-		return http.StatusForbidden
-	case scm.ReasonInvalid, scm.ReasonSelfReview:
-		return http.StatusUnprocessableEntity
-	default:
-		return http.StatusConflict
-	}
+	return finish(ctx, h, request, body.Number, result, err)
 }

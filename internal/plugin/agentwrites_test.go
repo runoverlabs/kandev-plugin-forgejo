@@ -181,13 +181,13 @@ func TestSetAgentMergeIsWorkspaceScopedAndFailsClosed(t *testing.T) {
 	t.Parallel()
 	fixture := newAgentFixture(t)
 	ctx := context.Background()
-	require.False(t, fixture.runtime.agentMergeEnabled(ctx, "workspace-1"), "off until an operator says otherwise")
+	require.False(t, fixture.runtime.switches.AgentMerge(ctx, "workspace-1"), "off until an operator says otherwise")
 
 	response, err := fixture.runtime.HandleAction(ctx, pluginRequest(ActionConnectionSetAgentMerge, "workspace-1", `{"enabled":true}`))
 	require.NoError(t, err)
 	require.Contains(t, string(response.Body), `"agent_merge":true`)
-	require.True(t, fixture.runtime.agentMergeEnabled(ctx, "workspace-1"))
-	require.False(t, fixture.runtime.agentMergeEnabled(ctx, "workspace-2"), "another workspace is unaffected")
+	require.True(t, fixture.runtime.switches.AgentMerge(ctx, "workspace-1"))
+	require.False(t, fixture.runtime.switches.AgentMerge(ctx, "workspace-2"), "another workspace is unaffected")
 
 	bad, err := fixture.runtime.HandleAction(ctx, pluginRequest(ActionConnectionSetAgentMerge, "workspace-1", `{}`))
 	require.NoError(t, err)
