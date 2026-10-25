@@ -24,6 +24,7 @@ type manifest struct {
 	Capabilities        struct {
 		APIRead  []string `yaml:"api_read"`
 		APIWrite []string `yaml:"api_write"`
+		Events   []string `yaml:"events"`
 		State    bool     `yaml:"state"`
 	} `yaml:"capabilities"`
 	Actions []struct {
@@ -142,12 +143,19 @@ func TestManifestDeclaresEveryRoutedAction(t *testing.T) {
 		ActionWatchesRun:     "workspace",
 		ActionWatchesReset:   "workspace",
 		ActionWatchesCleanup: "workspace",
+		// Pull request automation: per pull request under the verified task,
+		// settings per workspace.
+		ActionAutomationGet:         "task",
+		ActionAutomationSet:         "task",
+		ActionAutomationRetry:       "task",
+		ActionAutomationSettings:    "workspace",
+		ActionAutomationSettingsSet: "workspace",
 	} {
 		scope, ok := declared[key]
 		require.True(t, ok, "manifest does not declare routed action %q", key)
 		require.Equal(t, wantScope, scope, "action %q has the wrong scope", key)
 	}
-	require.Len(t, parsed.Actions, 27, "an undeclared or stale action entry drifted from the routed set")
+	require.Len(t, parsed.Actions, 32, "an undeclared or stale action entry drifted from the routed set")
 }
 
 // The source-control contracts first shipped in v0.88.0 and agent tools in
@@ -203,7 +211,10 @@ func TestManifestAgentToolsStayWithinBudget(t *testing.T) {
 	}
 	// Measured with kandev's own estimator (o200k_base:mcp-tool-json-v1), the
 	// two tools cost 329 tokens together. This byte ceiling is the proxy this
-	// repo can enforce without importing kandev-internal packages.
+	// repo can enforce without importing kandev-internal packages. The pr
+	// tool's outcome op (pull request automation) fit by dropping the outcome
+	// enum, which the auto-fix prompt spells out and the handler enforces, and
+	// the title hint, which op=open's error repeats: 1506 bytes together.
 	require.Less(t, total, 1536, "agent_tools definitions total %d bytes", total)
 }
 
@@ -219,7 +230,12 @@ func TestManifestAgentToolsStayWithinBudget(t *testing.T) {
 //	workflows          the watch form's workflow and step pickers
 //	agent_profiles     the watch form's agent picker
 //	executor_profiles  the watch form's executor picker
+//	sessions           automation reads session states before prompting, so a
+//	                   fork's never-started agent is never started by a prompt
 //	api_write:tasks    a watch turning an issue into a card
+//	api_write:messages automation prompting a task's agent; the only path to one
+//	events             turn.completed and task_session.state_changed, hints that
+//	                   let automation react to a turn ending without a report
 //
 // agent_invoke and auth remain unclaimed. auth is the highest-privilege
 // capability in the manifest and nothing here needs to mint a session.
@@ -227,10 +243,12 @@ func TestManifestClaimsOnlyUsedCapabilities(t *testing.T) {
 	t.Parallel()
 	parsed := loadManifest(t)
 	require.ElementsMatch(t, []string{
-		"tasks", "repositories", "workspaces", "workflows", "agent_profiles", "executor_profiles",
+		"tasks", "repositories", "workspaces", "workflows", "agent_profiles", "executor_profiles", "sessions",
 	}, parsed.Capabilities.APIRead)
-	require.Equal(t, []string{"tasks"}, parsed.Capabilities.APIWrite,
-		"issue watches create tasks; nothing else here mutates a kandev entity")
+	require.Equal(t, []string{"tasks", "messages"}, parsed.Capabilities.APIWrite,
+		"watches create tasks and automation prompts agents; nothing else mutates a kandev entity")
+	require.Equal(t, []string{eventTurnCompleted, eventSessionStateChanged}, parsed.Capabilities.Events,
+		"the subscriptions OnEvent handles, and no more")
 	require.True(t, parsed.Capabilities.State, "associations and watch records are stored in Host state")
 }
 

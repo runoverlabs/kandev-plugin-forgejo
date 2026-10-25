@@ -198,6 +198,10 @@ func appendFailedJobLogs(ctx context.Context, client *forgejo.Client, repository
 // toolPR reads, opens, or readies the pull request for a task.
 func (r *Runtime) toolPR(ctx context.Context, request *pluginsdk.AgentToolRequest) (*pluginsdk.AgentToolResult, error) {
 	op := strings.ToLower(argString(request.Arguments, "op"))
+	if op == "outcome" {
+		// Bound to the auto-fix attempt in flight, not to a repository.
+		return r.prOutcome(ctx, request)
+	}
 	repository, client, failure := r.agentRepository(ctx, request)
 	if failure != nil {
 		return failure, nil
@@ -212,7 +216,7 @@ func (r *Runtime) toolPR(ctx context.Context, request *pluginsdk.AgentToolReques
 	case "merge", "review", "request_review", "update", "comment":
 		return r.prWrite(ctx, request, op)
 	default:
-		return toolError("op must be get, open, ready, merge, review, request_review, update, or comment."), nil
+		return toolError("op must be get, open, ready, merge, review, request_review, update, comment, or outcome."), nil
 	}
 }
 

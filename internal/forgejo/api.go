@@ -99,16 +99,19 @@ type PullRequest struct {
 	// Pointers, because an absent field must read as "unknown", not zero or
 	// false: Gitea 1.20 and Forgejo 7 omit the line counts, and a PR whose
 	// mergeability is not yet computed must not look unmergeable.
-	Mergeable    *bool          `json:"mergeable"`
-	Additions    *int           `json:"additions"`
-	Deletions    *int           `json:"deletions"`
-	ChangedFiles *int           `json:"changed_files"`
-	Requested    []User         `json:"requested_reviewers"`
-	Assignees    []User         `json:"assignees"`
-	Labels       []Label        `json:"labels"`
-	Head         PullRequestRef `json:"head"`
-	Base         PullRequestRef `json:"base"`
-	User         User           `json:"user"`
+	Mergeable    *bool  `json:"mergeable"`
+	Additions    *int   `json:"additions"`
+	Deletions    *int   `json:"deletions"`
+	ChangedFiles *int   `json:"changed_files"`
+	Requested    []User `json:"requested_reviewers"`
+	// RequestedTeams is empty on Forgejo 7, which does not report team
+	// requests on the pull request.
+	RequestedTeams []Team         `json:"requested_reviewers_teams"`
+	Assignees      []User         `json:"assignees"`
+	Labels         []Label        `json:"labels"`
+	Head           PullRequestRef `json:"head"`
+	Base           PullRequestRef `json:"base"`
+	User           User           `json:"user"`
 }
 
 // Review mirrors the REST v1 pull review object. Forgejo and Gitea both use
@@ -123,6 +126,12 @@ type Review struct {
 	// SubmittedAt is an RFC 3339 timestamp; empty on a pending review.
 	SubmittedAt string `json:"submitted_at"`
 	User        User   `json:"user"`
+	// Official is true when the reviewer's approval counts towards the
+	// branch's required approvals. Probed on Forgejo 7, 11, 15 and 17 and
+	// Gitea 1.27: true for a collaborator with write access, false for a
+	// read-only one, visible to any token that can read the pull request.
+	Official      bool `json:"official"`
+	CommentsCount int  `json:"comments_count"`
 }
 
 // CommitStatus is one entry of a combined status. The per-entry field is

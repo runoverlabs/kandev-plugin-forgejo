@@ -226,3 +226,48 @@
   font-size: 0.8125rem;
   color: var(--destructive, inherit);
 }
+
+/* Pull request automation: the review panel section and the settings. */
+.forgejo-panel-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.forgejo-automation {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.forgejo-automation__heading {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.forgejo-automation__toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.forgejo-automation__status {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--muted-foreground, inherit);
+}
+
+.forgejo-automation__error {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--destructive, #b3261e);
+}
+
+.forgejo-automation__actions,
+.forgejo-automation__confirm {
+  display: flex;
+  gap: 0.5rem;
+}

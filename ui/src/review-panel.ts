@@ -1,4 +1,5 @@
 import type { Component, PluginHostApi } from "@kandev/plugin-sdk";
+import { createAutomationSection } from "./automation";
 import type { ChangeRequestDetailModel } from "./detail";
 import {
   type DetailsResponse,
@@ -193,6 +194,7 @@ function createReviewDialog(host: PluginHostApi) {
  */
 export function createReviewPanel(host: PluginHostApi, options: ReviewPanelOptions): Component<PanelProps> {
   const ReviewDialog = createReviewDialog(host);
+  const AutomationSection = createAutomationSection(host);
 
   return function ReviewPanel(props: PanelProps) {
     const [details, setDetails] = host.React.useState(null as DetailsResponse | null);
@@ -200,12 +202,16 @@ export function createReviewPanel(host: PluginHostApi, options: ReviewPanelOptio
     const [error, setError] = host.React.useState(null as string | null);
     const [busy, setBusy] = host.React.useState(null as string | null);
     const [deleteBranch, setDeleteBranch] = host.React.useState(null as boolean | null);
+    // Bumped on every reload, so the automation section refreshes with the
+    // panel instead of polling on its own.
+    const [refreshKey, setRefreshKey] = host.React.useState(0);
 
     const number = Number(props.changeRequestNumber);
 
     const load = host.React.useCallback(
       async (signal?: AbortSignal) => {
         setLoading(true);
+        setRefreshKey((key: number) => key + 1);
         try {
           const response = await host.api.invokeAction<DetailsResponse>(
             "change_requests.details",
@@ -368,9 +374,24 @@ export function createReviewPanel(host: PluginHostApi, options: ReviewPanelOptio
         : undefined;
 
     const noticeText = current ? mergeNotice(current) : null;
-    const notice = noticeText
+    const mergeNoticeNode = noticeText
       ? host.jsx("p", { className: "forgejo-merge-notice", role: "status", "data-testid": "forgejo-merge-notice" }, noticeText)
-      : undefined;
+      : null;
+    // The host's detail component has no slot of its own for plugin controls;
+    // its notice area takes any node, so automation lives there.
+    const automation =
+      current && Number.isFinite(number)
+        ? host.jsx(AutomationSection, {
+            workspaceId: props.workspaceId,
+            taskId: props.taskId,
+            number,
+            refreshKey: refreshKey as number,
+          })
+        : null;
+    const notice =
+      mergeNoticeNode || automation
+        ? host.jsx("div", { className: "forgejo-panel-notice" }, mergeNoticeNode, automation)
+        : undefined;
 
     const actions = current
       ? [

@@ -229,14 +229,7 @@ const mergeableSettle = 30 * time.Second
 // A true answer is always passed through: a stale true is caught by the head SHA
 // precondition on merge, whereas a stale false would wrongly block the user.
 func (a *PullActions) settledMergeable(pull PullRequest) *bool {
-	if pull.Mergeable == nil || *pull.Mergeable {
-		return pull.Mergeable
-	}
-	updated := parseTimestampMillis(pull.UpdatedAt)
-	if updated > 0 && a.now().Sub(time.UnixMilli(updated)) < mergeableSettle {
-		return nil
-	}
-	return pull.Mergeable
+	return settleMergeable(pull, a.now())
 }
 
 // userCanMerge reports the branch's per-user merge permission. The field is

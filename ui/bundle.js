@@ -106,6 +106,299 @@ function failureMessage(cause) {
   return "The request failed.";
 }
 
+// ui/src/automation.ts
+var SWITCHES = [
+  { key: "auto_fix", label: "Auto-fix: prompt the agent when CI fails, the branch conflicts, or reviewers ask for changes" },
+  { key: "auto_merge", label: "Auto-merge when CI passes, the branch merges cleanly and reviews allow it" },
+  { key: "on_review_requested", label: "Tell the agent when your review is requested" },
+  { key: "on_merged", label: "Tell the agent when the pull request is merged" },
+  { key: "on_closed", label: "Tell the agent when the pull request is closed without merging" }
+];
+var TRUST_LEVELS = [
+  {
+    value: "everyone",
+    label: "Everyone",
+    hint: "Every review and comment reaches the agent, as with Kandev's GitHub integration. Anyone who can comment on the pull request puts text in front of the agent."
+  },
+  {
+    value: "official",
+    label: "Official reviewers",
+    hint: "Only reviews that count towards approvals (reviewers with write access), and comments from people who left one."
+  },
+  {
+    value: "none",
+    label: "No review text",
+    hint: "Auto-fix acts on CI failures and conflicts only."
+  }
+];
+var FORK_WARNING = "This pull request comes from a fork. Its code and comments are controlled by the fork's author, and the agent will act on them with your executor's environment. Turn this on only if you trust that author.";
+function outcomeLine(view) {
+  if (!view.last_outcome) return null;
+  const outcome = view.last_outcome.replace(/_/g, " ");
+  return view.last_summary ? `Last outcome: ${outcome} \u2014 ${view.last_summary}` : `Last outcome: ${outcome}`;
+}
+function createAutomationSection(host) {
+  return function AutomationSection(props) {
+    const [view, setView] = host.React.useState(null);
+    const [error, setError] = host.React.useState(null);
+    const [busy, setBusy] = host.React.useState(false);
+    const call = (key, body = {}) => host.api.invokeAction(key, {
+      workspaceId: props.workspaceId,
+      taskId: props.taskId,
+      body: { number: props.number, ...body }
+    });
+    const load = host.React.useCallback(async () => {
+      try {
+        setView(await call("automation.get"));
+        setError(null);
+      } catch (cause) {
+        setError(failureMessage(cause));
+      }
+    }, [props.workspaceId, props.taskId, props.number]);
+    host.React.useEffect(() => {
+      void load();
+    }, [load, props.refreshKey]);
+    const write = async (key, body) => {
+      if (busy) return;
+      setBusy(true);
+      try {
+        setView(await call(key, body));
+        setError(null);
+      } catch (cause) {
+        host.toast.error(failureMessage(cause));
+      } finally {
+        setBusy(false);
+      }
+    };
+    const toggle = (key, next) => {
+      const current2 = view;
+      if (next && current2?.fork && (key === "auto_fix" || key === "auto_merge")) {
+        let modal = null;
+        modal = host.openModal({
+          title: "Pull request from a fork",
+          description: FORK_WARNING,
+          size: "sm",
+          content: () => host.jsx(
+            "div",
+            { className: "forgejo-automation__confirm" },
+            host.jsx(host.ui.Button, { type: "button", variant: "outline", onClick: () => modal?.close() }, "Cancel"),
+            host.jsx(
+              host.ui.Button,
+              {
+                type: "button",
+                "data-testid": "forgejo-automation-fork-confirm",
+                onClick: () => {
+                  modal?.close();
+                  void write("automation.set", { [key]: true });
+                }
+              },
+              "Turn on"
+            )
+          )
+        });
+        return;
+      }
+      void write("automation.set", { [key]: next });
+    };
+    const current = view;
+    if (!current) {
+      return error ? host.jsx("p", { className: "forgejo-automation__error", role: "alert" }, error) : null;
+    }
+    const lines = [];
+    if (!current.integration_enabled) {
+      lines.push("Paused: the Forgejo integration is off for this workspace.");
+    }
+    if (current.status) lines.push(current.status);
+    if (current.auto_fix) {
+      lines.push(`Auto-fix rounds: ${current.rounds} of ${current.max_rounds}.`);
+    }
+    const outcome = outcomeLine(current);
+    if (outcome) lines.push(outcome);
+    if (current.ignored > 0) {
+      lines.push(
+        `${current.ignored} review ${current.ignored === 1 ? "comment was" : "comments were"} left out by the workspace's feedback setting (${current.trust}).`
+      );
+    }
+    return host.jsx(
+      "div",
+      { className: "forgejo-automation", "data-testid": "forgejo-automation" },
+      host.jsx("h4", { className: "forgejo-automation__heading" }, "Automation"),
+      ...SWITCHES.map(
+        ({ key, label }) => host.jsx(
+          "label",
+          { key, className: "forgejo-automation__toggle" },
+          host.jsx(host.ui.Switch, {
+            checked: current[key],
+            disabled: busy,
+            "aria-label": label,
+            "data-testid": `forgejo-automation-${key}`,
+            onCheckedChange: (next) => toggle(key, next === true)
+          }),
+          host.jsx("span", null, label)
+        )
+      ),
+      ...lines.map(
+        (line, index) => host.jsx("p", { key: `line-${index}`, className: "forgejo-automation__status", role: "status" }, line)
+      ),
+      current.error || error ? host.jsx("p", { className: "forgejo-automation__error", role: "alert" }, current.error || error) : null,
+      current.merge_failure && current.auto_merge ? host.jsx(
+        host.ui.Button,
+        {
+          type: "button",
+          size: "sm",
+          variant: "outline",
+          disabled: busy,
+          "data-testid": "forgejo-automation-retry-merge",
+          onClick: () => void write("automation.retry", { what: "merge" })
+        },
+        "Retry merge"
+      ) : null,
+      current.exhausted ? host.jsx(
+        host.ui.Button,
+        {
+          type: "button",
+          size: "sm",
+          variant: "outline",
+          disabled: busy,
+          "data-testid": "forgejo-automation-reset-rounds",
+          onClick: () => void write("automation.retry", { what: "rounds" })
+        },
+        "Reset rounds"
+      ) : null
+    );
+  };
+}
+function createAutomationSettings(host) {
+  return function AutomationSettingsPanel(props = {}) {
+    const [settings, setSettings] = host.React.useState(null);
+    const [template, setTemplate] = host.React.useState(null);
+    const [error, setError] = host.React.useState(null);
+    const [busy, setBusy] = host.React.useState(false);
+    const [activeWorkspaceId, setActiveWorkspaceId] = host.React.useState(
+      () => host.context.getActiveWorkspaceId()
+    );
+    host.React.useEffect(() => host.context.subscribeActiveWorkspace(setActiveWorkspaceId), []);
+    const workspaceId = (props.workspaceId ?? activeWorkspaceId ?? "").trim();
+    host.React.useEffect(() => {
+      if (!workspaceId) return;
+      let cancelled = false;
+      host.api.invokeAction("automation.settings", { workspaceId }).then((loaded) => {
+        if (cancelled) return;
+        setSettings(loaded);
+        setTemplate(null);
+        setError(null);
+      }).catch((cause) => {
+        if (!cancelled) setError(failureMessage(cause));
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [workspaceId]);
+    const save = async (patch, done) => {
+      if (busy || !workspaceId) return;
+      setBusy(true);
+      try {
+        const saved = await host.api.invokeAction("automation.settings_set", {
+          workspaceId,
+          body: patch
+        });
+        setSettings(saved);
+        setError(null);
+        if (done) host.toast.success(done);
+      } catch (cause) {
+        host.toast.error(failureMessage(cause));
+      } finally {
+        setBusy(false);
+      }
+    };
+    if (!workspaceId) {
+      return host.jsx("p", { className: "forgejo-automation__status" }, "Pick a workspace to configure automation.");
+    }
+    const current = settings;
+    if (!current) {
+      return error ? host.jsx("p", { className: "forgejo-automation__error", role: "alert" }, error) : null;
+    }
+    const trust = TRUST_LEVELS.find((level) => level.value === current.trust) ?? TRUST_LEVELS[0];
+    const draft = template ?? (current.template || current.default_template);
+    return host.jsx(
+      "div",
+      { className: "forgejo-automation", "data-testid": "forgejo-automation-settings" },
+      host.jsx(
+        "p",
+        { className: "forgejo-automation__status" },
+        "Defaults for pull requests linked from now on. Each pull request's own switches are in its review panel. Auto-fix and auto-merge are never turned on by default for a pull request from a fork."
+      ),
+      ...SWITCHES.map(
+        ({ key, label }) => host.jsx(
+          "label",
+          { key, className: "forgejo-automation__toggle" },
+          host.jsx(host.ui.Switch, {
+            checked: current.defaults[key],
+            disabled: busy,
+            "aria-label": `Default: ${label}`,
+            "data-testid": `forgejo-automation-default-${key}`,
+            onCheckedChange: (next) => void save({ defaults: { ...current.defaults, [key]: next === true } })
+          }),
+          host.jsx("span", null, label)
+        )
+      ),
+      host.jsx(host.ui.Label, null, "Review feedback the agent sees"),
+      host.jsx(
+        host.ui.Select,
+        { value: current.trust, onValueChange: (next) => void save({ trust: next }) },
+        host.jsx(host.ui.SelectTrigger, { "data-testid": "forgejo-automation-trust" }, host.jsx(host.ui.SelectValue, null)),
+        host.jsx(
+          host.ui.SelectContent,
+          null,
+          ...TRUST_LEVELS.map((level) => host.jsx(host.ui.SelectItem, { key: level.value, value: level.value }, level.label))
+        )
+      ),
+      host.jsx("p", { className: "forgejo-automation__status" }, trust.hint),
+      host.jsx(host.ui.Label, null, "Auto-fix prompt"),
+      host.jsx(host.ui.Textarea, {
+        value: draft,
+        rows: 10,
+        disabled: busy,
+        "aria-label": "Auto-fix prompt",
+        onChange: (event) => setTemplate(event.target.value)
+      }),
+      host.jsx(
+        "p",
+        { className: "forgejo-automation__status" },
+        "Placeholders: {{pr.feedback}}, {{pr.url}}, {{pr.number}}, {{pr.title}}, {{pr.repository}}, {{pr.head_branch}}, {{pr.base_branch}}, {{attempt.round}}. The outcome instructions are always appended."
+      ),
+      host.jsx(
+        "div",
+        { className: "forgejo-automation__actions" },
+        host.jsx(
+          host.ui.Button,
+          {
+            type: "button",
+            size: "sm",
+            disabled: busy || template === null,
+            "data-testid": "forgejo-automation-save-template",
+            onClick: () => void save({ template: draft === current.default_template ? "" : draft }, "Auto-fix prompt saved").then(
+              () => setTemplate(null)
+            )
+          },
+          "Save prompt"
+        ),
+        host.jsx(
+          host.ui.Button,
+          {
+            type: "button",
+            size: "sm",
+            variant: "outline",
+            disabled: busy || !current.template,
+            onClick: () => void save({ template: "" }, "Auto-fix prompt reset").then(() => setTemplate(null))
+          },
+          "Reset to default"
+        )
+      )
+    );
+  };
+}
+
 // ui/src/review-panel.ts
 var EVENT_LABELS = {
   approve: "Approve",
@@ -239,16 +532,19 @@ function createReviewDialog(host) {
 }
 function createReviewPanel(host, options) {
   const ReviewDialog = createReviewDialog(host);
+  const AutomationSection = createAutomationSection(host);
   return function ReviewPanel(props) {
     const [details, setDetails] = host.React.useState(null);
     const [loading, setLoading] = host.React.useState(true);
     const [error, setError] = host.React.useState(null);
     const [busy, setBusy] = host.React.useState(null);
     const [deleteBranch, setDeleteBranch] = host.React.useState(null);
+    const [refreshKey, setRefreshKey] = host.React.useState(0);
     const number = Number(props.changeRequestNumber);
     const load = host.React.useCallback(
       async (signal) => {
         setLoading(true);
+        setRefreshKey((key) => key + 1);
         try {
           const response = await host.api.invokeAction(
             "change_requests.details",
@@ -384,7 +680,14 @@ function createReviewPanel(host, options) {
       current.actor ? host.jsx("span", { className: "forgejo-merge__actor" }, `as ${current.actor}`) : null
     ) : void 0;
     const noticeText = current ? mergeNotice(current) : null;
-    const notice = noticeText ? host.jsx("p", { className: "forgejo-merge-notice", role: "status", "data-testid": "forgejo-merge-notice" }, noticeText) : void 0;
+    const mergeNoticeNode = noticeText ? host.jsx("p", { className: "forgejo-merge-notice", role: "status", "data-testid": "forgejo-merge-notice" }, noticeText) : null;
+    const automation = current && Number.isFinite(number) ? host.jsx(AutomationSection, {
+      workspaceId: props.workspaceId,
+      taskId: props.taskId,
+      number,
+      refreshKey
+    }) : null;
+    const notice = mergeNoticeNode || automation ? host.jsx("div", { className: "forgejo-panel-notice" }, mergeNoticeNode, automation) : void 0;
     const actions = current ? [
       {
         id: "comment",
@@ -1773,6 +2076,7 @@ window.registerKandevPlugin(PLUGIN_ID, {
       const ConnectionPanel = createConnectionPanel(host);
       const WatchesPanel = createWatchesPanel(host);
       const ReviewWatchesPanel = createWatchesPanel(host, { kind: "review" });
+      const AutomationSettingsPanel = createAutomationSettings(host);
       const SettingsPanel = (props = {}) => host.jsx(
         "div",
         { className: "forgejo-settings" },
@@ -1782,12 +2086,15 @@ window.registerKandevPlugin(PLUGIN_ID, {
         host.jsx(WatchesPanel, props),
         host.jsx("hr", { className: "forgejo-settings__rule" }),
         host.jsx("h3", { className: "forgejo-settings__heading" }, "Review watches"),
-        host.jsx(ReviewWatchesPanel, props)
+        host.jsx(ReviewWatchesPanel, props),
+        host.jsx("hr", { className: "forgejo-settings__rule" }),
+        host.jsx("h3", { className: "forgejo-settings__heading" }, "Pull request automation"),
+        host.jsx(AutomationSettingsPanel, props)
       );
       registry.registerIntegrationSettings({
         id: PROVIDER_ID,
         label: "Forgejo",
-        description: "Connect a Forgejo or Gitea instance for repositories, pull requests, reviews, and issue and review watches.",
+        description: "Connect a Forgejo or Gitea instance for repositories, pull requests, reviews, issue and review watches, and pull request automation.",
         icon,
         Component: SettingsPanel
       });

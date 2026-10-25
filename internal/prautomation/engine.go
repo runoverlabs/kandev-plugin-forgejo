@@ -1,0 +1,972 @@
+package prautomation
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Timing. The loop wakes every tick and evaluates the records that are due;
+// each record sets its own next due time from what it is waiting for.
+const (
+	defaultTick = 15 * time.Second
+	// activeInterval: an attempt in flight, auto-merge armed, or CI running
+	// under auto-fix. Short enough that a green build merges within a tick or
+	// two.
+	activeInterval = 20 * time.Second
+	idleInterval   = 60 * time.Second
+	// closedInterval: a closed pull request can reopen, which re-arms the
+	// closed prompt, but nothing else happens to it.
+	closedInterval = 10 * time.Minute
+	errorInterval  = 5 * time.Minute
+	// pendingInterval: a lifecycle prompt waiting for a session.
+	pendingInterval = 30 * time.Second
+	// progressWindow: after action_taken, how long the agent's change has to
+	// show (a new head) before new feedback is sent anyway. Kandev's GitHub
+	// integration uses the same two minutes.
+	progressWindow = 2 * time.Minute
+	// idleGrace: a dispatched attempt whose session is no longer running and
+	// that reported nothing for this long ended without an outcome. The
+	// turn.completed event usually says so sooner; this is the fallback when
+	// an event is lost.
+	idleGrace = 2 * time.Minute
+	// noCIGrace: how long a head with no checks at all must stay that way
+	// before auto-merge takes the repository for one without CI. Right after
+	// a push, CI has often not reported yet, and "nothing reported" must not
+	// read as "nothing to wait for".
+	noCIGrace = 2 * time.Minute
+	// blockedHold: after blocked, how long auto-merge waits on the same head.
+	blockedHold = time.Hour
+	// budgetPerWorkspace bounds the observations one tick makes in one
+	// workspace, so a large board cannot hammer the instance.
+	budgetPerWorkspace = 20
+	maxSummaryBytes    = 4096
+)
+
+// Session states, as the Host reports them.
+const (
+	sessionCreated         = "CREATED"
+	sessionStarting        = "STARTING"
+	sessionRunning         = "RUNNING"
+	sessionWaitingForInput = "WAITING_FOR_INPUT"
+	sessionIdle            = "IDLE"
+)
+
+// Errors the outcome report can fail with. Their text is shown to the agent.
+var (
+	ErrNoAttempt        = errors.New("no auto-fix attempt is waiting for an outcome on this task")
+	ErrAmbiguousAttempt = errors.New("several linked pull requests are waiting for an auto-fix outcome; pass repo to pick one")
+	ErrNotFound         = errors.New("this pull request is not linked to the task")
+)
+
+// Engine runs pull request automation for every workspace.
+type Engine struct {
+	store     *Store
+	links     Links
+	observer  Observer
+	merger    Merger
+	messenger Messenger
+	// gate reports whether the integration is switched on for a workspace.
+	gate func(ctx context.Context, workspaceID string) (bool, error)
+	// workspaces lists the workspaces to serve.
+	workspaces func(ctx context.Context) ([]string, error)
+	// describe turns an error into fixed, operator-facing text. The provider
+	// adapter's errors can carry anything; only this text is stored.
+	describe func(error) string
+
+	tick  time.Duration
+	now   func() time.Time
+	newID func() string
+	logf  func(format string, args ...any)
+
+	locks keyedMutex
+
+	mu      sync.Mutex
+	tracked map[string]string // task id → workspace id, rebuilt every tick
+	cancel  context.CancelFunc
+	stopped chan struct{}
+}
+
+// Config wires an Engine.
+type Config struct {
+	Store      *Store
+	Links      Links
+	Observer   Observer
+	Merger     Merger
+	Messenger  Messenger
+	Gate       func(ctx context.Context, workspaceID string) (bool, error)
+	Workspaces func(ctx context.Context) ([]string, error)
+	Describe   func(error) string
+	Logf       func(format string, args ...any)
+}
+
+// NewEngine returns an engine. Start begins its loop.
+func NewEngine(config Config) *Engine {
+	engine := &Engine{
+		store:      config.Store,
+		links:      config.Links,
+		observer:   config.Observer,
+		merger:     config.Merger,
+		messenger:  config.Messenger,
+		gate:       config.Gate,
+		workspaces: config.Workspaces,
+		describe:   config.Describe,
+		tick:       defaultTick,
+		now:        time.Now,
+		newID:      randomID,
+		logf:       config.Logf,
+		tracked:    map[string]string{},
+	}
+	if engine.describe == nil {
+		engine.describe = func(error) string { return "The instance could not be read." }
+	}
+	if engine.logf == nil {
+		engine.logf = func(string, ...any) {}
+	}
+	return engine
+}
+
+// Store returns the engine's store, for the action handlers.
+func (e *Engine) Store() *Store { return e.store }
+
+// Start begins the loop. A second call while running is a no-op.
+func (e *Engine) Start() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.cancel != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	e.cancel, e.stopped = cancel, stopped
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(e.tick)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				e.Tick(ctx)
+			}
+		}
+	}()
+}
+
+// Stop halts the loop and waits for the tick in progress.
+func (e *Engine) Stop() {
+	e.mu.Lock()
+	cancel, stopped := e.cancel, e.stopped
+	e.cancel, e.stopped = nil, nil
+	e.mu.Unlock()
+	if cancel == nil {
+		return
+	}
+	cancel()
+	<-stopped
+}
+
+// Tick runs one pass over every workspace. Exported so tests drive the loop
+// without waiting on the clock.
+func (e *Engine) Tick(ctx context.Context) {
+	if e.workspaces == nil {
+		return
+	}
+	workspaces, err := e.workspaces(ctx)
+	if err != nil {
+		e.logf("prautomation: list workspaces: %v", err)
+		return
+	}
+	tracked := map[string]string{}
+	for _, workspaceID := range workspaces {
+		if ctx.Err() != nil {
+			return
+		}
+		e.tickWorkspace(ctx, workspaceID, tracked)
+	}
+	e.mu.Lock()
+	e.tracked = tracked
+	e.mu.Unlock()
+}
+
+func (e *Engine) tickWorkspace(ctx context.Context, workspaceID string, tracked map[string]string) {
+	if e.gate != nil {
+		enabled, err := e.gate(ctx, workspaceID)
+		if err != nil || !enabled {
+			// Switched off: nothing is observed, prompted or merged. Records
+			// stay as they are and resume when the switch comes back on.
+			return
+		}
+	}
+	links, err := e.links.Linked(ctx, workspaceID)
+	if err != nil {
+		e.logf("prautomation: list links in %s: %v", workspaceID, err)
+		return
+	}
+	records, err := e.store.List(ctx, workspaceID)
+	if err != nil {
+		e.logf("prautomation: list records in %s: %v", workspaceID, err)
+		return
+	}
+	byKey := make(map[string]Record, len(records))
+	for _, record := range records {
+		byKey[recordKey(record.Ref())] = record
+	}
+	settings, err := e.store.Settings(ctx, workspaceID)
+	if err != nil {
+		e.logf("prautomation: settings for %s: %v", workspaceID, err)
+		return
+	}
+
+	linked := make(map[string]bool, len(links))
+	for _, ref := range links {
+		key := recordKey(ref)
+		linked[key] = true
+		if _, ok := byKey[key]; ok {
+			continue
+		}
+		record := Record{TaskID: ref.TaskID, RepositoryID: ref.RepositoryID, Number: ref.Number}
+		if !settings.Defaults.Any() {
+			// Nothing to copy, so nothing to learn about the pull request
+			// first: the record starts with every switch off.
+			record.Seeded = true
+		}
+		record.UpdatedAt = e.now().UTC()
+		if err := e.store.Put(ctx, workspaceID, record); err != nil {
+			e.logf("prautomation: create record: %v", err)
+			continue
+		}
+		byKey[key] = record
+	}
+	for key, record := range byKey {
+		if !linked[key] {
+			// Unlinked from the task: automation for it ends with the link.
+			if err := e.store.Delete(ctx, workspaceID, record.Ref()); err != nil {
+				e.logf("prautomation: delete record: %v", err)
+			}
+			delete(byKey, key)
+		}
+	}
+
+	now := e.now().UTC()
+	var due []Record
+	for _, record := range byKey {
+		if record.Switches.Any() || !record.Seeded {
+			tracked[record.TaskID] = workspaceID
+		}
+		if e.isDue(record, now) {
+			due = append(due, record)
+		}
+	}
+	sort.Slice(due, func(i, j int) bool { return due[i].NextDue.Before(due[j].NextDue) })
+	if len(due) > budgetPerWorkspace {
+		due = due[:budgetPerWorkspace]
+	}
+	for _, record := range due {
+		if ctx.Err() != nil {
+			return
+		}
+		e.Evaluate(ctx, workspaceID, record.Ref())
+	}
+}
+
+func (e *Engine) isDue(record Record, now time.Time) bool {
+	if !record.Seeded {
+		return true
+	}
+	if !record.Switches.Any() || record.Terminal() {
+		return false
+	}
+	return !record.NextDue.After(now)
+}
+
+// Evaluate observes one pull request and acts on it. It is exported for the
+// panel's refresh and for tests.
+func (e *Engine) Evaluate(ctx context.Context, workspaceID string, ref PullRef) {
+	unlock := e.locks.lock(recordKey(ref))
+	defer unlock()
+
+	record, found, err := e.store.Get(ctx, workspaceID, ref)
+	if err != nil || !found {
+		return
+	}
+	settings, err := e.store.Settings(ctx, workspaceID)
+	if err != nil {
+		return
+	}
+	now := e.now().UTC()
+
+	obs, err := e.observer.Observe(ctx, workspaceID, ref)
+	if err != nil {
+		record.Error = e.describe(err)
+		record.Status = "Could not read the pull request."
+		record.NextDue = now.Add(errorInterval)
+		e.save(ctx, workspaceID, &record)
+		return
+	}
+	record.Error = ""
+
+	if !record.Seeded {
+		next := settings.Defaults
+		if obs.Fork {
+			// A fork's code and comments are its author's. Running an agent
+			// on them unattended has to be a human's explicit choice for this
+			// pull request, never a workspace default.
+			next.AutoFix, next.AutoMerge = false, false
+		}
+		record.ApplySwitches(next)
+	}
+	record.Repository, record.Title, record.URL = obs.Repository, obs.Title, obs.URL
+	if obs.HeadSHA != record.HeadSHA || record.HeadSeenAt.IsZero() {
+		record.HeadSeenAt = now
+	}
+	record.HeadSHA, record.Fork, record.Observed = obs.HeadSHA, obs.Fork, now
+
+	run := &evaluation{engine: e, ctx: ctx, workspaceID: workspaceID, record: &record, obs: obs, settings: settings, now: now}
+	run.lifecycle()
+	run.autoFix()
+	run.autoMerge()
+	run.deliverPending()
+	record.NextDue = run.nextDue()
+	e.save(ctx, workspaceID, &record)
+}
+
+func (e *Engine) save(ctx context.Context, workspaceID string, record *Record) {
+	record.UpdatedAt = e.now().UTC()
+	if err := e.store.Put(ctx, workspaceID, *record); err != nil {
+		e.logf("prautomation: save record: %v", err)
+	}
+}
+
+// evaluation is one Evaluate's working set.
+type evaluation struct {
+	engine      *Engine
+	ctx         context.Context
+	workspaceID string
+	record      *Record
+	obs         Observation
+	settings    Settings
+	now         time.Time
+
+	sessions       []Session
+	sessionsLoaded bool
+	sessionsErr    error
+	statuses       []string
+}
+
+func (r *evaluation) status(text string) { r.statuses = append(r.statuses, text) }
+
+func (r *evaluation) loadSessions() ([]Session, error) {
+	if !r.sessionsLoaded {
+		r.sessions, r.sessionsErr = r.engine.messenger.Sessions(r.ctx, r.record.TaskID)
+		r.sessionsLoaded = true
+	}
+	return r.sessions, r.sessionsErr
+}
+
+// lifecycle records state transitions and queues the prompts they call for.
+func (r *evaluation) lifecycle() {
+	record, obs := r.record, r.obs
+	state := obs.State
+	if record.LastState == StateMerged {
+		// Merged is final. An instance cannot reopen a merged pull request,
+		// so a later "open" or "closed" reading is noise.
+		state = StateMerged
+	}
+	if record.LastState == "" {
+		record.LastState = state
+		record.ReviewRequested = obs.OperatorRequested
+		record.ReviewBaselineSet = true
+		switch state {
+		case StateMerged:
+			record.LastLifecycle = EventMerged
+		case StateClosed:
+			record.LastLifecycle = EventClosed
+		}
+		return
+	}
+
+	if record.OnReviewRequested && record.ReviewBaselineSet && state == StateOpen &&
+		obs.OperatorRequested && !record.ReviewRequested {
+		r.queue(EventReviewRequested)
+	}
+	record.ReviewRequested = obs.OperatorRequested
+	record.ReviewBaselineSet = true
+
+	switch state {
+	case StateMerged:
+		if record.LastLifecycle != EventMerged {
+			record.LastLifecycle = EventMerged
+			if record.OnMerged {
+				r.queue(EventMerged)
+			}
+		}
+	case StateClosed:
+		if record.LastLifecycle != EventClosed && record.LastLifecycle != EventMerged {
+			record.LastLifecycle = EventClosed
+			if record.OnClosed {
+				r.queue(EventClosed)
+			}
+		}
+	case StateOpen:
+		if record.LastLifecycle == EventClosed {
+			// Reopened: the next close prompts again.
+			record.LastLifecycle = ""
+		}
+	}
+	record.LastState = state
+}
+
+func (r *evaluation) queue(event string) {
+	for _, pending := range r.record.Pending {
+		if pending.Event == event {
+			return
+		}
+	}
+	r.record.Pending = append(r.record.Pending, Pending{Event: event, ID: r.engine.newID()})
+}
+
+// deliverPending sends queued lifecycle prompts, oldest first. A prompt that
+// cannot be delivered stays queued for the next evaluation.
+func (r *evaluation) deliverPending() {
+	for len(r.record.Pending) > 0 {
+		pending := r.record.Pending[0]
+		text := lifecycleText(pending, r.obs, *r.record)
+		if _, ok := r.send(text, ""); !ok {
+			return
+		}
+		r.record.Pending = r.record.Pending[1:]
+	}
+	if len(r.record.Pending) == 0 {
+		r.record.Pending = nil
+	}
+}
+
+// send delivers text to the best session and reports the dispatch status.
+// preferred is tried first when it can take a prompt.
+func (r *evaluation) send(text, preferred string) (Dispatch, bool) {
+	sessions, err := r.loadSessions()
+	if err != nil {
+		r.sendFailed(err)
+		return Dispatch{}, false
+	}
+	sessionID, why := pickSession(sessions, preferred, r.record.Fork)
+	if sessionID == "" {
+		r.status(why)
+		return Dispatch{}, false
+	}
+	status, err := r.engine.messenger.Send(r.ctx, r.record.TaskID, sessionID, text)
+	if err != nil {
+		r.sendFailed(err)
+		return Dispatch{}, false
+	}
+	return Dispatch{SessionID: sessionID, Status: status}, true
+}
+
+// Dispatch is where a prompt went.
+type Dispatch struct {
+	SessionID string
+	Status    string
+}
+
+func (r *evaluation) sendFailed(err error) {
+	switch {
+	case errors.Is(err, ErrNotApproved):
+		r.record.Error = "Kandev has not approved this plugin's capabilities since the last upgrade. An administrator needs to re-approve them before automation can prompt agents."
+	case errors.Is(err, ErrNoSession):
+		r.status("Waiting for a session on the task.")
+	case errors.Is(err, ErrTaskInactive):
+		r.status("The task no longer takes prompts (archived or managed elsewhere).")
+	default:
+		r.record.Error = "Kandev did not accept the prompt; it will be retried."
+		r.engine.logf("prautomation: send: %v", err)
+	}
+}
+
+// pickSession chooses the session to prompt: preferred when it can take a
+// prompt, otherwise the most recently started session that can.
+//
+// A fork's task is held to sessions that are already running or idle. Kandev
+// starts a never-launched session when it is messaged, and for a fork that
+// would run its author's code with nobody having pressed start.
+func pickSession(sessions []Session, preferred string, fork bool) (string, string) {
+	promptable := func(state string) bool {
+		switch state {
+		case sessionStarting, sessionRunning, sessionIdle:
+			return true
+		case sessionCreated, sessionWaitingForInput:
+			return !fork
+		}
+		return false
+	}
+	var candidates []Session
+	held := false
+	for _, session := range sessions {
+		if promptable(session.State) {
+			if session.ID == preferred && preferred != "" {
+				return session.ID, ""
+			}
+			candidates = append(candidates, session)
+		} else if fork && (session.State == sessionCreated || session.State == sessionWaitingForInput) {
+			held = true
+		}
+	}
+	if len(candidates) == 0 {
+		if held {
+			return "", "The task's agent has not been started. Automation never starts it for a pull request from a fork; start it to let automation prompt it."
+		}
+		return "", "Waiting for a session on the task."
+	}
+	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].StartedAt > candidates[j].StartedAt })
+	return candidates[0].ID, ""
+}
+
+// autoFix sends the agent new feedback, one attempt at a time.
+func (r *evaluation) autoFix() {
+	record, obs := r.record, r.obs
+	if !record.AutoFix {
+		return
+	}
+	if obs.State != StateOpen {
+		record.Attempt = nil
+		return
+	}
+	snapshot := BuildSnapshot(obs, r.settings.Trust)
+	record.Ignored = snapshot.Ignored
+
+	if attempt := record.Attempt; attempt != nil && attempt.State == AttemptDispatched {
+		if !r.attemptEnded(*attempt) {
+			r.status(fmt.Sprintf("Auto-fix round %d is with the agent.", attempt.Round))
+			return
+		}
+		attempt.State = AttemptRetryable
+	}
+	if obs.CI.State == CIPending {
+		r.status("Auto-fix is waiting for CI to finish.")
+		return
+	}
+
+	retry := record.Attempt != nil && record.Attempt.State == AttemptRetryable
+	items := Delta(snapshot.Items, record.Checkpoint)
+	if retry {
+		items = snapshot.Items
+		if len(items) == 0 {
+			record.Attempt = nil
+			retry = false
+		}
+	}
+	if len(items) == 0 {
+		r.status("Auto-fix: nothing new to fix.")
+		return
+	}
+	if record.HoldHead != "" {
+		if record.HoldHead == obs.HeadSHA && r.now.Before(record.HoldUntil) {
+			r.status("Auto-fix is waiting for the agent's change to show up.")
+			return
+		}
+		record.HoldHead, record.HoldUntil = "", time.Time{}
+	}
+	if record.Rounds >= MaxRounds {
+		record.Exhausted = true
+		r.status(fmt.Sprintf("Auto-fix paused after %d rounds. Reset the rounds to continue.", MaxRounds))
+		return
+	}
+
+	preferred := ""
+	if record.Attempt != nil {
+		preferred = record.Attempt.SessionID
+	}
+	attempt := Attempt{
+		ID:        r.engine.newID(),
+		Round:     record.Rounds + 1,
+		State:     AttemptDispatched,
+		Signature: Signature(items),
+		Keys:      itemKeys(items),
+		// Stamped before sending: a turn the prompt starts begins after this,
+		// and a turn that was already running when it was queued began before.
+		SentAt: r.now,
+	}
+	text := RenderAutoFix(r.settings.EffectiveTemplate(), obs, attempt, items, retry)
+	dispatch, ok := r.send(text, preferred)
+	if !ok {
+		return
+	}
+	attempt.SessionID, attempt.Dispatch = dispatch.SessionID, dispatch.Status
+	record.Attempt = &attempt
+	record.Rounds++
+	r.status(fmt.Sprintf("Auto-fix round %d sent to the agent (%s).", attempt.Round, dispatch.Status))
+}
+
+// attemptEnded reports whether a dispatched attempt's turn is over without an
+// outcome: its session is gone, or idle for longer than idleGrace since the
+// prompt was sent.
+func (r *evaluation) attemptEnded(attempt Attempt) bool {
+	sessions, err := r.loadSessions()
+	if err != nil {
+		return false
+	}
+	for _, session := range sessions {
+		if session.ID != attempt.SessionID {
+			continue
+		}
+		switch session.State {
+		case sessionRunning, sessionStarting, sessionCreated:
+			return false
+		case sessionIdle, sessionWaitingForInput:
+			return r.now.Sub(attempt.SentAt) > idleGrace
+		default:
+			return true
+		}
+	}
+	return true
+}
+
+// autoMerge merges when every gate passes, pinned to the observed head.
+func (r *evaluation) autoMerge() {
+	record, obs := r.record, r.obs
+	if !record.AutoMerge || obs.State != StateOpen {
+		return
+	}
+	if blocker := r.mergeBlocker(); blocker != "" {
+		r.status("Auto-merge: " + blocker)
+		return
+	}
+	signature := mergeSignature(obs)
+	if record.MergeFailure != "" && record.MergeFailureSignature == signature && !record.MergeRetry {
+		r.status("Auto-merge failed: " + record.MergeFailure + " Retry from the panel, or it tries again when the pull request changes.")
+		return
+	}
+	err := r.engine.merger.Merge(r.ctx, r.workspaceID, record.Ref(), obs.HeadSHA)
+	record.MergeRetry = false
+	var refused *MergeError
+	switch {
+	case err == nil:
+		record.MergedByPlugin = true
+		record.MergeFailure, record.MergeFailureSignature = "", ""
+		r.status("Auto-merge merged the pull request.")
+	case errors.As(err, &refused) && refused.Transient:
+		r.status("Auto-merge: the instance asked to try again; it will.")
+	case errors.As(err, &refused):
+		record.MergeFailure, record.MergeFailureSignature = refused.Message, signature
+		r.status("Auto-merge failed: " + refused.Message)
+	default:
+		record.Error = r.engine.describe(err)
+		r.status("Auto-merge could not reach the instance; it will try again.")
+	}
+}
+
+// mergeBlocker returns why auto-merge waits, or "" when it may merge.
+func (r *evaluation) mergeBlocker() string {
+	record, obs := r.record, r.obs
+	switch {
+	case obs.Draft:
+		return "the pull request is a draft."
+	case obs.CI.State == CIPending:
+		return "waiting for CI."
+	case obs.CI.State == CIFailure:
+		return "CI is failing."
+	case obs.CI.State == CINone && r.now.Sub(record.HeadSeenAt) < noCIGrace:
+		return "waiting for CI to report on the new head."
+	case obs.Mergeable == nil:
+		return "waiting for the instance to compute mergeability."
+	case !*obs.Mergeable:
+		return "the branch has conflicts."
+	case record.Attempt != nil:
+		return "an auto-fix round is in progress."
+	case record.BlockedHead == obs.HeadSHA && r.now.Before(record.BlockedUntil):
+		return "the agent reported that a change is needed but blocked."
+	}
+	changes, approvals := reviewVerdicts(obs.Reviews)
+	if changes > 0 {
+		return "changes are requested."
+	}
+	if required := obs.RequiredApprovals; required != nil && approvals < *required {
+		return fmt.Sprintf("%d of %d required approvals.", approvals, *required)
+	}
+	for _, review := range obs.Reviews {
+		for _, comment := range review.Comments {
+			if !comment.Resolved && !review.Dismissed {
+				return "review comments are unresolved."
+			}
+		}
+	}
+	return ""
+}
+
+// reviewVerdicts reads each reviewer's latest decisive review: how many
+// request changes, and how many official reviewers approve. Reviews arrive
+// oldest first from the instance.
+func reviewVerdicts(reviews []Review) (changes, approvals int) {
+	latest := map[string]Review{}
+	for _, review := range reviews {
+		if review.Dismissed || (review.State != ReviewApproved && review.State != ReviewChangesRequested) {
+			continue
+		}
+		latest[strings.ToLower(review.Author)] = review
+	}
+	for _, review := range latest {
+		switch {
+		case review.State == ReviewChangesRequested:
+			changes++
+		case review.Official:
+			approvals++
+		}
+	}
+	return changes, approvals
+}
+
+// mergeSignature identifies the state a merge was attempted in. A failure is
+// not retried on its own until this changes.
+func mergeSignature(obs Observation) string {
+	items := []Item{{Key: "head:" + obs.HeadSHA}, {Key: "ci:" + string(obs.CI.State)}}
+	for _, review := range obs.Reviews {
+		items = append(items, Item{Key: fmt.Sprintf("review:%d:%s:%t", review.ID, review.State, review.Dismissed)})
+	}
+	if obs.RequiredApprovals != nil {
+		items = append(items, Item{Key: fmt.Sprintf("required:%d", *obs.RequiredApprovals)})
+	}
+	return Signature(items)
+}
+
+func (r *evaluation) nextDue() time.Time {
+	record, obs := r.record, r.obs
+	if len(r.statuses) > 0 {
+		record.Status = strings.Join(r.statuses, " ")
+	} else {
+		record.Status = idleStatus(*record)
+	}
+	switch {
+	case record.Terminal():
+		return time.Time{}
+	case len(record.Pending) > 0:
+		return r.now.Add(pendingInterval)
+	case obs.State == StateClosed:
+		return r.now.Add(closedInterval)
+	case record.Attempt != nil, record.AutoMerge, record.AutoFix && obs.CI.State == CIPending:
+		return r.now.Add(activeInterval)
+	default:
+		return r.now.Add(idleInterval)
+	}
+}
+
+func idleStatus(record Record) string {
+	switch {
+	case record.LastState == StateMerged:
+		return "Merged."
+	case record.LastState == StateClosed:
+		return "Closed."
+	case record.Switches.Any():
+		return "Watching."
+	default:
+		return ""
+	}
+}
+
+// Outcome records the agent's report for the attempt in flight on a task.
+// repository narrows the choice when several linked pull requests have one;
+// sessionID, when known, must be the session the attempt went to.
+func (e *Engine) Outcome(ctx context.Context, workspaceID, taskID, sessionID, repository, outcome, summary string) (Record, error) {
+	records, err := e.store.List(ctx, workspaceID)
+	if err != nil {
+		return Record{}, err
+	}
+	var matches []Record
+	for _, record := range records {
+		if record.TaskID != taskID || record.Attempt == nil {
+			continue
+		}
+		if repository != "" && !strings.EqualFold(record.Repository, repository) {
+			continue
+		}
+		matches = append(matches, record)
+	}
+	switch {
+	case len(matches) == 0:
+		return Record{}, ErrNoAttempt
+	case len(matches) > 1:
+		return Record{}, ErrAmbiguousAttempt
+	}
+
+	ref := matches[0].Ref()
+	unlock := e.locks.lock(recordKey(ref))
+	defer unlock()
+	record, found, err := e.store.Get(ctx, workspaceID, ref)
+	if err != nil {
+		return Record{}, err
+	}
+	if !found || record.Attempt == nil {
+		return Record{}, ErrNoAttempt
+	}
+	attempt := *record.Attempt
+	if sessionID != "" && attempt.SessionID != "" && sessionID != attempt.SessionID {
+		return Record{}, ErrNoAttempt
+	}
+	now := e.now().UTC()
+	record.Checkpoint = mergeKeys(record.Checkpoint, attempt.Keys)
+	switch outcome {
+	case OutcomeActionTaken:
+		record.HoldHead, record.HoldUntil = record.HeadSHA, now.Add(progressWindow)
+	case OutcomeBlocked:
+		record.BlockedHead, record.BlockedUntil = record.HeadSHA, now.Add(blockedHold)
+	}
+	record.Attempt = nil
+	record.LastOutcome = outcome
+	record.LastSummary = clipBytes(strings.TrimSpace(summary), maxSummaryBytes)
+	record.LastOutcomeAt = now
+	record.Status = fmt.Sprintf("Auto-fix round %d: the agent reported %s.", attempt.Round, strings.ReplaceAll(outcome, "_", " "))
+	record.NextDue = now
+	e.save(ctx, workspaceID, &record)
+	return record, nil
+}
+
+// TurnCompleted handles a turn.completed event: an attempt whose turn ended
+// without an outcome becomes retryable at once instead of after idleGrace.
+// The event is a hint — delivery is best-effort — so nothing depends on it.
+func (e *Engine) TurnCompleted(ctx context.Context, taskID, sessionID string, startedAt time.Time) {
+	workspaceID, ok := e.workspaceOf(taskID)
+	if !ok {
+		return
+	}
+	records, err := e.store.List(ctx, workspaceID)
+	if err != nil {
+		return
+	}
+	for _, listed := range records {
+		if listed.TaskID != taskID {
+			continue
+		}
+		e.update(ctx, workspaceID, listed.Ref(), func(record *Record) {
+			if attempt := record.Attempt; attempt != nil && attempt.State == AttemptDispatched &&
+				attempt.SessionID == sessionID && !startedAt.Before(attempt.SentAt) {
+				attempt.State = AttemptRetryable
+			}
+			record.NextDue = time.Time{}
+		})
+	}
+}
+
+// SessionChanged handles a session state change on a task: anything waiting
+// for a session is looked at on the next tick.
+func (e *Engine) SessionChanged(ctx context.Context, taskID string) {
+	workspaceID, ok := e.workspaceOf(taskID)
+	if !ok {
+		return
+	}
+	records, err := e.store.List(ctx, workspaceID)
+	if err != nil {
+		return
+	}
+	for _, listed := range records {
+		if listed.TaskID == taskID && (len(listed.Pending) > 0 || listed.Attempt != nil) {
+			e.update(ctx, workspaceID, listed.Ref(), func(record *Record) { record.NextDue = time.Time{} })
+		}
+	}
+}
+
+func (e *Engine) workspaceOf(taskID string) (string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	workspaceID, ok := e.tracked[taskID]
+	return workspaceID, ok
+}
+
+// Update applies change to one record under its lock and stores it. A change
+// that returns an error stores nothing.
+func (e *Engine) Update(ctx context.Context, workspaceID string, ref PullRef, change func(*Record) error) (Record, error) {
+	unlock := e.locks.lock(recordKey(ref))
+	defer unlock()
+	record, found, err := e.store.Get(ctx, workspaceID, ref)
+	if err != nil {
+		return Record{}, err
+	}
+	if !found {
+		return Record{}, ErrNotFound
+	}
+	if err := change(&record); err != nil {
+		return Record{}, err
+	}
+	e.save(ctx, workspaceID, &record)
+	return record, nil
+}
+
+func (e *Engine) update(ctx context.Context, workspaceID string, ref PullRef, change func(*Record)) {
+	_, _ = e.Update(ctx, workspaceID, ref, func(record *Record) error {
+		change(record)
+		return nil
+	})
+}
+
+func itemKeys(items []Item) []string {
+	keys := make([]string, 0, len(items))
+	for _, item := range items {
+		keys = append(keys, item.Key)
+	}
+	return keys
+}
+
+func mergeKeys(checkpoint, keys []string) []string {
+	items := make([]Item, 0, len(keys))
+	for _, key := range keys {
+		items = append(items, Item{Key: key})
+	}
+	return mergeCheckpoint(checkpoint, items)
+}
+
+func clipBytes(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	return strings.ToValidUTF8(text[:limit], "")
+}
+
+func randomID() string {
+	var buf [6]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf[:])
+}
+
+// keyedMutex serializes read-modify-write cycles on one record: the loop, the
+// panel's actions, the agent's outcome and event hints all write records, and
+// the Host state API has no compare-and-swap.
+type keyedMutex struct {
+	mu    sync.Mutex
+	locks map[string]*keyedLock
+}
+
+type keyedLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func (k *keyedMutex) lock(key string) func() {
+	k.mu.Lock()
+	if k.locks == nil {
+		k.locks = map[string]*keyedLock{}
+	}
+	entry := k.locks[key]
+	if entry == nil {
+		entry = &keyedLock{}
+		k.locks[key] = entry
+	}
+	entry.refs++
+	k.mu.Unlock()
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		k.mu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(k.locks, key)
+		}
+		k.mu.Unlock()
+	}
+}

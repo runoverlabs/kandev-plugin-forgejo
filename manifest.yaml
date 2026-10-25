@@ -50,9 +50,21 @@ runtime:
 # complete, and, where the host allows it (`host.v2.write:tasks`, which Kandev
 # 0.97.0 approves together with `api_write`), the exact archive command. A plugin
 # cannot delete tasks.
+#
+# Pull request automation (docs/pr-automation.md) adds three, and changing the
+# set means the operator re-approves every capability after upgrading:
+# - `api_write: messages`: prompting a task's agent (auto-fix, lifecycle
+#   prompts) is only possible through Messages().Send; Kandev's own automation
+#   has no extension point for other providers.
+# - `api_read: sessions`: Send starts a never-launched session, so the plugin
+#   reads session states first. A fork's task is never started that way, and
+#   an auto-fix turn that ended without reporting is noticed.
+# - `events`: turn and session changes are pushed so the loop reacts at once.
+#   They are hints; the poll is the source of truth when one is lost.
 capabilities:
-  api_read: ["tasks", "repositories", "workspaces", "workflows", "agent_profiles", "executor_profiles"]
-  api_write: ["tasks"]
+  api_read: ["tasks", "repositories", "workspaces", "workflows", "agent_profiles", "executor_profiles", "sessions"]
+  api_write: ["tasks", "messages"]
+  events: ["turn.completed", "task_session.state_changed"]
   state: true
   secrets: true
 
@@ -157,6 +169,25 @@ actions:
     scope: "workspace"
     max_body_bytes: 1024
 
+  # Pull request automation. The task-scoped three act on a pull request the
+  # verified task links ({"number": N} picks among them); the settings are the
+  # workspace's. Turning a switch on is a human act: the agent tools cannot.
+  - key: "automation.get"
+    scope: "task"
+    max_body_bytes: 1024
+  - key: "automation.set"
+    scope: "task"
+    max_body_bytes: 1024
+  - key: "automation.retry"
+    scope: "task"
+    max_body_bytes: 1024
+  - key: "automation.settings"
+    scope: "workspace"
+    max_body_bytes: 1024
+  - key: "automation.settings_set"
+    scope: "workspace"
+    max_body_bytes: 20480
+
 # Tools exposed to task agents through Kandev's MCP endpoint. Every definition
 # here is injected into every agent session on a matching surface and cannot be
 # swapped for a built-in, so the set is deliberately small and the descriptions
@@ -186,14 +217,14 @@ agent_tools:
       open_world_hint: true
 
   - name: "pr"
-    description: "This task's Forgejo/Gitea PR: get, open, ready (clears WIP:), merge (needs sha; operator-enabled), review, request_review, update, comment."
+    description: "This task's Forgejo/Gitea PR: get, open, ready (clears WIP:), merge (needs sha; operator-enabled), review, request_review, update, comment, outcome."
     surfaces: ["kanban-task"]
     input_schema:
       type: object
       properties:
         op:
           type: string
-          enum: ["get", "open", "ready", "merge", "review", "request_review", "update", "comment"]
+          enum: ["get", "open", "ready", "merge", "review", "request_review", "update", "comment", "outcome"]
         head:
           type: string
           description: "Branch to open from."
@@ -202,7 +233,6 @@ agent_tools:
           description: "Target branch."
         title:
           type: string
-          description: "Required for open."
         body:
           type: string
           description: "Description, review or comment text."
@@ -223,6 +253,8 @@ agent_tools:
             type: string
         delete_branch:
           type: boolean
+        outcome:
+          type: string
         repo:
           type: string
       required: ["op"]
