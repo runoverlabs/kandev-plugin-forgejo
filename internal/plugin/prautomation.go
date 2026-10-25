@@ -247,18 +247,19 @@ func (r *Runtime) handleAutomationAction(ctx context.Context, request *pluginsdk
 			// wait for it: the record starts from what they set.
 			record = prautomation.Record{TaskID: ref.TaskID, RepositoryID: ref.RepositoryID, Number: ref.Number}
 			var next prautomation.Switches
-			setIf := func(value *bool, field *bool) {
+			changes = []string{"created"}
+			setIf := func(name string, value *bool, field *bool) {
 				if value != nil {
 					*field = *value
+					changes = append(changes, fmt.Sprintf("%s=%t", name, *value))
 				}
 			}
-			setIf(input.AutoFix, &next.AutoFix)
-			setIf(input.AutoMerge, &next.AutoMerge)
-			setIf(input.OnReviewRequested, &next.OnReviewRequested)
-			setIf(input.OnMerged, &next.OnMerged)
-			setIf(input.OnClosed, &next.OnClosed)
+			setIf("auto_fix", input.AutoFix, &next.AutoFix)
+			setIf("auto_merge", input.AutoMerge, &next.AutoMerge)
+			setIf("on_review_requested", input.OnReviewRequested, &next.OnReviewRequested)
+			setIf("on_merged", input.OnMerged, &next.OnMerged)
+			setIf("on_closed", input.OnClosed, &next.OnClosed)
 			record.ApplySwitches(next)
-			changes = append(changes, "created")
 			err = r.automation.Store().Put(ctx, workspaceID, record)
 		}
 		if err != nil {

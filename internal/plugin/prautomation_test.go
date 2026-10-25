@@ -137,6 +137,7 @@ func TestAutomationActionsActOnlyOnLinkedPullRequests(t *testing.T) {
 	last := entries[len(entries)-1]
 	require.Equal(t, ActionAutomationSet, last["action"])
 	require.Equal(t, "user-7", last["actor"])
+	require.Equal(t, "created,auto_fix=true,on_merged=true", last["outcome"], "the trail says what was turned on")
 
 	response, err = fixture.runtime.HandleAction(ctx, taskAction(ActionAutomationRetry, `{"number":12,"what":"everything"}`))
 	require.NoError(t, err)

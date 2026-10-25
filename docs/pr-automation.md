@@ -74,10 +74,10 @@ Then:
     Auto-merge holds off for an hour on that head.
 
   Either way, the feedback in that round counts as handled.
-- **The turn ends without a report.** The round can be retried, and the next
-  one carries the whole current feedback. The plugin hears about the turn
-  ending from Kandev at once, or notices within about two minutes of the
-  session going idle.
+- **The turn ends without a report.** The round is retried, no sooner than two
+  minutes after it was sent, and the retry carries the whole current feedback.
+  The plugin hears about the turn ending from Kandev at once, or notices within
+  about two minutes of the session going idle.
 - **At most 10 rounds per pull request.** Then auto-fix pauses. **Reset rounds**
   in the panel, or turning auto-fix off and on, starts again.
 

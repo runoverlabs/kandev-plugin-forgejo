@@ -169,6 +169,11 @@ func TestTurnEndingWithoutOutcomeResendsTheWholeFeedback(t *testing.T) {
 	require.Equal(t, AttemptRetryable, h.record().Attempt.State)
 
 	record := h.evaluate()
+	require.Len(t, h.messenger.sent, 1, "a resend waits out the cool-down")
+	require.Contains(t, record.Status, "retried shortly")
+
+	h.advance(retryCooldown)
+	record = h.evaluate()
 	require.Len(t, h.messenger.sent, 2)
 	require.Equal(t, 2, record.Rounds, "a resend spends a round")
 	require.NotEqual(t, first.ID, record.Attempt.ID)

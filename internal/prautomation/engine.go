@@ -36,6 +36,11 @@ const (
 	// turn.completed event usually says so sooner; this is the fallback when
 	// an event is lost.
 	idleGrace = 2 * time.Minute
+	// retryCooldown: the least time between an auto-fix round and its resend
+	// after the turn ended without an outcome. Without it an agent that never
+	// reports (the tool unavailable, say) would use up every round in a few
+	// minutes.
+	retryCooldown = 2 * time.Minute
 	// noCIGrace: how long a head with no checks at all must stay that way
 	// before auto-merge takes the repository for one without CI. Right after
 	// a push, CI has often not reported yet, and "nothing reported" must not
@@ -554,6 +559,10 @@ func (r *evaluation) autoFix() {
 	}
 
 	retry := record.Attempt != nil && record.Attempt.State == AttemptRetryable
+	if retry && r.now.Sub(record.Attempt.SentAt) < retryCooldown {
+		r.status(fmt.Sprintf("Auto-fix round %d ended without an outcome; it is retried shortly.", record.Attempt.Round))
+		return
+	}
 	items := Delta(snapshot.Items, record.Checkpoint)
 	if retry {
 		items = snapshot.Items
