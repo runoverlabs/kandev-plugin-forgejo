@@ -35,28 +35,6 @@ const (
 	eventSessionStateChanged = "task_session.state_changed"
 )
 
-// newAutomationEngine wires the engine to the Host and the instance.
-func (r *Runtime) newAutomationEngine(hosts kandev.Provider) *prautomation.Engine {
-	return prautomation.NewEngine(prautomation.Config{
-		Store: prautomation.NewStore(func() prautomation.StateHost {
-			host := hosts()
-			if host == nil {
-				return nil
-			}
-			return host
-		}),
-		Links:     r.automationSource,
-		Observer:  r.automationSource,
-		Merger:    automationMerger{runtime: r},
-		Messenger: automationMessenger{hosts: hosts},
-		// Fails closed: prompting an agent or merging in a workspace whose
-		// operator turned the integration off is worse than waiting a tick.
-		Gate:       r.integrationEnabledStrict,
-		Workspaces: r.workspaceIDs,
-		Describe:   safeMessage,
-	})
-}
-
 func (r *Runtime) workspaceIDs(ctx context.Context) ([]string, error) {
 	host := r.Host()
 	if host == nil {
@@ -392,7 +370,7 @@ func (r *Runtime) automationRef(ctx context.Context, workspaceID, taskID string,
 	if strings.TrimSpace(taskID) == "" {
 		return prautomation.PullRef{}, scm.ErrNotLinked
 	}
-	client, err := r.connection.Client(ctx)
+	info, err := r.connection.Info(ctx)
 	if err != nil {
 		return prautomation.PullRef{}, err
 	}
@@ -402,7 +380,7 @@ func (r *Runtime) automationRef(ctx context.Context, workspaceID, taskID string,
 	}
 	var matches []prautomation.PullRef
 	for _, identity := range identities {
-		if identity.ConnectionScope != client.Scope() || (number != 0 && identity.Number != number) {
+		if identity.ConnectionScope != info.URL || (number != 0 && identity.Number != number) {
 			continue
 		}
 		matches = append(matches, prautomation.PullRef{TaskID: taskID, RepositoryID: identity.RepositoryID, Number: identity.Number})

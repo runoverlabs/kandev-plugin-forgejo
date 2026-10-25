@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"kandev-plugin-forgejo/internal/forgejo"
+	"kandev-plugin-forgejo/internal/automations"
 	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/prautomation"
 	"kandev-plugin-forgejo/internal/scm"
@@ -49,18 +49,23 @@ const enabledStateKey = "integration_enabled"
 // Runtime is the plugin value passed to pluginsdk.Serve. It embeds
 // UnimplementedPlugin for no-op event/webhook defaults and delegates the
 // source-control action, search, and authorize RPCs to the recipe extension.
+//
+// Every dependency is a port: wire.go is the only place that names the
+// adapters behind them.
 type Runtime struct {
 	pluginsdk.UnimplementedPlugin
 	extension  *sourcecontrol.Extension
-	connection *forgejo.Connection
-	// The adapters below are also reachable through extension, but the agent
+	connection sourcecontrol.Connection
+	// The ports below are also reachable through extension, but the agent
 	// tools call them directly: an agent tool has a task, not the
 	// VerifiedActionContext the recipe's action path is built around.
-	repositories   *forgejo.Repositories
-	changeRequests *forgejo.ChangeRequests
-	associations   *sourcecontrol.Associations
-	gitCredentials *forgejo.GitCredentials
-	pullActions    *forgejo.PullActions
+	repositories   sourcecontrol.AttachedRepositoryResolver
+	changeRequests sourcecontrol.ChangeRequestService
+	associations   taskLinks
+	pulls          sourcecontrol.PullRequestReader
+	ci             sourcecontrol.CIReader
+	gitCredentials gitCredentials
+	pullActions    pullActions
 
 	// Issue watches. The store is reachable from the action handlers; the
 	// poller owns the background goroutine and is started once the Host
@@ -68,13 +73,40 @@ type Runtime struct {
 	watchStore  *watches.Store
 	watchPoller *watches.Poller
 
-	// The account and version behind the automation conditions' Describe.
-	automationCache automationCache
+	// What the automation conditions' Describe and Verify ask of the instance.
+	conditions automations.Instance
+	webhooks   automations.Webhooks
 
 	// Pull request automation: auto-fix, auto-merge and lifecycle prompts.
 	// The engine owns a background loop, started with the watch poller.
-	automationSource *forgejo.AutomationSource
+	automationSource automationPulls
 	automation       *prautomation.Engine
+}
+
+// taskLinks is the slice of the association store the agent tools and the
+// automation actions use.
+type taskLinks interface {
+	Link(ctx context.Context, taskID string, identity sourcecontrol.ChangeRequestIdentity) error
+	ListForTask(ctx context.Context, workspaceID, taskID string) ([]sourcecontrol.ChangeRequestIdentity, error)
+}
+
+// pullActions reads and writes a pull request linked to the verified task.
+type pullActions interface {
+	sourcecontrol.ChangeRequestDetailReader
+	sourcecontrol.ChangeRequestActions
+}
+
+// gitCredentials issues and binds the HTTPS credentials git uses.
+type gitCredentials interface {
+	Resolve(ctx context.Context, request *pluginsdk.ResolveGitCredentialRequest) (*pluginsdk.ResolveGitCredentialResponse, error)
+	Binding(ctx context.Context, request *pluginsdk.GitCredentialBindingRequest) (*pluginsdk.GitCredentialBindingResponse, error)
+}
+
+// automationPulls is what the automation actions ask of a linked pull request
+// beyond the engine's own ports.
+type automationPulls interface {
+	IsFork(ctx context.Context, ref prautomation.PullRef) (bool, error)
+	MergeLinked(ctx context.Context, ref prautomation.PullRef, headSHA string) error
 }
 
 var (
@@ -84,49 +116,6 @@ var (
 	_ pluginsdk.EntityReferenceAuthorizer = (*Runtime)(nil)
 	_ pluginsdk.GitCredentialHandler      = (*Runtime)(nil)
 )
-
-// NewRuntime builds the runtime and its adapter graph. The Host is injected
-// after construction, so every adapter resolves it lazily through the provider
-// closure rather than capturing it here.
-func NewRuntime() *Runtime {
-	runtime := &Runtime{}
-	hosts := kandev.Provider(func() pluginsdk.Host { return runtime.Host() })
-
-	connection := forgejo.NewConnection(hosts)
-	repositories := forgejo.NewRepositories(connection, hosts, ProviderID)
-	associations := sourcecontrol.NewAssociations(hosts)
-
-	changeRequests := forgejo.NewChangeRequests(connection, repositories)
-
-	runtime.connection = connection
-	runtime.repositories = repositories
-	runtime.changeRequests = changeRequests
-	runtime.associations = associations
-	runtime.gitCredentials = forgejo.NewGitCredentials(connection)
-	runtime.pullActions = forgejo.NewPullActions(connection, repositories, associations, ProviderID)
-
-	runtime.watchStore = watches.NewStore(kandev.Provider(hosts))
-	runtime.watchPoller = watches.NewPoller(
-		runtime.watchStore,
-		kandev.Provider(hosts),
-		forgejo.NewIssueSource(connection),
-		runtime.integrationEnabled,
-	).WithReviews(forgejo.NewReviewSource(connection))
-	runtime.automationSource = forgejo.NewAutomationSource(connection, associations)
-	runtime.automation = runtime.newAutomationEngine(hosts)
-	runtime.extension = &sourcecontrol.Extension{
-		ProviderID:           ProviderID,
-		ReferenceSource:      ReferenceSource,
-		Repositories:         repositories,
-		RepositoryDetails:    repositories,
-		AttachedRepositories: repositories,
-		ChangeRequests:       changeRequests,
-		Associations:         associations,
-		Reviews:              forgejo.NewReviews(connection, repositories, associations, ProviderID),
-		References:           forgejo.NewReferences(connection),
-	}
-	return runtime
-}
 
 // HandleAction routes the connection actions this plugin owns and delegates
 // every source-control action to the recipe extension.
@@ -279,7 +268,7 @@ func (r *Runtime) connectionStatus(ctx context.Context, workspaceID string, forc
 		status["agent_merge"] = r.agentMergeEnabled(ctx, workspaceID)
 	}
 
-	client, err := r.connection.Client(ctx)
+	info, err := r.connection.Info(ctx)
 	if err != nil {
 		if errors.Is(err, scm.ErrNotConfigured) {
 			status["message"] = "Set the instance URL and access token in Settings > Plugins > Forgejo."
@@ -290,11 +279,11 @@ func (r *Runtime) connectionStatus(ctx context.Context, workspaceID string, forc
 		return kandev.JSON(status)
 	}
 	status["configured"] = true
-	status["instance_url"] = client.Scope()
-	status["host"] = client.Host()
+	status["instance_url"] = info.URL
+	status["host"] = info.Host
 
 	if !force {
-		if cached, ok := r.cachedConnectionStatus(ctx, workspaceID, client.Scope()); ok {
+		if cached, ok := r.cachedConnectionStatus(ctx, workspaceID, info.URL); ok {
 			for key, value := range cached {
 				status[key] = value
 			}
@@ -303,7 +292,7 @@ func (r *Runtime) connectionStatus(ctx context.Context, workspaceID string, forc
 		}
 	}
 
-	probed, err := r.probeConnection(ctx, client)
+	probed, err := r.probeConnection(ctx)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
@@ -315,7 +304,7 @@ func (r *Runtime) connectionStatus(ctx context.Context, workspaceID string, forc
 	for key, value := range probed {
 		status[key] = value
 	}
-	r.storeConnectionCache(ctx, workspaceID, client.Scope(), probed)
+	r.storeConnectionCache(ctx, workspaceID, info.URL, probed)
 	return kandev.JSON(status)
 }
 
@@ -403,15 +392,15 @@ func disabledResponse(actionKey string) (*pluginsdk.PluginActionResponse, error)
 
 // probeConnection performs the live check: who the token acts as, and what the
 // instance is running.
-func (r *Runtime) probeConnection(ctx context.Context, client *forgejo.Client) (map[string]any, error) {
-	user, err := client.CurrentUser(ctx)
+func (r *Runtime) probeConnection(ctx context.Context) (map[string]any, error) {
+	probe, err := r.connection.Probe(ctx)
 	if err != nil {
 		return nil, err
 	}
-	probed := map[string]any{"connected": true, "account": user.Login}
-	if version, err := client.Version(ctx); err == nil && strings.TrimSpace(version) != "" {
-		probed["instance_version"] = version
-		probed["flavor"] = string(client.DetectFlavor(ctx, version))
+	probed := map[string]any{"connected": true, "account": probe.Account}
+	if probe.Version != "" {
+		probed["instance_version"] = probe.Version
+		probed["flavor"] = probe.Flavor
 	}
 	return probed, nil
 }

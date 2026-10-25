@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"kandev-plugin-forgejo/internal/scm"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,11 +39,11 @@ func TestCIStatusPrefersWorkflowRuns(t *testing.T) {
 
 	status, err := newTestClient(t, api).CIStatusFor(context.Background(), "kandev", "demo", "feature")
 	require.NoError(t, err)
-	require.Equal(t, CISourceRuns, status.Source)
-	require.Equal(t, CIStateFailure, status.State)
+	require.Equal(t, scm.CISourceRuns, status.Source)
+	require.Equal(t, scm.CIStateFailure, status.State)
 	require.Equal(t, "abc123def4567", status.SHA)
 	require.Len(t, status.Jobs, 2)
-	require.Equal(t, CIJob{ID: 42, Name: "test", Status: CIStateFailure}, status.Jobs[1])
+	require.Equal(t, scm.CIJob{ID: 42, Name: "test", Status: scm.CIStateFailure}, status.Jobs[1])
 }
 
 // TestCIStatusRunsWithoutJobsEndpoint covers Forgejo 13, which lists runs but
@@ -59,8 +61,8 @@ func TestCIStatusRunsWithoutJobsEndpoint(t *testing.T) {
 
 	status, err := newTestClient(t, api).CIStatusFor(context.Background(), "kandev", "demo", "feature")
 	require.NoError(t, err)
-	require.Equal(t, CISourceRuns, status.Source)
-	require.Equal(t, CIStateRunning, status.State)
+	require.Equal(t, scm.CISourceRuns, status.Source)
+	require.Equal(t, scm.CIStateRunning, status.State)
 	require.Len(t, status.Jobs, 1)
 	require.Equal(t, "build", status.Jobs[0].Name)
 	require.Zero(t, status.Jobs[0].ID, "a run is not a job and must not offer a log id")
@@ -83,8 +85,8 @@ func TestCIStatusFallsBackToActionsTasks(t *testing.T) {
 
 	status, err := newTestClient(t, api).CIStatusFor(context.Background(), "kandev", "demo", "feature")
 	require.NoError(t, err)
-	require.Equal(t, CISourceTasks, status.Source)
-	require.Equal(t, CIStateFailure, status.State)
+	require.Equal(t, scm.CISourceTasks, status.Source)
+	require.Equal(t, scm.CIStateFailure, status.State)
 	require.Len(t, status.Jobs, 2, "only the newest run for this branch is current state")
 	require.Equal(t, int64(91), status.Jobs[0].ID)
 	require.Equal(t, int64(90), status.Jobs[1].ID)
@@ -106,8 +108,8 @@ func TestCIStatusFallsBackToCommitStatus(t *testing.T) {
 
 	status, err := newTestClient(t, api).CIStatusFor(context.Background(), "kandev", "demo", "feature")
 	require.NoError(t, err)
-	require.Equal(t, CISourceStatus, status.Source)
-	require.Equal(t, CIStateFailure, status.State)
+	require.Equal(t, scm.CISourceStatus, status.Source)
+	require.Equal(t, scm.CIStateFailure, status.State)
 	require.Equal(t, "deadbeef", status.SHA)
 	require.Len(t, status.Jobs, 2)
 	require.Equal(t, "woodpecker/test", status.Jobs[1].Name)
@@ -125,8 +127,8 @@ func TestCIStatusReportsNoneRatherThanFailing(t *testing.T) {
 
 	status, err := newTestClient(t, api).CIStatusFor(context.Background(), "kandev", "demo", "feature")
 	require.NoError(t, err)
-	require.Equal(t, CISourceNone, status.Source)
-	require.Equal(t, CIStateNone, status.State)
+	require.Equal(t, scm.CISourceNone, status.Source)
+	require.Equal(t, scm.CIStateNone, status.State)
 	require.Empty(t, status.Jobs)
 }
 
@@ -144,7 +146,7 @@ func TestCIStatusQueriesByCommitSHA(t *testing.T) {
 
 	status, err := newTestClient(t, api).CIStatusFor(context.Background(), "kandev", "demo", sha)
 	require.NoError(t, err)
-	require.Equal(t, CIStateSuccess, status.State)
+	require.Equal(t, scm.CIStateSuccess, status.State)
 }
 
 func TestIsCommitSHA(t *testing.T) {
@@ -167,11 +169,11 @@ func TestIsCommitSHA(t *testing.T) {
 
 func TestRollUpStates(t *testing.T) {
 	t.Parallel()
-	require.Equal(t, CIStateFailure, rollUpStates([]string{CIStateSuccess, CIStateRunning, CIStateFailure}))
-	require.Equal(t, CIStateRunning, rollUpStates([]string{CIStateSuccess, CIStateRunning, CIStatePending}))
-	require.Equal(t, CIStatePending, rollUpStates([]string{CIStateSuccess, CIStatePending}))
-	require.Equal(t, CIStateSuccess, rollUpStates([]string{CIStateSuccess, CIStateSuccess}))
-	require.Equal(t, CIStateNone, rollUpStates(nil))
+	require.Equal(t, scm.CIStateFailure, rollUpStates([]string{scm.CIStateSuccess, scm.CIStateRunning, scm.CIStateFailure}))
+	require.Equal(t, scm.CIStateRunning, rollUpStates([]string{scm.CIStateSuccess, scm.CIStateRunning, scm.CIStatePending}))
+	require.Equal(t, scm.CIStatePending, rollUpStates([]string{scm.CIStateSuccess, scm.CIStatePending}))
+	require.Equal(t, scm.CIStateSuccess, rollUpStates([]string{scm.CIStateSuccess, scm.CIStateSuccess}))
+	require.Equal(t, scm.CIStateNone, rollUpStates(nil))
 }
 
 func TestStripWorkInProgressPrefix(t *testing.T) {

@@ -28,28 +28,6 @@ import (
 // commit status is last and present everywhere. It is not only a compatibility
 // fallback: it is the only surface that sees CI running outside the forge,
 // which on self-hosted Forgejo is common.
-const (
-	// CIStateSuccess means every known check passed.
-	CIStateSuccess = "success"
-	// CIStateFailure means at least one check failed, errored, or was cancelled.
-	CIStateFailure = "failure"
-	// CIStateRunning means work is in progress.
-	CIStateRunning = "running"
-	// CIStatePending means work is accepted but not started.
-	CIStatePending = "pending"
-	// CIStateNone means the ref has no CI at all.
-	CIStateNone = "none"
-)
-
-// CI source identifiers, reported so a caller can tell a complete answer from
-// a degraded one.
-const (
-	CISourceRuns   = "actions_runs"
-	CISourceTasks  = "actions_tasks"
-	CISourceStatus = "commit_status"
-	CISourceNone   = "none"
-)
-
 // actionTaskScanPages bounds the client-side scan of /actions/tasks. That
 // endpoint cannot filter by ref on any release, so the newest few pages are
 // scanned and anything older is treated as not present.
@@ -57,26 +35,6 @@ const actionTaskScanPages = 3
 
 // actionTaskScanLimit is the page size used for that scan.
 const actionTaskScanLimit = 50
-
-// CIJob is one unit of CI work: an Actions job, an Actions task, or a commit
-// status entry, normalized into one shape.
-type CIJob struct {
-	// ID addresses the job log. Zero means this source has no log to fetch.
-	ID     int64  `json:"id,omitempty"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	URL    string `json:"url,omitempty"`
-}
-
-// CIStatus is the resolved CI picture for one ref.
-type CIStatus struct {
-	Ref    string  `json:"ref"`
-	SHA    string  `json:"sha,omitempty"`
-	Source string  `json:"source"`
-	State  string  `json:"state"`
-	URL    string  `json:"url,omitempty"`
-	Jobs   []CIJob `json:"jobs"`
-}
 
 // ActionRun mirrors one entry of /actions/runs. Forgejo reports a single
 // `status` field rather than GitHub's status/conclusion pair.
@@ -191,25 +149,25 @@ func (c *Client) JobLogTail(ctx context.Context, owner, name string, jobID int64
 }
 
 // CIStatusFor resolves the CI picture for a ref, trying each surface in turn.
-// A ref with no CI anywhere is not an error: it reports CIStateNone.
-func (c *Client) CIStatusFor(ctx context.Context, owner, name, ref string) (CIStatus, error) {
-	status := CIStatus{Ref: ref, Source: CISourceNone, State: CIStateNone, Jobs: []CIJob{}}
+// A ref with no CI anywhere is not an error: it reports scm.CIStateNone.
+func (c *Client) CIStatusFor(ctx context.Context, owner, name, ref string) (scm.CIStatus, error) {
+	status := scm.CIStatus{Ref: ref, Source: scm.CISourceNone, State: scm.CIStateNone, Jobs: []scm.CIJob{}}
 	if isCommitSHA(ref) {
 		status.SHA = ref
 	}
 
 	if resolved, ok, err := c.ciFromRuns(ctx, owner, name, ref); err != nil {
-		return CIStatus{}, err
+		return scm.CIStatus{}, err
 	} else if ok {
 		return resolved, nil
 	}
 	if resolved, ok, err := c.ciFromTasks(ctx, owner, name, ref); err != nil {
-		return CIStatus{}, err
+		return scm.CIStatus{}, err
 	} else if ok {
 		return resolved, nil
 	}
 	if resolved, ok, err := c.ciFromCommitStatus(ctx, owner, name, ref); err != nil {
-		return CIStatus{}, err
+		return scm.CIStatus{}, err
 	} else if ok {
 		return resolved, nil
 	}
@@ -219,33 +177,33 @@ func (c *Client) CIStatusFor(ctx context.Context, owner, name, ref string) (CISt
 // ciFromRuns reads the newest workflow run for a ref and, where the release
 // serves them, its jobs. A release without /actions/runs reports not-ok rather
 // than failing, so the caller falls through to the next surface.
-func (c *Client) ciFromRuns(ctx context.Context, owner, name, ref string) (CIStatus, bool, error) {
+func (c *Client) ciFromRuns(ctx context.Context, owner, name, ref string) (scm.CIStatus, bool, error) {
 	runs, err := c.ActionRuns(ctx, owner, name, ref, 10)
 	if err != nil {
 		if errors.Is(err, scm.ErrNotFound) {
-			return CIStatus{}, false, nil
+			return scm.CIStatus{}, false, nil
 		}
-		return CIStatus{}, false, err
+		return scm.CIStatus{}, false, err
 	}
 	if len(runs) == 0 {
-		return CIStatus{}, false, nil
+		return scm.CIStatus{}, false, nil
 	}
 	run := runs[0]
-	status := CIStatus{
+	status := scm.CIStatus{
 		Ref:    ref,
 		SHA:    run.CommitSHA,
-		Source: CISourceRuns,
+		Source: scm.CISourceRuns,
 		State:  normalizeActionStatus(run.Status),
 		URL:    run.HTMLURL,
-		Jobs:   []CIJob{},
+		Jobs:   []scm.CIJob{},
 	}
 
 	jobs, err := c.ActionRunJobs(ctx, owner, name, run.ID)
 	if err != nil && !errors.Is(err, scm.ErrNotFound) {
-		return CIStatus{}, false, err
+		return scm.CIStatus{}, false, err
 	}
 	for _, job := range jobs {
-		status.Jobs = append(status.Jobs, CIJob{
+		status.Jobs = append(status.Jobs, scm.CIJob{
 			ID:     job.ID,
 			Name:   strings.TrimSpace(job.Name),
 			Status: normalizeActionStatus(job.Status),
@@ -254,7 +212,7 @@ func (c *Client) ciFromRuns(ctx context.Context, owner, name, ref string) (CISta
 	// A release that lists runs but not their jobs still reports the run
 	// itself, so the caller always has something to name.
 	if len(status.Jobs) == 0 {
-		status.Jobs = append(status.Jobs, CIJob{
+		status.Jobs = append(status.Jobs, scm.CIJob{
 			Name:   firstNonEmpty(run.Title, "workflow run"),
 			Status: status.State,
 			URL:    run.HTMLURL,
@@ -266,16 +224,16 @@ func (c *Client) ciFromRuns(ctx context.Context, owner, name, ref string) (CISta
 // ciFromTasks scans the newest Actions tasks and keeps those matching ref.
 // The endpoint cannot filter, so the scan is bounded and a ref older than the
 // scan window reads as "no CI here" rather than stalling.
-func (c *Client) ciFromTasks(ctx context.Context, owner, name, ref string) (CIStatus, bool, error) {
+func (c *Client) ciFromTasks(ctx context.Context, owner, name, ref string) (scm.CIStatus, bool, error) {
 	var matched []ActionTask
 	newestRun := int64(-1)
 	for page := 1; page <= actionTaskScanPages; page++ {
 		tasks, err := c.ActionTasks(ctx, owner, name, page, actionTaskScanLimit)
 		if err != nil {
 			if errors.Is(err, scm.ErrNotFound) {
-				return CIStatus{}, false, nil
+				return scm.CIStatus{}, false, nil
 			}
-			return CIStatus{}, false, err
+			return scm.CIStatus{}, false, err
 		}
 		for _, task := range tasks {
 			if !taskMatchesRef(task, ref) {
@@ -299,21 +257,21 @@ func (c *Client) ciFromTasks(ctx context.Context, owner, name, ref string) (CISt
 		}
 	}
 	if len(matched) == 0 {
-		return CIStatus{}, false, nil
+		return scm.CIStatus{}, false, nil
 	}
 
-	status := CIStatus{
+	status := scm.CIStatus{
 		Ref:    ref,
 		SHA:    matched[0].HeadSHA,
-		Source: CISourceTasks,
+		Source: scm.CISourceTasks,
 		URL:    matched[0].URL,
-		Jobs:   make([]CIJob, 0, len(matched)),
+		Jobs:   make([]scm.CIJob, 0, len(matched)),
 	}
 	states := make([]string, 0, len(matched))
 	for _, task := range matched {
 		state := normalizeActionStatus(task.Status)
 		states = append(states, state)
-		status.Jobs = append(status.Jobs, CIJob{
+		status.Jobs = append(status.Jobs, scm.CIJob{
 			ID:     task.ID,
 			Name:   strings.TrimSpace(task.Name),
 			Status: state,
@@ -326,36 +284,36 @@ func (c *Client) ciFromTasks(ctx context.Context, owner, name, ref string) (CISt
 
 // ciFromCommitStatus reads the combined commit status. This is the portable
 // floor and the only surface that sees CI reported by an external system.
-func (c *Client) ciFromCommitStatus(ctx context.Context, owner, name, ref string) (CIStatus, bool, error) {
+func (c *Client) ciFromCommitStatus(ctx context.Context, owner, name, ref string) (scm.CIStatus, bool, error) {
 	combined, err := c.CombinedStatus(ctx, owner, name, ref)
 	if err != nil {
 		if errors.Is(err, scm.ErrNotFound) {
-			return CIStatus{}, false, nil
+			return scm.CIStatus{}, false, nil
 		}
-		return CIStatus{}, false, err
+		return scm.CIStatus{}, false, err
 	}
 	if len(combined.Statuses) == 0 {
-		return CIStatus{}, false, nil
+		return scm.CIStatus{}, false, nil
 	}
-	status := CIStatus{
+	status := scm.CIStatus{
 		Ref:    ref,
 		SHA:    combined.Sha,
-		Source: CISourceStatus,
+		Source: scm.CISourceStatus,
 		State:  normalizeCommitState(combined.State),
-		Jobs:   make([]CIJob, 0, len(combined.Statuses)),
+		Jobs:   make([]scm.CIJob, 0, len(combined.Statuses)),
 	}
 	states := make([]string, 0, len(combined.Statuses))
 	for _, entry := range combined.Statuses {
 		state := normalizeCommitState(entry.Status)
 		states = append(states, state)
-		status.Jobs = append(status.Jobs, CIJob{
+		status.Jobs = append(status.Jobs, scm.CIJob{
 			Name:   firstNonEmpty(entry.Context, entry.Description),
 			Status: state,
 			URL:    entry.TargetURL,
 		})
 	}
 	// Some releases leave the roll-up empty while the entries are populated.
-	if status.State == CIStateNone {
+	if status.State == scm.CIStateNone {
 		status.State = rollUpStates(states)
 	}
 	return status, true, nil
@@ -367,15 +325,15 @@ func (c *Client) ciFromCommitStatus(ctx context.Context, owner, name, ref string
 func normalizeActionStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "success", "skipped":
-		return CIStateSuccess
+		return scm.CIStateSuccess
 	case "failure", "cancelled", "canceled":
-		return CIStateFailure
+		return scm.CIStateFailure
 	case "running":
-		return CIStateRunning
+		return scm.CIStateRunning
 	case "waiting", "blocked", "pending", "queued":
-		return CIStatePending
+		return scm.CIStatePending
 	default:
-		return CIStateNone
+		return scm.CIStateNone
 	}
 }
 
@@ -385,35 +343,35 @@ func normalizeActionStatus(status string) string {
 func normalizeCommitState(state string) string {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "success":
-		return CIStateSuccess
+		return scm.CIStateSuccess
 	case "failure", "error":
-		return CIStateFailure
+		return scm.CIStateFailure
 	case "pending":
-		return CIStateRunning
+		return scm.CIStateRunning
 	case "warning":
-		return CIStateSuccess
+		return scm.CIStateSuccess
 	default:
-		return CIStateNone
+		return scm.CIStateNone
 	}
 }
 
 // rollUpStates reduces per-job states to one verdict: any failure loses, then
 // anything still moving, then success.
 func rollUpStates(states []string) string {
-	verdict := CIStateNone
+	verdict := scm.CIStateNone
 	for _, state := range states {
 		switch state {
-		case CIStateFailure:
-			return CIStateFailure
-		case CIStateRunning:
-			verdict = CIStateRunning
-		case CIStatePending:
-			if verdict != CIStateRunning {
-				verdict = CIStatePending
+		case scm.CIStateFailure:
+			return scm.CIStateFailure
+		case scm.CIStateRunning:
+			verdict = scm.CIStateRunning
+		case scm.CIStatePending:
+			if verdict != scm.CIStateRunning {
+				verdict = scm.CIStatePending
 			}
-		case CIStateSuccess:
-			if verdict == CIStateNone {
-				verdict = CIStateSuccess
+		case scm.CIStateSuccess:
+			if verdict == scm.CIStateNone {
+				verdict = scm.CIStateSuccess
 			}
 		}
 	}

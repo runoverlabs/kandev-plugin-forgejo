@@ -10,10 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"kandev-plugin-forgejo/internal/automations"
-	"kandev-plugin-forgejo/internal/forgejo"
 	"kandev-plugin-forgejo/internal/scm"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -48,55 +46,6 @@ const (
 	reasonVersionUnknown = "CI results need Forgejo 12 or later, and the instance did not report its version."
 )
 
-// automationInfoTTL bounds how long the account, version and repository
-// checks behind Describe are reused. The host calls Describe with config twice per accepted delivery;
-// Kandev restarts the plugin when its config changes, so a cached answer never
-// outlives a token or URL change.
-const automationInfoTTL = time.Minute
-
-// maxRepositoryOptions is how many repositories the editor suggests. The host
-// allows 100 per field.
-const maxRepositoryOptions = 50
-
-type instanceInfo struct {
-	userID int64
-	at     time.Time
-}
-
-// instanceVersion is what the instance reported about itself. An empty version
-// is a definitive answer (the instance did not report one), never a failed
-// request: those are not cached.
-type instanceVersion struct {
-	flavor  forgejo.Flavor
-	version string
-	at      time.Time
-}
-
-type repositoryOptions struct {
-	names []string
-	at    time.Time
-}
-
-// automationCache is keyed by the resolved client, which Connection rebuilds
-// whenever the URL or token changes.
-type automationCache struct {
-	mu           sync.Mutex
-	client       *forgejo.Client
-	info         *instanceInfo
-	version      *instanceVersion
-	repositories *repositoryOptions
-	// found maps a lowercased owner/name the token could read to when it
-	// was checked. Only a found repository is cached, so creating a missing
-	// one or granting the token access takes effect at once.
-	found map[string]time.Time
-}
-
-func (c *automationCache) forClient(client *forgejo.Client) {
-	if c.client != client {
-		c.client, c.info, c.version, c.repositories, c.found = client, nil, nil, nil, nil
-	}
-}
-
 // DescribeAutomationCondition reports whether a condition can be used and, for
 // a saved configuration, the connection identity the host binds it to.
 func (r *Runtime) DescribeAutomationCondition(ctx context.Context, request *pluginsdk.AutomationConditionRequest) (*pluginsdk.AutomationConditionResponse, error) {
@@ -125,7 +74,7 @@ func (r *Runtime) DescribeAutomationCondition(ctx context.Context, request *plug
 	if !enabled {
 		return unavailable(reasonDisabled), nil
 	}
-	client, err := r.connection.Client(ctx)
+	scope, err := r.conditions.Scope(ctx)
 	if errors.Is(err, scm.ErrNotConfigured) {
 		return unavailable(reasonNotConfigured), nil
 	}
@@ -136,24 +85,23 @@ func (r *Runtime) DescribeAutomationCondition(ctx context.Context, request *plug
 		return nil, errInstanceUnreachable
 	}
 	if listing {
-		return r.describeListing(ctx, client, key), nil
+		return r.describeListing(ctx, key), nil
 	}
-	return r.describeConfigured(ctx, client, cfg)
+	return r.describeConfigured(ctx, scope, cfg)
 }
 
 // describeListing answers the editor's condition list. The host gives every
 // condition of every plugin five seconds together, so a provider failure here
 // leaves the condition available without suggestions; saving it runs the full
 // check.
-func (r *Runtime) describeListing(ctx context.Context, client *forgejo.Client, key string) *pluginsdk.AutomationConditionResponse {
+func (r *Runtime) describeListing(ctx context.Context, key string) *pluginsdk.AutomationConditionResponse {
 	if key == automations.ConditionCIResult {
-		if v, err := r.instanceVersion(ctx, client); err == nil && v.version != "" &&
-			!forgejo.SupportsActionRunWebhooks(v.flavor, v.version) {
+		if supported, known, err := r.conditions.CIEvents(ctx); err == nil && known && !supported {
 			return unavailable(reasonCIUnsupported)
 		}
 	}
 	response := &pluginsdk.AutomationConditionResponse{Available: true}
-	if names := r.repositoryOptions(ctx, client); len(names) > 0 {
+	if names := r.conditions.RepositoryNames(ctx); len(names) > 0 {
 		if encoded, err := json.Marshal(map[string][]string{"repository": names}); err == nil {
 			response.ConfigOptions = encoded
 		}
@@ -164,18 +112,18 @@ func (r *Runtime) describeListing(ctx context.Context, client *forgejo.Client, k
 // describeConfigured runs its lookups concurrently, so a cold cache costs one
 // round-trip of the host's five-second budget rather than four, then judges
 // them in a fixed order.
-func (r *Runtime) describeConfigured(ctx context.Context, client *forgejo.Client, cfg automations.Config) (*pluginsdk.AutomationConditionResponse, error) {
+func (r *Runtime) describeConfigured(ctx context.Context, scope string, cfg automations.Config) (*pluginsdk.AutomationConditionResponse, error) {
 	var (
 		wg                           sync.WaitGroup
-		info                         instanceInfo
-		version                      instanceVersion
+		accountID                    int64
+		ciSupported, ciKnown         bool
 		infoErr, versionErr, repoErr error
 	)
-	wg.Go(func() { info, infoErr = r.instanceInfo(ctx, client) })
+	wg.Go(func() { accountID, infoErr = r.conditions.AccountID(ctx) })
 	if cfg.Key == automations.ConditionCIResult {
-		wg.Go(func() { version, versionErr = r.instanceVersion(ctx, client) })
+		wg.Go(func() { ciSupported, ciKnown, versionErr = r.conditions.CIEvents(ctx) })
 	}
-	wg.Go(func() { repoErr = r.repositoryExists(ctx, client, cfg.Repository) })
+	wg.Go(func() { repoErr = r.conditions.RepositoryExists(ctx, cfg.Repository) })
 	wg.Wait()
 
 	if errors.Is(infoErr, scm.ErrUnauthorized) {
@@ -188,10 +136,10 @@ func (r *Runtime) describeConfigured(ctx context.Context, client *forgejo.Client
 		if versionErr != nil {
 			return nil, errInstanceUnreachable
 		}
-		if version.version == "" {
+		if !ciKnown {
 			return unavailable(reasonVersionUnknown), nil
 		}
-		if !forgejo.SupportsActionRunWebhooks(version.flavor, version.version) {
+		if !ciSupported {
 			return unavailable(reasonCIUnsupported), nil
 		}
 	}
@@ -203,8 +151,8 @@ func (r *Runtime) describeConfigured(ctx context.Context, client *forgejo.Client
 	}
 	return &pluginsdk.AutomationConditionResponse{
 		Available:          true,
-		ConnectionId:       connectionID(client.Scope()),
-		ConnectionRevision: connectionRevision(client.Scope(), info.userID),
+		ConnectionId:       connectionID(scope),
+		ConnectionRevision: connectionRevision(scope, accountID),
 	}, nil
 }
 
@@ -218,10 +166,10 @@ func (r *Runtime) VerifyAutomationWebhook(ctx context.Context, request *pluginsd
 	}
 	key := request.ConditionKey
 	// Nothing is parsed before the signature verifies.
-	if err := forgejo.VerifyWebhookSignature(request.Secret, request.Body, request.Headers); err != nil {
+	if err := r.webhooks.Verify(request.Secret, request.Body, request.Headers); err != nil {
 		return outcome(outcomeRejected), nil
 	}
-	scope, err := r.connection.Scope(ctx)
+	scope, err := r.conditions.Scope(ctx)
 	if errors.Is(err, scm.ErrNotConfigured) || errors.Is(err, scm.ErrInvalidConfig) {
 		return outcome(outcomeRejected), nil
 	}
@@ -234,10 +182,10 @@ func (r *Runtime) VerifyAutomationWebhook(ctx context.Context, request *pluginsd
 	if request.ConnectionId != connectionID(scope) {
 		return outcome(outcomeRejected), nil
 	}
-	if forgejo.WebhookKind(request.Headers) != key {
+	if r.webhooks.Kind(request.Headers) != key {
 		return outcome(outcomeIgnored), nil
 	}
-	event, err := forgejo.DecodeWebhook(request.Body, request.Headers)
+	event, err := r.webhooks.Decode(request.Body, request.Headers)
 	if err != nil {
 		return outcome(outcomeMalformed), nil
 	}
@@ -286,130 +234,6 @@ func connectionID(scope string) string {
 func connectionRevision(scope string, userID int64) string {
 	sum := sha256.Sum256([]byte("forgejo-account\x00" + scope + "\x00" + strconv.FormatInt(userID, 10)))
 	return hex.EncodeToString(sum[:])
-}
-
-// instanceInfo returns the account, from cache when fresh.
-func (r *Runtime) instanceInfo(ctx context.Context, client *forgejo.Client) (instanceInfo, error) {
-	cache := &r.automationCache
-	cache.mu.Lock()
-	cache.forClient(client)
-	if info := cache.info; info != nil && time.Since(info.at) < automationInfoTTL {
-		cache.mu.Unlock()
-		return *info, nil
-	}
-	cache.mu.Unlock()
-
-	user, err := client.CurrentUser(ctx)
-	if err != nil {
-		return instanceInfo{}, err
-	}
-	info := instanceInfo{userID: user.ID, at: time.Now()}
-
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	cache.forClient(client)
-	cache.info = &info
-	return info, nil
-}
-
-// instanceVersion returns the version and flavor, from cache when fresh. Only
-// ci_result needs them, so other conditions never pay for the requests. A
-// failed request is an error, not an empty version: the host cancels a
-// delivery on available=false, so a blip must not read as "no version".
-func (r *Runtime) instanceVersion(ctx context.Context, client *forgejo.Client) (instanceVersion, error) {
-	cache := &r.automationCache
-	cache.mu.Lock()
-	cache.forClient(client)
-	if v := cache.version; v != nil && time.Since(v.at) < automationInfoTTL {
-		cache.mu.Unlock()
-		return *v, nil
-	}
-	cache.mu.Unlock()
-
-	result := instanceVersion{at: time.Now()}
-	version, err := client.Version(ctx)
-	switch {
-	case errors.Is(err, scm.ErrNotFound), errors.Is(err, scm.ErrUnauthorized):
-		// The endpoint is hidden: a lasting answer, not a failure.
-	case err != nil:
-		return instanceVersion{}, err
-	case strings.TrimSpace(version) != "":
-		flavor, err := client.ProbeFlavor(ctx, version)
-		if err != nil {
-			return instanceVersion{}, err
-		}
-		result.version, result.flavor = version, flavor
-	}
-
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	cache.forClient(client)
-	cache.version = &result
-	return result, nil
-}
-
-// repositoryExists checks that the token can read a repository, from cache
-// when it was found recently.
-func (r *Runtime) repositoryExists(ctx context.Context, client *forgejo.Client, repository string) error {
-	key := strings.ToLower(repository)
-	cache := &r.automationCache
-	cache.mu.Lock()
-	cache.forClient(client)
-	if at, ok := cache.found[key]; ok && time.Since(at) < automationInfoTTL {
-		cache.mu.Unlock()
-		return nil
-	}
-	cache.mu.Unlock()
-
-	owner, name, _ := strings.Cut(repository, "/")
-	if _, err := client.Repo(ctx, owner, name); err != nil {
-		return err
-	}
-
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	cache.forClient(client)
-	now := time.Now()
-	for stale, at := range cache.found {
-		if now.Sub(at) >= automationInfoTTL {
-			delete(cache.found, stale)
-		}
-	}
-	if cache.found == nil {
-		cache.found = map[string]time.Time{}
-	}
-	cache.found[key] = now
-	return nil
-}
-
-// repositoryOptions suggests the repositories the token sees, most recently
-// updated first. A failure suggests nothing; the field still takes free text.
-func (r *Runtime) repositoryOptions(ctx context.Context, client *forgejo.Client) []string {
-	cache := &r.automationCache
-	cache.mu.Lock()
-	cache.forClient(client)
-	if options := cache.repositories; options != nil && time.Since(options.at) < automationInfoTTL {
-		cache.mu.Unlock()
-		return options.names
-	}
-	cache.mu.Unlock()
-
-	repos, err := client.SearchRepos(ctx, "", 1, maxRepositoryOptions)
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(repos))
-	for _, repo := range repos {
-		if repo.FullName != "" && len(names) < maxRepositoryOptions {
-			names = append(names, repo.FullName)
-		}
-	}
-
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	cache.forClient(client)
-	cache.repositories = &repositoryOptions{names: names, at: time.Now()}
-	return names
 }
 
 func unavailable(reason string) *pluginsdk.AutomationConditionResponse {

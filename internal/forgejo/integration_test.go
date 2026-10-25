@@ -270,10 +270,10 @@ func TestLiveCIStatusResolves(t *testing.T) {
 	status, err := client.CIStatusFor(ctx, owner, repo, ref)
 	require.NoError(t, err)
 	require.Equal(t, ref, status.Ref)
-	require.Contains(t, []string{CISourceRuns, CISourceTasks, CISourceStatus, CISourceNone}, status.Source)
-	require.Contains(t, []string{CIStateSuccess, CIStateFailure, CIStateRunning, CIStatePending, CIStateNone}, status.State)
-	if status.Source == CISourceNone {
-		require.Equal(t, CIStateNone, status.State)
+	require.Contains(t, []string{scm.CISourceRuns, scm.CISourceTasks, scm.CISourceStatus, scm.CISourceNone}, status.Source)
+	require.Contains(t, []string{scm.CIStateSuccess, scm.CIStateFailure, scm.CIStateRunning, scm.CIStatePending, scm.CIStateNone}, status.State)
+	if status.Source == scm.CISourceNone {
+		require.Equal(t, scm.CIStateNone, status.State)
 		require.Empty(t, status.Jobs)
 	}
 	t.Logf("live CI: source=%s state=%s jobs=%d", status.Source, status.State, len(status.Jobs))
@@ -281,7 +281,7 @@ func TestLiveCIStatusResolves(t *testing.T) {
 	// Resolving by commit id must take the other query path without error.
 	byCommit, err := client.CIStatusFor(ctx, owner, repo, branches[0].Commit.ID)
 	require.NoError(t, err)
-	require.Contains(t, []string{CISourceRuns, CISourceTasks, CISourceStatus, CISourceNone}, byCommit.Source)
+	require.Contains(t, []string{scm.CISourceRuns, scm.CISourceTasks, scm.CISourceStatus, scm.CISourceNone}, byCommit.Source)
 }
 
 // TestLiveActionsSurfaceMatrix records which Actions endpoints this release
