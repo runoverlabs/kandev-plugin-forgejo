@@ -18,9 +18,10 @@ package watches
 
 import (
 	"fmt"
-	"kandev-plugin-forgejo/internal/scm"
 	"strings"
 	"time"
+
+	"kandev-plugin-forgejo/internal/scm"
 )
 
 // DefaultPollInterval is the interval a watch polls at when the operator does

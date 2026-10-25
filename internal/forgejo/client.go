@@ -15,12 +15,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"kandev-plugin-forgejo/internal/scm"
 )
 
 // maxResponseBytes bounds any single API response the plugin will buffer. A

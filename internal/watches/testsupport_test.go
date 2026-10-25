@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"kandev-plugin-forgejo/internal/scm"
 	"strconv"
 	"sync"
 	"time"
+
+	"kandev-plugin-forgejo/internal/scm"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )

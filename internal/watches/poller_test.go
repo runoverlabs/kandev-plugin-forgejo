@@ -2,11 +2,12 @@ package watches
 
 import (
 	"context"
-	"kandev-plugin-forgejo/internal/kandev"
-	"kandev-plugin-forgejo/internal/scm"
 	"strings"
 	"testing"
 	"time"
+
+	"kandev-plugin-forgejo/internal/kandev"
+	"kandev-plugin-forgejo/internal/scm"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"github.com/stretchr/testify/require"

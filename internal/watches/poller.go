@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"kandev-plugin-forgejo/internal/kandev"
-	"kandev-plugin-forgejo/internal/scm"
 	"strings"
 	"sync"
 	"time"
+
+	"kandev-plugin-forgejo/internal/kandev"
+	"kandev-plugin-forgejo/internal/scm"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )

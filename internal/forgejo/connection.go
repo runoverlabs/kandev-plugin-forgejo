@@ -3,12 +3,13 @@ package forgejo
 import (
 	"context"
 	"fmt"
-	"kandev-plugin-forgejo/internal/kandev"
-	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"kandev-plugin-forgejo/internal/kandev"
+	"kandev-plugin-forgejo/internal/scm"
 )
 
 // Connection turns the plugin's operator config into a ready REST client. The

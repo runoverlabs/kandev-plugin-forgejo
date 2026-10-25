@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"kandev-plugin-forgejo/internal/scm"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"kandev-plugin-forgejo/internal/scm"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )

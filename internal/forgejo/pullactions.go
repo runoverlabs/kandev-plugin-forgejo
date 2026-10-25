@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"net/url"
 	"strconv"
+
+	"kandev-plugin-forgejo/internal/scm"
 )
 
 // Bounds for the read methods below. They keep a composite read inside the

@@ -9,9 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"kandev-plugin-forgejo/internal/scm"
 	"path"
 	"strings"
+
+	"kandev-plugin-forgejo/internal/scm"
 )
 
 // Condition keys. Each must match a manifest automation_conditions entry, and

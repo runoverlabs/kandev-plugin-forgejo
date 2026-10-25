@@ -9,9 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"kandev-plugin-forgejo/internal/kandev"
 	"net/http"
 	"strings"
+
+	"kandev-plugin-forgejo/internal/kandev"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )

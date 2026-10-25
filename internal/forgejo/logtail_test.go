@@ -3,10 +3,11 @@ package forgejo
 import (
 	"context"
 	"fmt"
-	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"strings"
 	"testing"
+
+	"kandev-plugin-forgejo/internal/scm"
 
 	"github.com/stretchr/testify/require"
 )

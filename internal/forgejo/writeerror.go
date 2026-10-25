@@ -1,9 +1,10 @@
 package forgejo
 
 import (
-	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"strings"
+
+	"kandev-plugin-forgejo/internal/scm"
 )
 
 // maxErrorBodyBytes bounds how much of an error body is read to classify it.

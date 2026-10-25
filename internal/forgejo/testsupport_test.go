@@ -3,11 +3,12 @@ package forgejo
 import (
 	"context"
 	"encoding/json"
-	"kandev-plugin-forgejo/internal/sourcecontrol"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+
+	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )

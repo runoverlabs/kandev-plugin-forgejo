@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+
+	"kandev-plugin-forgejo/internal/scm"
 )
 
 // The DTOs below carry only the fields this plugin actually reads, and only

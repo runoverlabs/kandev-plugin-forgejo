@@ -8,12 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"kandev-plugin-forgejo/internal/kandev"
-	"kandev-plugin-forgejo/internal/scm"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"kandev-plugin-forgejo/internal/kandev"
+	"kandev-plugin-forgejo/internal/scm"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )

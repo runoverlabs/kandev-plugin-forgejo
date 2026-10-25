@@ -6,8 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"kandev-plugin-forgejo/internal/kandev"
 	"strings"
+
+	"kandev-plugin-forgejo/internal/kandev"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )

@@ -2,9 +2,10 @@ package forgejo
 
 import (
 	"context"
-	"kandev-plugin-forgejo/internal/sourcecontrol"
 	"net/http"
 	"testing"
+
+	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"github.com/stretchr/testify/require"

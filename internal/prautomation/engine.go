@@ -6,11 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"kandev-plugin-forgejo/internal/kandev"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"kandev-plugin-forgejo/internal/kandev"
 )
 
 // Timing. The loop wakes every tick and evaluates the records that are due;

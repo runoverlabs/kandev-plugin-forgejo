@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"kandev-plugin-forgejo/internal/kandev"
 	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"kandev-plugin-forgejo/internal/kandev"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )

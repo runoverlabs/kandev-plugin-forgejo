@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"kandev-plugin-forgejo/internal/scm"
 	"net/url"
 	"strconv"
 	"strings"
+
+	"kandev-plugin-forgejo/internal/scm"
 )
 
 // CI reporting is the one place where Forgejo and Gitea have genuinely

@@ -1,9 +1,10 @@
 package watches
 
 import (
-	"kandev-plugin-forgejo/internal/scm"
 	"testing"
 	"time"
+
+	"kandev-plugin-forgejo/internal/scm"
 
 	"github.com/stretchr/testify/require"
 )
