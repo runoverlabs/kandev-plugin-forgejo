@@ -45,12 +45,13 @@ this is where Forgejo and Gitea have genuinely diverged. Measured directly:
 | `/commits/{ref}/status` | yes | yes | yes | yes | yes | yes |
 
 Read from each release's own `swagger.v1.json` and confirmed against running
-instances. At the supported floor of either host there is no Actions API at
-all, and Forgejo 13 lists runs without serving their jobs or logs — so a chain
-that assumed one shape would be wrong on most of the range.
+instances. Forgejo 7, the floor, has no Actions API at all, and Forgejo 13 lists
+runs without serving their jobs or logs, so a chain that assumed one shape
+would be wrong on most of the range. Gitea 1.20 and 1.24 are below Gitea's
+floor now and stay in the table as the record of what plugin 0.4 handles.
 
-The combined commit status is last and present everywhere. It is not only the
-floor fallback: it is the **only** surface that sees CI running outside the
+The combined commit status is last and present everywhere. It is not only a
+compatibility fallback: it is the **only** surface that sees CI running outside the
 forge, which on self-hosted Forgejo is common — Woodpecker and Drone report
 there and appear in `ci` like any other check.
 
@@ -127,8 +128,9 @@ on the set so a third tool has to be argued for.
 The catalog is static, so this is the cost on every host. A plugin cannot
 withhold a tool from an instance too old to serve it: Kandev builds the catalog
 from the installed manifest and the only dynamic input is whether the plugin is
-active. On Gitea 1.20 or Forgejo 7 the `logs` argument is therefore declared but
-inert, which is one more reason it is an argument rather than a tool.
+active. On a host that serves no job logs (Forgejo 7, for one) the `logs`
+argument is therefore declared but inert, which is one more reason it is an
+argument rather than a tool.
 
 Whether this is a net win depends on how much prompt text it lets you delete.
 Start an Autopilot task and read the recorded MCP attachment evidence, which

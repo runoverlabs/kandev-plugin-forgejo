@@ -38,11 +38,12 @@ provider and have no extension point a plugin can register against.
   a `0.88`–`0.94` host will happily run release `0.1.2`; it would also install
   `0.2.0` and silently never show the agent tools, which is why the floor moved
   rather than staying put.
-- **Gitea 1.20+** or **Forgejo 7.0+**, reachable from the Kandev backend and
-  serving the REST v1 API at `<instance URL>/api/v1`. See "Supported versions"
-  for what was tested and why the floor sits there.
-- A personal access token. Gitea 1.20+ and every supported Forgejo enforce token
-  scopes, and the plugin needs all four of:
+- **Forgejo 7.0+** or **Gitea 1.27+**, reachable from the Kandev backend and
+  serving the REST v1 API at `<instance URL>/api/v1`. Some features need a newer
+  release; see "Supported versions" for the table, and "Older instances" for what
+  to install on an older Gitea.
+- A personal access token. Every supported host enforces token scopes, and the
+  plugin needs all four of:
 
   | Scope | Needed for |
   | --- | --- |
@@ -53,7 +54,6 @@ provider and have no extension point a plugin can register against.
 
   A token missing `read:user` reports "not connected" even though everything
   else works, and one missing `read:issue` returns an empty composer picker.
-  On Gitea 1.14–1.19 these scope names do not exist; see "Supported versions".
 
 ## Install
 
@@ -79,8 +79,9 @@ Changing the configuration restarts the plugin; that is expected.
 Forgejo is a hard fork of Gitea. Forgejo has diverged substantially in its web
 UI and features, but it still serves the Gitea-compatible REST surface at
 `/api/v1` and continues to declare its compatibility level in the version
-string (`16.0.5+gitea-1.22.0`). This plugin deliberately restricts itself to
-endpoints and fields that exist on both, so one plugin serves either host.
+string (`16.0.5+gitea-1.22.0`). Every feature so far uses only endpoints and
+fields that exist on both, so one plugin serves either host; see "Supported
+versions" for what happens when that stops being possible.
 
 Every request/response shape this plugin depends on was compared field by field
 across Forgejo 13.0.5, Forgejo 16.0.5, and Gitea 1.24.7. They are identical;
@@ -104,42 +105,63 @@ would assume, and which this plugin handles explicitly:
 
 ### Supported versions
 
-**Floor: Gitea 1.20, Forgejo 7.0.** Newer is always fine — the current releases
-of both are covered below.
+**Floor: Forgejo 7.0, Gitea 1.27.** Newer is always fine.
 
-That floor is a token-scope boundary, not a capability one. Every version in the
-table works; below the floor the *setup instructions differ*, which is the part
-that cannot be documented once and stay true:
+The plugin targets **recent Forgejo** first. Where a feature can be built on
+Forgejo but not on Gitea, it ships for Forgejo only, rather than being held back
+to what both hosts share.
 
-| Gitea range | Token behavior |
-| --- | --- |
-| ≤ 1.18 | No scope system at all. The `scopes` field is ignored and a token has **full account access** — strictly worse for an integration credential. |
-| 1.19 | Scopes exist but use an incompatible vocabulary: `read:repository` is rejected outright, and a token minted through the API comes back with `scopes: null` and is then **denied every write**. |
-| ≥ 1.20 | The scope names in "Requirements" above are accepted and enforced. A read-only token really is read-only. |
+Each feature has **one minimum version per host**. Below it the feature reports
+itself unavailable, with the reason; there is no reduced mode. The one
+exception predates this rule: the `ci` tool reads commit statuses everywhere and
+adds Actions jobs and their logs where the host serves them, because the
+commit status is also the only place CI from outside the forge appears.
 
-### Verified against
+| Feature | Forgejo | Gitea |
+| --- | --- | --- |
+| Repository picker, pull request creation, linking, glyphs, review panel, composer references, git credentials | 7.0 | 1.27 |
+| Pull request actions (merge, review, request reviewers, comment, update branch) | 7.0 | 1.27 |
+| Issue watches, review watches | 7.0 | 1.27 |
+| `ci` agent tool: overall state and each check | 7.0 | 1.27 |
+| `ci` agent tool: Actions jobs and their logs | 16.0 | 1.27 |
+| `pr` agent tool | 7.0 | 1.27 |
 
-Every version below was exercised with the full live contract suite — repository
+How the matrix is tested: CI runs the live contract suite against **every
+Forgejo long-term-support release from the floor up (7, 11, 15) and the current
+Forgejo release (17)**, plus the current Gitea (1.27), and asserts the detected
+flavor matches the host under test. A release between two LTS releases is
+assumed to behave like the LTS before it. A feature whose minimum falls between
+them names that release, read from Forgejo's source, and is tested at the next
+LTS.
+
+Forgejo 7 and 11 are past their end of life upstream. Supported here means the
+plugin keeps working with them; it is not a recommendation to run a Forgejo
+release that no longer gets security fixes.
+
+### Older instances
+
+**Plugin 0.4 is the last release line that supports Gitea 1.20 to 1.26.** Gitea
+supports only its most recent release upstream, so the plugin's Gitea floor
+follows it. On an older Gitea, install the newest 0.4.x release and stay on it.
+A raised floor is always a breaking change with its own changelog entry, and
+names the last plugin release for the hosts it leaves behind.
+
+What 0.4 was verified against, with the full live contract suite (repository
 discovery, review snapshot with CI status and approvals, composer reference
-search and authorization, and pull-request creation — and all of them returned
-complete data, not a degraded fallback.
+search and authorization, and pull-request creation):
 
 | Host | Versions verified | Result |
 | --- | --- | --- |
 | Gitea | 1.14.7, 1.15.11, 1.16.9, 1.17.4, 1.18.5, 1.19.4, 1.20.6, 1.21.11, 1.22.6, 1.23.8, 1.24.7, 1.25.5, 1.26.4, 1.27.3 | 14/14 fully working |
 | Forgejo | 7.0.16, 8.0.3, 9.0.3, 10.0.3, 11.0.16, 12.0.4, 13.0.5, 14.0.5, 15.0.9, 16.0.5 | 10/10 fully working |
 
-Gitea 1.14.7 is from April 2021, so the shared REST v1 surface this plugin uses
-has been stable for over five years. Gitea 1.14–1.19 are therefore *known to
-work* but **not supported**: they are end-of-life upstream and need
-version-specific token instructions.
+Gitea before 1.20 also worked with 0.4 but was never supported, because its
+token scopes differ:
 
-Forgejo 7.0 is the oldest Forgejo tested and is the oldest release Forgejo
-itself still supports. Older Forgejo (the v1.x line) is untested.
-
-CI runs the same suite against the floor and the current release of each host on
-every change, and asserts the detected flavor matches the host under test. If
-the shared surface ever diverges, that matrix fails first.
+| Gitea range | Token behavior |
+| --- | --- |
+| ≤ 1.18 | No scope system at all. The `scopes` field is ignored and a token has **full account access**, strictly worse for an integration credential. |
+| 1.19 | Scopes exist but use an incompatible vocabulary: `read:repository` is rejected outright, and a token minted through the API comes back with `scopes: null` and is then **denied every write**. |
 
 ## Documentation
 

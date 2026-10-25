@@ -21,9 +21,9 @@ import (
 //	/actions/jobs/{id}/logs    -      yes    yes    -    -    yes
 //	/commits/{ref}/status      yes    yes    yes    yes  yes  yes
 //
-// At the supported floor of either host there is no Actions API at all, and
-// Forgejo 13 lists runs without serving their jobs. The combined commit status
-// is last and present everywhere. It is not only a floor-compatibility
+// Forgejo 7 has no Actions API at all, and Forgejo 13 lists runs without
+// serving their jobs. The combined
+// commit status is last and present everywhere. It is not only a compatibility
 // fallback: it is the only surface that sees CI running outside the forge,
 // which on self-hosted Forgejo is common.
 const (

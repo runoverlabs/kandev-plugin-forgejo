@@ -201,13 +201,23 @@ Verified in the sibling checkout; each cost real debugging time.
 
 ## Forgejo and Gitea
 
-One plugin serves both by restricting itself to the REST v1 surface they share.
-Flavor detection is **for display only — no behaviour branches on it.**
+The floor is **Forgejo 7 and Gitea 1.27** (Gitea supports only its newest
+release; 0.4 is the last plugin line for Gitea 1.20 to 1.26). CI tests every
+Forgejo LTS from the floor up (7, 11, 15), the current Forgejo, and the current
+Gitea. README.md's "Supported versions" table, the CI matrix and this paragraph
+move together; raising a floor is a breaking change with a CHANGELOG entry that
+names the last plugin release for the hosts it drops.
+
+**Recent Forgejo comes first.** Every feature so far uses only the REST v1
+surface both hosts share, and flavor detection is for display only: **no
+behaviour branches on it** yet. A new feature has one minimum release per host,
+recorded in the README table. Below it, report the feature unavailable with a
+reason; do not build a reduced mode. Where a feature can be built on Forgejo but
+not on Gitea, ship it Forgejo-only rather than holding it back.
 
 Where the hosts diverge, resolve through a chain and take the first surface that
 answers rather than assuming a shape (`ci` walks `/actions/runs` →
-`/actions/tasks` → combined commit status). At the supported floor of either
-host there is no Actions API at all.
+`/actions/tasks` → combined commit status).
 
 Verify a provider claim against a real instance before encoding it. Two found
 that way and easy to get wrong:
