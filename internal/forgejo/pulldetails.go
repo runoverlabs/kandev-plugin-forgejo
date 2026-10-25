@@ -7,17 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
-
-// ErrNotLinked means the requested pull request is not among those linked to
-// the task. It is the authorization failure for every pull request action: a
-// number is only ever honoured when the task already owns it.
-var ErrNotLinked = errors.New("forgejo: pull request is not linked to this task")
-
-// ErrAmbiguous means the task links several pull requests and the caller named
-// none of them.
-var ErrAmbiguous = errors.New("forgejo: task links more than one pull request")
 
 // Bounds that keep one details response far below the host's 1 MiB cap.
 const (
@@ -60,7 +52,7 @@ type linked struct {
 // nothing the caller sends can redirect the call to another repository.
 func (a *PullActions) resolveLinked(ctx context.Context, workspaceID, taskID string, number int64) (linked, error) {
 	if strings.TrimSpace(workspaceID) == "" || strings.TrimSpace(taskID) == "" {
-		return linked{}, ErrNotLinked
+		return linked{}, scm.ErrNotLinked
 	}
 	client, err := a.connection.Client(ctx)
 	if err != nil {
@@ -81,9 +73,9 @@ func (a *PullActions) resolveLinked(ctx context.Context, workspaceID, taskID str
 	}
 	switch {
 	case len(matches) == 0:
-		return linked{}, ErrNotLinked
+		return linked{}, scm.ErrNotLinked
 	case len(matches) > 1:
-		return linked{}, ErrAmbiguous
+		return linked{}, scm.ErrAmbiguous
 	}
 	repository, err := a.repositories.Resolve(ctx, "", sourcecontrol.RepositoryIdentity{
 		ConnectionScope: matches[0].ConnectionScope,
@@ -300,7 +292,7 @@ func detailReviews(reviews []Review, truncated *[]string) []sourcecontrol.Detail
 // softFailure reports an error that means "this token cannot see that", which
 // leaves a part of the response empty instead of failing the whole read.
 func softFailure(err error) bool {
-	return errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnauthorized)
+	return errors.Is(err, scm.ErrNotFound) || errors.Is(err, scm.ErrUnauthorized)
 }
 
 func nonNil(values []string) []string {

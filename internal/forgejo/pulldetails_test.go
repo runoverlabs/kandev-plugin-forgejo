@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -93,11 +94,11 @@ func TestDetailsRefusesAPullRequestTheTaskDoesNotLink(t *testing.T) {
 	before := len(api.requests)
 
 	_, err := actions.Details(context.Background(), "ws-1", "task-1", 99)
-	require.ErrorIs(t, err, ErrNotLinked)
+	require.ErrorIs(t, err, scm.ErrNotLinked)
 	_, err = actions.Details(context.Background(), "ws-1", "other-task", 7)
-	require.ErrorIs(t, err, ErrNotLinked)
+	require.ErrorIs(t, err, scm.ErrNotLinked)
 	_, err = actions.Details(context.Background(), "ws-1", "", 7)
-	require.ErrorIs(t, err, ErrNotLinked)
+	require.ErrorIs(t, err, scm.ErrNotLinked)
 	require.Len(t, api.requests, before, "a refused call must not reach the instance")
 }
 
@@ -105,7 +106,7 @@ func TestDetailsNeedsANumberWhenSeveralAreLinked(t *testing.T) {
 	t.Parallel()
 	actions, _, _ := detailsFixture(t)
 	_, err := actions.Details(context.Background(), "ws-1", "task-1", 0)
-	require.ErrorIs(t, err, ErrAmbiguous)
+	require.ErrorIs(t, err, scm.ErrAmbiguous)
 }
 
 // A token that cannot see protection, statuses, reviews or comments still gets

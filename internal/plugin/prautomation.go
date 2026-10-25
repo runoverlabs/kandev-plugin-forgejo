@@ -10,6 +10,7 @@ import (
 
 	"kandev-plugin-forgejo/internal/forgejo"
 	"kandev-plugin-forgejo/internal/prautomation"
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/watches"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -159,7 +160,7 @@ type automationMerger struct {
 
 func (m automationMerger) Merge(ctx context.Context, workspaceID string, ref prautomation.PullRef, headSHA string) error {
 	err := m.runtime.automationSource.MergeLinked(ctx, ref, headSHA)
-	var writeErr *forgejo.WriteError
+	var writeErr *scm.WriteError
 	answered := err == nil || errors.As(err, &writeErr)
 	if answered && (writeErr == nil || !transientMergeReason(writeErr.Reason)) {
 		outcome := "merged"
@@ -182,9 +183,9 @@ func (m automationMerger) Merge(ctx context.Context, workspaceID string, ref pra
 // transientMergeReason reports a refusal the next observation explains:
 // mergeability is computed, the new head is evaluated afresh, the merge is
 // seen.
-func transientMergeReason(reason forgejo.Reason) bool {
+func transientMergeReason(reason scm.Reason) bool {
 	switch reason {
-	case forgejo.ReasonChecking, forgejo.ReasonHeadChanged, forgejo.ReasonAlreadyMerged:
+	case scm.ReasonChecking, scm.ReasonHeadChanged, scm.ReasonAlreadyMerged:
 		return true
 	}
 	return false
@@ -390,7 +391,7 @@ func (r *Runtime) automationFork(ctx context.Context, workspaceID string, ref pr
 // the task's own links on the configured instance.
 func (r *Runtime) automationRef(ctx context.Context, workspaceID, taskID string, number int64) (prautomation.PullRef, error) {
 	if strings.TrimSpace(taskID) == "" {
-		return prautomation.PullRef{}, forgejo.ErrNotLinked
+		return prautomation.PullRef{}, scm.ErrNotLinked
 	}
 	client, err := r.connection.Client(ctx)
 	if err != nil {
@@ -409,11 +410,11 @@ func (r *Runtime) automationRef(ctx context.Context, workspaceID, taskID string,
 	}
 	switch len(matches) {
 	case 0:
-		return prautomation.PullRef{}, forgejo.ErrNotLinked
+		return prautomation.PullRef{}, scm.ErrNotLinked
 	case 1:
 		return matches[0], nil
 	default:
-		return prautomation.PullRef{}, forgejo.ErrAmbiguous
+		return prautomation.PullRef{}, scm.ErrAmbiguous
 	}
 }
 

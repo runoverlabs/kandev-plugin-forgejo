@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 	"kandev-plugin-forgejo/internal/watches"
 
@@ -298,15 +299,15 @@ func TestLiveActionsSurfaceMatrix(t *testing.T) {
 
 	runs, runsErr := client.ActionRuns(ctx, owner, repo, "", 5)
 	if runsErr != nil {
-		require.ErrorIs(t, runsErr, ErrNotFound, "an unsupported endpoint must map to ErrNotFound")
+		require.ErrorIs(t, runsErr, scm.ErrNotFound, "an unsupported endpoint must map to scm.ErrNotFound")
 	}
 	tasks, tasksErr := client.ActionTasks(ctx, owner, repo, 1, 5)
 	if tasksErr != nil {
-		require.ErrorIs(t, tasksErr, ErrNotFound)
+		require.ErrorIs(t, tasksErr, scm.ErrNotFound)
 	}
 	_, _, logsErr := client.JobLogTail(ctx, owner, repo, 1, 1024)
 	if logsErr != nil {
-		require.ErrorIs(t, logsErr, ErrNotFound)
+		require.ErrorIs(t, logsErr, scm.ErrNotFound)
 	}
 
 	t.Logf("version=%s runs=%v(%d) tasks=%v(%d) job_logs=%v",
@@ -497,8 +498,8 @@ func TestLivePullRequestActions(t *testing.T) {
 		var err error
 		for attempt := 0; attempt < 15; attempt++ {
 			err = client.MergePullRequest(ctx, owner, repo, pull.Number, input)
-			var writeErr *WriteError
-			if !errors.As(err, &writeErr) || writeErr.Reason != ReasonChecking {
+			var writeErr *scm.WriteError
+			if !errors.As(err, &writeErr) || writeErr.Reason != scm.ReasonChecking {
 				return err
 			}
 			time.Sleep(time.Second)
@@ -507,7 +508,7 @@ func TestLivePullRequestActions(t *testing.T) {
 	}
 
 	stale := merge(MergeInput{Do: MergeStyleSquash, HeadCommitID: "0000000000000000000000000000000000000000"})
-	var writeErr *WriteError
+	var writeErr *scm.WriteError
 	require.ErrorAs(t, stale, &writeErr, "a stale head must be refused, not merged")
 	t.Logf("stale head -> %d %s", writeErr.Status, writeErr.Reason)
 
@@ -559,9 +560,9 @@ func livePull(t *testing.T, client *Client) (PullRequest, string, string) {
 	return pull, owner, repo
 }
 
-func requireReason(t *testing.T, err error, want Reason) {
+func requireReason(t *testing.T, err error, want scm.Reason) {
 	t.Helper()
-	var writeErr *WriteError
+	var writeErr *scm.WriteError
 	require.ErrorAs(t, err, &writeErr)
 	require.Equal(t, want, writeErr.Reason, "status %d", writeErr.Status)
 }
@@ -575,7 +576,7 @@ func TestLiveReviewerFlow(t *testing.T) {
 	pull, owner, repo := livePull(t, admin)
 
 	_, err := admin.SubmitReview(ctx, owner, repo, pull.Number, SubmitReviewInput{Event: ReviewApprove})
-	requireReason(t, err, ReasonSelfReview)
+	requireReason(t, err, scm.ReasonSelfReview)
 
 	review, err := reviewer.SubmitReview(ctx, owner, repo, pull.Number, SubmitReviewInput{Event: ReviewApprove, Body: "lgtm"})
 	require.NoError(t, err)
@@ -605,9 +606,9 @@ func TestLiveReadOnlyUserIsForbidden(t *testing.T) {
 	// is about permission, not "try again later".
 	time.Sleep(3 * time.Second)
 
-	requireReason(t, readonly.MergePullRequest(ctx, owner, repo, pull.Number, MergeInput{Do: MergeStyleSquash}), ReasonForbidden)
-	requireReason(t, readonly.SetLabels(ctx, owner, repo, pull.Number, nil), ReasonForbidden)
-	requireReason(t, readonly.UpdateBranch(ctx, owner, repo, pull.Number, "merge"), ReasonForbidden)
+	requireReason(t, readonly.MergePullRequest(ctx, owner, repo, pull.Number, MergeInput{Do: MergeStyleSquash}), scm.ReasonForbidden)
+	requireReason(t, readonly.SetLabels(ctx, owner, repo, pull.Number, nil), scm.ReasonForbidden)
+	requireReason(t, readonly.UpdateBranch(ctx, owner, repo, pull.Number, "merge"), scm.ReasonForbidden)
 
 	// Reading and commenting are open to a reader.
 	_, err := readonly.PullRequest(ctx, owner, repo, pull.Number)
@@ -642,7 +643,7 @@ func TestLiveWriteActions(t *testing.T) {
 
 	// An author may comment on their own pull request but not approve it.
 	_, err = actions.Review(ctx, "ws-1", "task-1", sourcecontrol.ReviewRequest{Number: pull.Number, Event: sourcecontrol.ReviewEventApprove})
-	requireReason(t, err, ReasonSelfReview)
+	requireReason(t, err, scm.ReasonSelfReview)
 	review, err := actions.Review(ctx, "ws-1", "task-1", sourcecontrol.ReviewRequest{
 		Number: pull.Number, Event: sourcecontrol.ReviewEventComment, Body: "a note", HeadSHA: details.HeadSHA,
 		Comments: []sourcecontrol.InlineComment{{Path: pull.Head.Ref + ".txt", Body: "inline", Line: 1}},
@@ -654,7 +655,7 @@ func TestLiveWriteActions(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = actions.Merge(ctx, "ws-1", "task-1", sourcecontrol.MergeRequest{Number: pull.Number, HeadSHA: "0123456789abcdef"})
-	requireReason(t, err, ReasonHeadChanged)
+	requireReason(t, err, scm.ReasonHeadChanged)
 
 	result, err := actions.Merge(ctx, "ws-1", "task-1", sourcecontrol.MergeRequest{
 		Number: pull.Number, HeadSHA: details.HeadSHA, Style: MergeStyleSquash, DeleteBranch: true,
@@ -668,7 +669,7 @@ func TestLiveWriteActions(t *testing.T) {
 	require.Contains(t, after.Merge.Blockers, sourcecontrol.BlockerNotOpen)
 
 	_, err = actions.Merge(ctx, "ws-1", "task-1", sourcecontrol.MergeRequest{Number: pull.Number, HeadSHA: details.HeadSHA})
-	requireReason(t, err, ReasonAlreadyMerged)
+	requireReason(t, err, scm.ReasonAlreadyMerged)
 }
 
 // TestLiveReviewRequestedSearch pins the provider facts review watches rest
@@ -686,7 +687,7 @@ func TestLiveReviewRequestedSearch(t *testing.T) {
 	baseURL, token, _, _ := liveConfig(t)
 	ctx := context.Background()
 	pull, owner, repo := livePull(t, admin)
-	ref := watches.RepoRef{Owner: owner, Name: repo}
+	ref := scm.RepoRef{Owner: owner, Name: repo}
 
 	sourceFor := func(token string) *ReviewSource {
 		host := newFakeHost(map[string]any{"base_url": baseURL, "api_token": token})
@@ -695,7 +696,7 @@ func TestLiveReviewRequestedSearch(t *testing.T) {
 	reviewerToken := strings.TrimSpace(os.Getenv("KANDEV_FORGEJO_REVIEWER_TOKEN"))
 	asReviewer, asAdmin := sourceFor(reviewerToken), sourceFor(token)
 	find := func(source *ReviewSource) []watches.PullRequest {
-		found, err := source.SearchReviewRequests(ctx, watches.ReviewQuery{Repos: []watches.RepoRef{ref}})
+		found, err := source.SearchReviewRequests(ctx, watches.ReviewQuery{Repos: []scm.RepoRef{ref}})
 		require.NoError(t, err)
 		var mine []watches.PullRequest
 		for _, candidate := range found {

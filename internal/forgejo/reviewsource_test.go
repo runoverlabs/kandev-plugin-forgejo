@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"testing"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/watches"
 
 	"github.com/stretchr/testify/require"
@@ -52,7 +53,7 @@ func TestSearchReviewRequestsAsksTheInstanceForMyRequests(t *testing.T) {
 	require.Equal(t, []string{"1"}, query["page"])
 	require.Len(t, found, 1)
 	require.Equal(t, watches.PullRequest{
-		Repo: watches.RepoRef{Owner: "acme", Name: "web"}, Number: 4, Title: "PR 4",
+		Repo: scm.RepoRef{Owner: "acme", Name: "web"}, Number: 4, Title: "PR 4",
 		URL: "https://git.example/acme/web/pulls/4", Author: "alice", UpdatedAt: "2026-09-19T10:00:00Z",
 	}, found[0])
 }
@@ -64,7 +65,7 @@ func TestSearchReviewRequestsFiltersByRepositoryCaseInsensitively(t *testing.T) 
 		searchHit(1, "Acme/Web"), searchHit(2, "acme/other"), searchHit(3, "elsewhere/web"),
 	})
 	found, err := newReviewSource(t, api).SearchReviewRequests(context.Background(), watches.ReviewQuery{
-		Repos: []watches.RepoRef{{Owner: "acme", Name: "web"}},
+		Repos: []scm.RepoRef{{Owner: "acme", Name: "web"}},
 	})
 	require.NoError(t, err)
 	require.Len(t, found, 1)
@@ -103,7 +104,7 @@ func TestSearchReviewRequestsContinuesOnTheRawPageLength(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(hits)
 	})
 	found, err := newReviewSource(t, api).SearchReviewRequests(context.Background(), watches.ReviewQuery{
-		Repos: []watches.RepoRef{{Owner: "acme", Name: "web"}},
+		Repos: []scm.RepoRef{{Owner: "acme", Name: "web"}},
 	})
 	require.NoError(t, err)
 	require.Equal(t, []string{"1", "2", "3"}, pages)
@@ -148,7 +149,7 @@ func TestReviewErrorsNeverCarryTheResponseBody(t *testing.T) {
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(`{"message":"token-1 is invalid"}`))
 			})
-			_, err := newReviewSource(t, api).PullState(context.Background(), watches.RepoRef{Owner: "acme", Name: "web"}, 7)
+			_, err := newReviewSource(t, api).PullState(context.Background(), scm.RepoRef{Owner: "acme", Name: "web"}, 7)
 			require.Error(t, err)
 			require.NotContains(t, err.Error(), "token-1")
 			require.Contains(t, err.Error(), tc.message)
@@ -176,7 +177,7 @@ func TestPullDetailMapsBranchesAndAuthor(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
 	api.handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(nil))
-	detail, err := newReviewSource(t, api).PullDetail(context.Background(), watches.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
+	detail, err := newReviewSource(t, api).PullDetail(context.Background(), scm.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
 	require.NoError(t, err)
 	require.Equal(t, watches.PullDetail{
 		Title: "Add export", URL: "https://git.example/acme/web/pulls/7", Author: "alice",
@@ -196,14 +197,14 @@ func TestPullDetailFlagsDraftsByFieldAndByTitle(t *testing.T) {
 			t.Parallel()
 			api := newAPIServer(t)
 			api.handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(overrides))
-			detail, err := newReviewSource(t, api).PullDetail(context.Background(), watches.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
+			detail, err := newReviewSource(t, api).PullDetail(context.Background(), scm.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
 			require.NoError(t, err)
 			require.True(t, detail.Draft)
 		})
 	}
 	api := newAPIServer(t)
 	api.handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(map[string]any{"title": "Swipe the WIP out"}))
-	detail, err := newReviewSource(t, api).PullDetail(context.Background(), watches.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
+	detail, err := newReviewSource(t, api).PullDetail(context.Background(), scm.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
 	require.NoError(t, err)
 	require.False(t, detail.Draft, "only a prefix marks a draft")
 }
@@ -235,7 +236,7 @@ func TestPullDetailForkDetectionFailsClosed(t *testing.T) {
 				overrides["base"] = tc.base
 			}
 			api.handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(overrides))
-			detail, err := newReviewSource(t, api).PullDetail(context.Background(), watches.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
+			detail, err := newReviewSource(t, api).PullDetail(context.Background(), scm.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
 			require.NoError(t, err)
 			require.Equal(t, tc.fork, detail.Fork)
 		})
@@ -252,7 +253,7 @@ func TestPullDetailChecksTheDirectRequestOnlyForUserScope(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"login": "bob"})
 	})
 	source := newReviewSource(t, api)
-	repo := watches.RepoRef{Owner: "acme", Name: "web"}
+	repo := scm.RepoRef{Owner: "acme", Name: "web"}
 
 	detail, err := source.PullDetail(context.Background(), repo, 7, watches.ReviewScopeUserAndTeams)
 	require.NoError(t, err)
@@ -284,7 +285,7 @@ func TestPullStateReadsMergedClosedAndOpen(t *testing.T) {
 			t.Parallel()
 			api := newAPIServer(t)
 			api.handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(tc.overrides))
-			state, err := newReviewSource(t, api).PullState(context.Background(), watches.RepoRef{Owner: "acme", Name: "web"}, 7)
+			state, err := newReviewSource(t, api).PullState(context.Background(), scm.RepoRef{Owner: "acme", Name: "web"}, 7)
 			require.NoError(t, err)
 			require.Equal(t, tc.want, state)
 		})

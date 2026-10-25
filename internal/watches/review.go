@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"kandev-plugin-forgejo/internal/scm"
 	"regexp"
 	"strconv"
 	"strings"
@@ -16,7 +17,7 @@ import (
 // branches, the head repository and the draft flag, so those come from
 // PullDetail, fetched only for a pull request the ledger has not seen.
 type PullRequest struct {
-	Repo      RepoRef
+	Repo      scm.RepoRef
 	Number    int64
 	Title     string
 	URL       string
@@ -53,7 +54,7 @@ const (
 
 // ReviewQuery is one review watch's filter, as the adapter receives it.
 type ReviewQuery struct {
-	Repos  []RepoRef
+	Repos  []scm.RepoRef
 	Labels []string
 	Query  string
 }
@@ -71,9 +72,9 @@ type ReviewSource interface {
 	SearchReviewRequests(ctx context.Context, q ReviewQuery) ([]PullRequest, error)
 	// PullDetail reads one pull request. scope says whether the adapter must
 	// also work out if the user was named directly.
-	PullDetail(ctx context.Context, repo RepoRef, number int64, scope ReviewScope) (PullDetail, error)
+	PullDetail(ctx context.Context, repo scm.RepoRef, number int64, scope ReviewScope) (PullDetail, error)
 	// PullState reports whether a pull request is still open.
-	PullState(ctx context.Context, repo RepoRef, number int64) (PullState, error)
+	PullState(ctx context.Context, repo scm.RepoRef, number int64) (PullState, error)
 }
 
 // WithReviews gives the poller the review source. Review watches are skipped,
@@ -124,7 +125,7 @@ Do NOT review files outside this diff.`
 // alone, so an operator's own braces survive. The values are pull request
 // metadata an author controls, so they are substituted as text and never
 // evaluated.
-func interpolate(template string, repo RepoRef, number int64, detail PullDetail) string {
+func interpolate(template string, repo scm.RepoRef, number int64, detail PullDetail) string {
 	return strings.NewReplacer(
 		"{{pr.link}}", detail.URL,
 		"{{pr.number}}", strconv.FormatInt(number, 10),

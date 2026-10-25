@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"kandev-plugin-forgejo/internal/forgejo"
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -536,8 +536,8 @@ func TestSetEnabledValidatesInput(t *testing.T) {
 
 func TestSafeMessageDoesNotCallWriteForbiddenABadToken(t *testing.T) {
 	t.Parallel()
-	forbidden := safeMessage(&forgejo.WriteError{Status: 403, Reason: forgejo.ReasonForbidden})
+	forbidden := safeMessage(&scm.WriteError{Status: 403, Reason: scm.ReasonForbidden})
 	require.NotContains(t, forbidden, "rejected the access token")
 	require.Contains(t, forbidden, "permission")
-	require.Contains(t, safeMessage(&forgejo.WriteError{Status: 409, Reason: forgejo.ReasonConflict}), "conflicts")
+	require.Contains(t, safeMessage(&scm.WriteError{Status: 409, Reason: scm.ReasonConflict}), "conflicts")
 }

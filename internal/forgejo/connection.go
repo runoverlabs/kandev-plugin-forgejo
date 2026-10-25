@@ -2,8 +2,8 @@ package forgejo
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"strings"
 	"sync"
@@ -11,16 +11,6 @@ import (
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )
-
-// ErrNotConfigured means the operator has not supplied a usable instance URL
-// and token yet. Callers surface it as a configuration problem rather than a
-// provider outage.
-var ErrNotConfigured = errors.New("forgejo: plugin is not configured with an instance URL and access token")
-
-// ErrInvalidConfig means the configured instance URL cannot be used (not an
-// absolute http or https URL). Like ErrNotConfigured it is fixed by editing
-// the settings, never by retrying.
-var ErrInvalidConfig = errors.New("forgejo: the configured instance URL is not valid")
 
 // HostProvider defers Host resolution to call time. The Host is injected from
 // a background goroutine after construction, so adapters must never capture it
@@ -59,7 +49,7 @@ func (c *Connection) Client(ctx context.Context) (*Client, error) {
 	}
 	host := c.hosts()
 	if host == nil {
-		return nil, ErrNotConfigured
+		return nil, scm.ErrNotConfigured
 	}
 	config, err := host.GetConfig(ctx)
 	if err != nil {
@@ -68,7 +58,7 @@ func (c *Connection) Client(ctx context.Context) (*Client, error) {
 	baseURL := configString(config, "base_url")
 	token := configString(config, "api_token")
 	if baseURL == "" || token == "" {
-		return nil, ErrNotConfigured
+		return nil, scm.ErrNotConfigured
 	}
 
 	// The cache key includes the token so a rotated credential is never
@@ -82,7 +72,7 @@ func (c *Connection) Client(ctx context.Context) (*Client, error) {
 	}
 	client, err := NewClient(baseURL, token, c.httpClient)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+		return nil, fmt.Errorf("%w: %w", scm.ErrInvalidConfig, err)
 	}
 	c.client, c.key = client, key
 	return client, nil

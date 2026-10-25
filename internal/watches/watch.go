@@ -18,6 +18,7 @@ package watches
 
 import (
 	"fmt"
+	"kandev-plugin-forgejo/internal/scm"
 	"strings"
 	"time"
 )
@@ -106,30 +107,14 @@ const (
 // than an issue watch's per-repository list.
 const MinReviewPollInterval = 60 * time.Second
 
-// RepoRef names one repository on the connected instance.
-type RepoRef struct {
-	Owner string `json:"owner"`
-	Name  string `json:"name"`
-}
-
-// FullName renders the canonical "owner/name" form.
-func (r RepoRef) FullName() string { return r.Owner + "/" + r.Name }
-
-// ParseRepoRef reads an "owner/name" string. It rejects anything with a
-// different shape rather than guessing, because a malformed entry would
-// otherwise become a 404 on every poll with no obvious cause. It is the one
-// definition of a repository reference: automation conditions use it too.
-func ParseRepoRef(raw string) (RepoRef, error) {
-	// A pasted path ("/owner/name/") loses its surrounding slashes; what is
-	// left must still be exactly owner/name.
-	trimmed := strings.Trim(strings.TrimSpace(raw), "/")
-	owner, name, found := strings.Cut(trimmed, "/")
-	owner, name = strings.TrimSpace(owner), strings.TrimSpace(name)
-	if !found || owner == "" || name == "" || strings.Contains(name, "/") ||
-		strings.ContainsAny(owner+name, " \t\r\n") {
-		return RepoRef{}, ValidationError(fmt.Sprintf("watches: repository %q must be in owner/name form", raw))
+// ParseRepoRef reads an "owner/name" string as scm.ParseRepoRef does, and
+// refuses a malformed one as a ValidationError the watch editor can show.
+func ParseRepoRef(raw string) (scm.RepoRef, error) {
+	ref, err := scm.ParseRepoRef(raw)
+	if err != nil {
+		return scm.RepoRef{}, ValidationError("watches: " + err.Error())
 	}
-	return RepoRef{Owner: owner, Name: name}, nil
+	return ref, nil
 }
 
 // Watch is one issue watch: a query against the Forgejo instance plus the
@@ -168,8 +153,8 @@ type Watch struct {
 	BaseBranch   string `json:"base_branch"`
 
 	// Query: which issues match.
-	Repos  []RepoRef `json:"repos"`
-	Labels []string  `json:"labels"`
+	Repos  []scm.RepoRef `json:"repos"`
+	Labels []string      `json:"labels"`
 	// State is "open", "closed", or "all". Empty means "open".
 	State string `json:"state"`
 	// Query is free text matched against title and body.
@@ -302,10 +287,10 @@ func (w *Watch) Normalize() {
 	}
 	w.Labels = labels
 
-	repos := make([]RepoRef, 0, len(w.Repos))
+	repos := make([]scm.RepoRef, 0, len(w.Repos))
 	seenRepo := map[string]struct{}{}
 	for _, repo := range w.Repos {
-		ref := RepoRef{Owner: strings.TrimSpace(repo.Owner), Name: strings.TrimSpace(repo.Name)}
+		ref := scm.RepoRef{Owner: strings.TrimSpace(repo.Owner), Name: strings.TrimSpace(repo.Name)}
 		if ref.Owner == "" || ref.Name == "" {
 			continue
 		}

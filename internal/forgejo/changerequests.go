@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
 
@@ -44,7 +45,7 @@ func (c *ChangeRequests) ResolveReference(ctx context.Context, _ string, referen
 	}
 	pull, err := client.PullRequest(ctx, owner, name, number)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, scm.ErrNotFound) {
 			return sourcecontrol.ChangeRequest{}, errors.New("forgejo: pull request was not found on the configured instance")
 		}
 		return sourcecontrol.ChangeRequest{}, err

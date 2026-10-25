@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
 
@@ -38,7 +39,7 @@ func (r *Reviews) ForTask(ctx context.Context, workspaceID, taskID string) ([]so
 	}
 	client, err := r.connection.Client(ctx)
 	if err != nil {
-		if errors.Is(err, ErrNotConfigured) {
+		if errors.Is(err, scm.ErrNotConfigured) {
 			return nil, nil
 		}
 		return nil, err
@@ -95,14 +96,14 @@ func (r *Reviews) summarize(ctx context.Context, client *Client, identity source
 		RepositoryID:    identity.RepositoryID,
 	})
 	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnauthorized) {
+		if errors.Is(err, scm.ErrNotFound) || errors.Is(err, scm.ErrUnauthorized) {
 			return sourcecontrol.ReviewSummary{}, false, nil
 		}
 		return sourcecontrol.ReviewSummary{}, false, err
 	}
 	pull, err := client.PullRequest(ctx, repository.OwnerOrProject, repository.Name, identity.Number)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnauthorized) {
+		if errors.Is(err, scm.ErrNotFound) || errors.Is(err, scm.ErrUnauthorized) {
 			return sourcecontrol.ReviewSummary{}, false, nil
 		}
 		return sourcecontrol.ReviewSummary{}, false, err
@@ -128,7 +129,7 @@ func (r *Reviews) summarize(ctx context.Context, client *Client, identity source
 		case err == nil:
 			status.PipelineState = pipelineState(combined.State)
 			status.Checks = normalizeChecks(combined.Statuses)
-		case errors.Is(err, ErrNotFound), errors.Is(err, ErrUnauthorized):
+		case errors.Is(err, scm.ErrNotFound), errors.Is(err, scm.ErrUnauthorized):
 			// No CI configured, or statuses not visible to this token.
 		default:
 			return sourcecontrol.ReviewSummary{}, false, err
@@ -139,7 +140,7 @@ func (r *Reviews) summarize(ctx context.Context, client *Client, identity source
 	switch {
 	case err == nil:
 		status.Review = summarizeReviews(reviews)
-	case errors.Is(err, ErrNotFound), errors.Is(err, ErrUnauthorized):
+	case errors.Is(err, scm.ErrNotFound), errors.Is(err, scm.ErrUnauthorized):
 		// Reviews not visible to this token; leave the field unset.
 	default:
 		return sourcecontrol.ReviewSummary{}, false, err

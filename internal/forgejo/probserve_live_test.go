@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"kandev-plugin-forgejo/internal/prautomation"
+	"kandev-plugin-forgejo/internal/scm"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"github.com/stretchr/testify/require"
@@ -39,8 +40,8 @@ func retryChecking(t *testing.T, call func() error) error {
 	var err error
 	for attempt := 0; attempt < 20; attempt++ {
 		err = call()
-		var writeErr *WriteError
-		if !errors.As(err, &writeErr) || writeErr.Reason != ReasonChecking {
+		var writeErr *scm.WriteError
+		if !errors.As(err, &writeErr) || writeErr.Reason != scm.ReasonChecking {
 			return err
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -133,7 +134,7 @@ func TestLiveAutomationMergePinsTheHead(t *testing.T) {
 	require.NoError(t, admin.do(ctx, http.MethodPut, apiV1, path, nil, update, nil))
 
 	err := retryChecking(t, func() error { return source.MergeLinked(ctx, ref, stale) })
-	requireReason(t, err, ReasonHeadChanged)
+	requireReason(t, err, scm.ReasonHeadChanged)
 
 	moved, err := admin.PullRequest(ctx, owner, repo, pull.Number)
 	require.NoError(t, err)

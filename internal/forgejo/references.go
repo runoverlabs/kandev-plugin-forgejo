@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -30,14 +31,14 @@ func NewReferences(connection *Connection) *References {
 func (r *References) Search(ctx context.Context, _ string, query string, limit int) ([]pluginsdk.EntityReferenceCandidate, error) {
 	client, err := r.connection.Client(ctx)
 	if err != nil {
-		if errors.Is(err, ErrNotConfigured) {
+		if errors.Is(err, scm.ErrNotConfigured) {
 			return nil, nil
 		}
 		return nil, err
 	}
 	results, err := client.SearchPullRequests(ctx, query, limit)
 	if err != nil {
-		if errors.Is(err, ErrUnauthorized) {
+		if errors.Is(err, scm.ErrUnauthorized) {
 			return nil, nil
 		}
 		return nil, err
@@ -91,7 +92,7 @@ func (r *References) Search(ctx context.Context, _ string, query string, limit i
 func (r *References) Authorize(ctx context.Context, _ string, _ string, reference map[string]any) (bool, error) {
 	client, err := r.connection.Client(ctx)
 	if err != nil {
-		if errors.Is(err, ErrNotConfigured) {
+		if errors.Is(err, scm.ErrNotConfigured) {
 			return false, nil
 		}
 		return false, err
@@ -102,7 +103,7 @@ func (r *References) Authorize(ctx context.Context, _ string, _ string, referenc
 	}
 	repo, err := client.RepoByID(ctx, repositoryID)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnauthorized) {
+		if errors.Is(err, scm.ErrNotFound) || errors.Is(err, scm.ErrUnauthorized) {
 			return false, nil
 		}
 		return false, err
@@ -112,7 +113,7 @@ func (r *References) Authorize(ctx context.Context, _ string, _ string, referenc
 		return false, nil
 	}
 	if _, err := client.PullRequest(ctx, owner, repo.Name, number); err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnauthorized) {
+		if errors.Is(err, scm.ErrNotFound) || errors.Is(err, scm.ErrUnauthorized) {
 			return false, nil
 		}
 		return false, err

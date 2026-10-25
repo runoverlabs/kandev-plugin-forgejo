@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"kandev-plugin-forgejo/internal/prautomation"
+	"kandev-plugin-forgejo/internal/scm"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"github.com/stretchr/testify/require"
@@ -163,13 +164,13 @@ func TestObserveFailsWhenAMergeGateCannotBeRead(t *testing.T) {
 			source, api := automationSourceFixture(t, nil)
 			api.handle(http.MethodGet, path, status, map[string]any{"message": "no"})
 			_, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
-			require.ErrorIs(t, err, ErrUnauthorized, "%s answering %d must not read as no CI or no objections", path, status)
+			require.ErrorIs(t, err, scm.ErrUnauthorized, "%s answering %d must not read as no CI or no objections", path, status)
 		}
 	}
 	source, api := automationSourceFixture(t, nil)
 	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", http.StatusNotFound, nil)
 	_, err := source.Observe(context.Background(), "ws-1", observedRef, allReads)
-	require.ErrorIs(t, err, ErrNotFound)
+	require.ErrorIs(t, err, scm.ErrNotFound)
 }
 
 func TestObserveSkipsTheCommentsOfAReviewDeletedMeanwhile(t *testing.T) {

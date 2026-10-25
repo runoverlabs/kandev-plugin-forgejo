@@ -2,6 +2,7 @@ package forgejo
 
 import (
 	"context"
+	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"testing"
 
@@ -20,14 +21,14 @@ func TestConnectionRequiresCompleteConfig(t *testing.T) {
 	} {
 		host := newFakeHost(config)
 		_, err := NewConnection(func() pluginsdk.Host { return host }).Client(context.Background())
-		require.ErrorIs(t, err, ErrNotConfigured)
+		require.ErrorIs(t, err, scm.ErrNotConfigured)
 	}
 }
 
 func TestConnectionWithoutHostIsNotConfigured(t *testing.T) {
 	t.Parallel()
 	_, err := NewConnection(func() pluginsdk.Host { return nil }).Client(context.Background())
-	require.ErrorIs(t, err, ErrNotConfigured)
+	require.ErrorIs(t, err, scm.ErrNotConfigured)
 }
 
 // A rotated token must not be served from the cache.
@@ -70,5 +71,5 @@ func TestConnectionRejectsInvalidInstanceURL(t *testing.T) {
 	host := newFakeHost(map[string]any{"base_url": "ftp://forge.example.com", "api_token": "t"})
 	_, err := NewConnection(func() pluginsdk.Host { return host }).Client(context.Background())
 	require.ErrorContains(t, err, "must be http or https")
-	require.ErrorIs(t, err, ErrInvalidConfig, "a bad URL is fixed in settings, not by a retry")
+	require.ErrorIs(t, err, scm.ErrInvalidConfig, "a bad URL is fixed in settings, not by a retry")
 }

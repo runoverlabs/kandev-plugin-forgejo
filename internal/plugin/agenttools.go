@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"kandev-plugin-forgejo/internal/forgejo"
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -348,7 +349,7 @@ func (r *Runtime) taskPullRequests(ctx context.Context, taskID, workspaceID stri
 	if strings.TrimSpace(workspaceID) == "" {
 		host := r.Host()
 		if host == nil {
-			return nil, forgejo.ErrNotConfigured
+			return nil, scm.ErrNotConfigured
 		}
 		task, err := host.Tasks().Get(ctx, taskID)
 		if err != nil || task == nil {
@@ -367,7 +368,7 @@ func (r *Runtime) taskPullRequests(ctx context.Context, taskID, workspaceID stri
 		}
 		pull, err := client.PullRequest(ctx, repository.OwnerOrProject, repository.Name, identity.Number)
 		if err != nil {
-			if errors.Is(err, forgejo.ErrNotFound) {
+			if errors.Is(err, scm.ErrNotFound) {
 				continue
 			}
 			return nil, err
@@ -403,7 +404,7 @@ func findPullRequestByHead(ctx context.Context, client *forgejo.Client, reposito
 	for page := 1; page <= prListPages; page++ {
 		pulls, err := client.ListPullRequests(ctx, repository.OwnerOrProject, repository.Name, "open", page, prListLimit)
 		if err != nil {
-			if errors.Is(err, forgejo.ErrNotFound) {
+			if errors.Is(err, scm.ErrNotFound) {
 				return nil, nil
 			}
 			return nil, err

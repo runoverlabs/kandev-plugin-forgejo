@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/watches"
 )
 
@@ -78,7 +79,7 @@ func (s *ReviewSource) SearchReviewRequests(ctx context.Context, q watches.Revie
 				}
 			}
 			found = append(found, watches.PullRequest{
-				Repo:      watches.RepoRef{Owner: owner, Name: name},
+				Repo:      scm.RepoRef{Owner: owner, Name: name},
 				Number:    result.Number,
 				Title:     result.Title,
 				URL:       result.HTMLURL,
@@ -94,7 +95,7 @@ func (s *ReviewSource) SearchReviewRequests(ctx context.Context, q watches.Revie
 }
 
 // PullDetail reads one pull request for a task about to be filed.
-func (s *ReviewSource) PullDetail(ctx context.Context, repo watches.RepoRef, number int64, scope watches.ReviewScope) (watches.PullDetail, error) {
+func (s *ReviewSource) PullDetail(ctx context.Context, repo scm.RepoRef, number int64, scope watches.ReviewScope) (watches.PullDetail, error) {
 	client, err := s.connection.Client(ctx)
 	if err != nil {
 		return watches.PullDetail{}, err
@@ -128,7 +129,7 @@ func (s *ReviewSource) PullDetail(ctx context.Context, repo watches.RepoRef, num
 }
 
 // PullState reports whether a pull request is still open.
-func (s *ReviewSource) PullState(ctx context.Context, repo watches.RepoRef, number int64) (watches.PullState, error) {
+func (s *ReviewSource) PullState(ctx context.Context, repo scm.RepoRef, number int64) (watches.PullState, error) {
 	client, err := s.connection.Client(ctx)
 	if err != nil {
 		return "", err
@@ -198,9 +199,9 @@ func hasWIPPrefix(title string) bool {
 func translateReviewError(what string, err error) error {
 	var status *StatusError
 	switch {
-	case errors.Is(err, ErrNotFound):
+	case errors.Is(err, scm.ErrNotFound):
 		return fmt.Errorf("%s is not visible to this token", what)
-	case errors.Is(err, ErrUnauthorized):
+	case errors.Is(err, scm.ErrUnauthorized):
 		return fmt.Errorf("%w: the instance rejected the access token for %s", watches.ErrBackoff, what)
 	case errors.As(err, &status) && status.Status == http.StatusTooManyRequests:
 		return fmt.Errorf("%w: rate limited while reading %s", watches.ErrBackoff, what)

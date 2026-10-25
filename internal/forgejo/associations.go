@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -67,7 +68,7 @@ func (a *Associations) Unlink(ctx context.Context, taskID string, identity sourc
 func (a *Associations) ListForWorkspace(ctx context.Context, workspaceID string) ([]sourcecontrol.ChangeRequestIdentity, []string, error) {
 	host := a.hosts()
 	if host == nil {
-		return nil, nil, ErrNotConfigured
+		return nil, nil, scm.ErrNotConfigured
 	}
 	entries, err := host.ListState(ctx, "workspace", workspaceID)
 	if err != nil {
@@ -112,7 +113,7 @@ func (a *Associations) ListForTask(ctx context.Context, workspaceID, taskID stri
 func (a *Associations) resolveWorkspace(ctx context.Context, taskID string) (pluginsdk.Host, string, error) {
 	host := a.hosts()
 	if host == nil {
-		return nil, "", ErrNotConfigured
+		return nil, "", scm.ErrNotConfigured
 	}
 	if strings.TrimSpace(taskID) == "" {
 		return nil, "", errors.New("forgejo: task id is required")

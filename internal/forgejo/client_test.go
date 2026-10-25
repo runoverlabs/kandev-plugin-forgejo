@@ -2,6 +2,7 @@ package forgejo
 
 import (
 	"context"
+	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"testing"
 
@@ -60,14 +61,14 @@ func TestClientSendsTokenSchemeAndMapsStatuses(t *testing.T) {
 	require.Equal(t, "token secret-token", api.authSeen[0], "both Forgejo and Gitea require the `token <value>` scheme")
 
 	_, err = client.Repo(context.Background(), "owner", "missing")
-	require.ErrorIs(t, err, ErrNotFound)
+	require.ErrorIs(t, err, scm.ErrNotFound)
 
 	_, err = client.Repo(context.Background(), "owner", "forbidden")
-	require.ErrorIs(t, err, ErrUnauthorized)
+	require.ErrorIs(t, err, scm.ErrUnauthorized)
 
 	_, err = client.Repo(context.Background(), "owner", "broken")
 	require.Error(t, err)
-	require.NotErrorIs(t, err, ErrNotFound)
+	require.NotErrorIs(t, err, scm.ErrNotFound)
 }
 
 // A transport error must not surface the presented credential.

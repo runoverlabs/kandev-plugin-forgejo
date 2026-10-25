@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"kandev-plugin-forgejo/internal/scm"
 	"strings"
 	"sync"
 	"time"
@@ -38,7 +39,7 @@ type IssueQuery struct {
 
 // IssueSource is the provider port. internal/forgejo implements it.
 type IssueSource interface {
-	ListIssues(ctx context.Context, repo RepoRef, query IssueQuery) ([]Issue, error)
+	ListIssues(ctx context.Context, repo scm.RepoRef, query IssueQuery) ([]Issue, error)
 }
 
 // WorkspaceGate reports whether this integration is switched on for a
@@ -441,7 +442,7 @@ func (p *Poller) inflight(ctx context.Context, host pluginsdk.Host, watch Watch)
 }
 
 // createTask turns one issue into one kandev task.
-func (p *Poller) createTask(ctx context.Context, host pluginsdk.Host, watch Watch, repo RepoRef, issue Issue) (string, error) {
+func (p *Poller) createTask(ctx context.Context, host pluginsdk.Host, watch Watch, repo scm.RepoRef, issue Issue) (string, error) {
 	stepID := watch.WorkflowStepID
 	input := pluginsdk.CreateTaskInput{
 		WorkspaceID:    watch.WorkspaceID,
@@ -518,7 +519,7 @@ func taskTitle(issue Issue) string {
 // taskDescription renders the task body: provenance first, then the issue's
 // own text. An agent reading this task needs to know where the work came from
 // before it reads what the work is.
-func taskDescription(repo RepoRef, issue Issue) string {
+func taskDescription(repo scm.RepoRef, issue Issue) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "Forgejo issue [%s#%d](%s)", repo.FullName(), issue.Number, issue.URL)
 	if author := strings.TrimSpace(issue.Author); author != "" {

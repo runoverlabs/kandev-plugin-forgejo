@@ -14,6 +14,7 @@ import (
 
 	"kandev-plugin-forgejo/internal/automations"
 	"kandev-plugin-forgejo/internal/forgejo"
+	"kandev-plugin-forgejo/internal/scm"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )
@@ -125,10 +126,10 @@ func (r *Runtime) DescribeAutomationCondition(ctx context.Context, request *plug
 		return unavailable(reasonDisabled), nil
 	}
 	client, err := r.connection.Client(ctx)
-	if errors.Is(err, forgejo.ErrNotConfigured) {
+	if errors.Is(err, scm.ErrNotConfigured) {
 		return unavailable(reasonNotConfigured), nil
 	}
-	if errors.Is(err, forgejo.ErrInvalidConfig) {
+	if errors.Is(err, scm.ErrInvalidConfig) {
 		return unavailable(reasonInvalidConfig), nil
 	}
 	if err != nil {
@@ -177,7 +178,7 @@ func (r *Runtime) describeConfigured(ctx context.Context, client *forgejo.Client
 	wg.Go(func() { repoErr = r.repositoryExists(ctx, client, cfg.Repository) })
 	wg.Wait()
 
-	if errors.Is(infoErr, forgejo.ErrUnauthorized) {
+	if errors.Is(infoErr, scm.ErrUnauthorized) {
 		return unavailable(reasonTokenRejected), nil
 	}
 	if infoErr != nil {
@@ -194,7 +195,7 @@ func (r *Runtime) describeConfigured(ctx context.Context, client *forgejo.Client
 			return unavailable(reasonCIUnsupported), nil
 		}
 	}
-	if errors.Is(repoErr, forgejo.ErrNotFound) || errors.Is(repoErr, forgejo.ErrUnauthorized) {
+	if errors.Is(repoErr, scm.ErrNotFound) || errors.Is(repoErr, scm.ErrUnauthorized) {
 		return unavailable(reasonRepoNotFound), nil
 	}
 	if repoErr != nil {
@@ -221,7 +222,7 @@ func (r *Runtime) VerifyAutomationWebhook(ctx context.Context, request *pluginsd
 		return outcome(outcomeRejected), nil
 	}
 	scope, err := r.connection.Scope(ctx)
-	if errors.Is(err, forgejo.ErrNotConfigured) || errors.Is(err, forgejo.ErrInvalidConfig) {
+	if errors.Is(err, scm.ErrNotConfigured) || errors.Is(err, scm.ErrInvalidConfig) {
 		return outcome(outcomeRejected), nil
 	}
 	if err != nil {
@@ -328,7 +329,7 @@ func (r *Runtime) instanceVersion(ctx context.Context, client *forgejo.Client) (
 	result := instanceVersion{at: time.Now()}
 	version, err := client.Version(ctx)
 	switch {
-	case errors.Is(err, forgejo.ErrNotFound), errors.Is(err, forgejo.ErrUnauthorized):
+	case errors.Is(err, scm.ErrNotFound), errors.Is(err, scm.ErrUnauthorized):
 		// The endpoint is hidden: a lasting answer, not a failure.
 	case err != nil:
 		return instanceVersion{}, err

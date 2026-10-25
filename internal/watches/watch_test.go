@@ -1,6 +1,7 @@
 package watches
 
 import (
+	"kandev-plugin-forgejo/internal/scm"
 	"testing"
 	"time"
 
@@ -11,7 +12,7 @@ func TestParseRepoRef(t *testing.T) {
 	t.Parallel()
 	ref, err := ParseRepoRef("  acme/app  ")
 	require.NoError(t, err)
-	require.Equal(t, RepoRef{Owner: "acme", Name: "app"}, ref)
+	require.Equal(t, scm.RepoRef{Owner: "acme", Name: "app"}, ref)
 	require.Equal(t, "acme/app", ref.FullName())
 	for _, raw := range []string{" acme / app ", " /acme/app/ "} {
 		ref, err = ParseRepoRef(raw)
@@ -44,7 +45,7 @@ func TestNormalizeCanonicalizesInput(t *testing.T) {
 		Name:   "  Bugs  ",
 		State:  "  CLOSED ",
 		Labels: []string{" bug ", "bug", "", "regression"},
-		Repos: []RepoRef{
+		Repos: []scm.RepoRef{
 			{Owner: " acme ", Name: " app "},
 			{Owner: "ACME", Name: "APP"},
 			{Owner: "", Name: "orphan"},
@@ -99,7 +100,7 @@ func TestValidate(t *testing.T) {
 			Name:           "Bugs",
 			WorkflowID:     "wf-1",
 			WorkflowStepID: "step-1",
-			Repos:          []RepoRef{{Owner: "acme", Name: "app"}},
+			Repos:          []scm.RepoRef{{Owner: "acme", Name: "app"}},
 		}
 		watch.Normalize()
 		return watch
@@ -122,7 +123,7 @@ func TestValidate(t *testing.T) {
 	// The repository fan-out of one poll tick is bounded.
 	watch = base()
 	for i := 0; i < maxReposPerWatch+1; i++ {
-		watch.Repos = append(watch.Repos, RepoRef{Owner: "acme", Name: string(rune('a' + i))})
+		watch.Repos = append(watch.Repos, scm.RepoRef{Owner: "acme", Name: string(rune('a' + i))})
 	}
 	require.Error(t, watch.Validate())
 }

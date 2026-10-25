@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"kandev-plugin-forgejo/internal/scm"
 	"net/url"
 	"strconv"
 	"strings"
@@ -120,7 +121,7 @@ type actionTaskList struct {
 }
 
 // ActionRuns returns workflow runs for a ref, newest first. ref may be a branch
-// name, a full git ref, or a commit SHA. Returns ErrNotFound on a release that
+// name, a full git ref, or a commit SHA. Returns scm.ErrNotFound on a release that
 // does not serve the endpoint.
 func (c *Client) ActionRuns(ctx context.Context, owner, name, ref string, limit int) ([]ActionRun, error) {
 	values := url.Values{}
@@ -138,7 +139,7 @@ func (c *Client) ActionRuns(ctx context.Context, owner, name, ref string, limit 
 	return payload.Runs, nil
 }
 
-// ActionRunJobs returns the jobs of one run. Returns ErrNotFound on a release
+// ActionRunJobs returns the jobs of one run. Returns scm.ErrNotFound on a release
 // that does not serve the endpoint.
 func (c *Client) ActionRunJobs(ctx context.Context, owner, name string, runID int64) ([]ActionRunJob, error) {
 	var jobs []ActionRunJob
@@ -166,7 +167,7 @@ func (c *Client) ActionTasks(ctx context.Context, owner, name string, page, limi
 }
 
 // JobLogTail returns the last maxBytes of a job's log and whether earlier
-// output was dropped. Returns ErrNotFound on a release that does not serve job
+// output was dropped. Returns scm.ErrNotFound on a release that does not serve job
 // logs, and for a job whose log is gone or never existed.
 //
 // Gitea answers an unknown job id with 500 rather than 404 — measured on
@@ -181,7 +182,7 @@ func (c *Client) JobLogTail(ctx context.Context, owner, name string, jobID int64
 	if err != nil {
 		var status *StatusError
 		if errors.As(err, &status) && status.Status >= 500 {
-			return "", false, ErrNotFound
+			return "", false, scm.ErrNotFound
 		}
 		return "", false, err
 	}
@@ -220,7 +221,7 @@ func (c *Client) CIStatusFor(ctx context.Context, owner, name, ref string) (CISt
 func (c *Client) ciFromRuns(ctx context.Context, owner, name, ref string) (CIStatus, bool, error) {
 	runs, err := c.ActionRuns(ctx, owner, name, ref, 10)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, scm.ErrNotFound) {
 			return CIStatus{}, false, nil
 		}
 		return CIStatus{}, false, err
@@ -239,7 +240,7 @@ func (c *Client) ciFromRuns(ctx context.Context, owner, name, ref string) (CISta
 	}
 
 	jobs, err := c.ActionRunJobs(ctx, owner, name, run.ID)
-	if err != nil && !errors.Is(err, ErrNotFound) {
+	if err != nil && !errors.Is(err, scm.ErrNotFound) {
 		return CIStatus{}, false, err
 	}
 	for _, job := range jobs {
@@ -270,7 +271,7 @@ func (c *Client) ciFromTasks(ctx context.Context, owner, name, ref string) (CISt
 	for page := 1; page <= actionTaskScanPages; page++ {
 		tasks, err := c.ActionTasks(ctx, owner, name, page, actionTaskScanLimit)
 		if err != nil {
-			if errors.Is(err, ErrNotFound) {
+			if errors.Is(err, scm.ErrNotFound) {
 				return CIStatus{}, false, nil
 			}
 			return CIStatus{}, false, err
@@ -327,7 +328,7 @@ func (c *Client) ciFromTasks(ctx context.Context, owner, name, ref string) (CISt
 func (c *Client) ciFromCommitStatus(ctx context.Context, owner, name, ref string) (CIStatus, bool, error) {
 	combined, err := c.CombinedStatus(ctx, owner, name, ref)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, scm.ErrNotFound) {
 			return CIStatus{}, false, nil
 		}
 		return CIStatus{}, false, err

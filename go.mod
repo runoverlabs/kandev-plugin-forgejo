@@ -2,6 +2,9 @@ module kandev-plugin-forgejo
 
 go 1.26.0
 
+// npm packages can ship Go sources (flatted does); they are not this module.
+ignore ./node_modules
+
 require (
 	github.com/kandev/kandev v0.0.0-00010101000000-000000000000
 	github.com/stretchr/testify v1.11.1

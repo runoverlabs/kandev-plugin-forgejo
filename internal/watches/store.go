@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"kandev-plugin-forgejo/internal/scm"
 	"sort"
 	"strconv"
 	"strings"
@@ -237,7 +238,7 @@ func (s *Store) Delete(ctx context.Context, workspaceID, id string) error {
 
 // Seen reports whether an issue already produced a task under this watch's
 // dedup scope, and which task it was.
-func (s *Store) Seen(ctx context.Context, watch Watch, repo RepoRef, number int64) (TaskRecord, bool, error) {
+func (s *Store) Seen(ctx context.Context, watch Watch, repo scm.RepoRef, number int64) (TaskRecord, bool, error) {
 	host, err := s.host()
 	if err != nil {
 		return TaskRecord{}, false, err
@@ -263,7 +264,7 @@ func (s *Store) Seen(ctx context.Context, watch Watch, repo RepoRef, number int6
 // would permanently suppress the issue if task creation then failed, which is
 // the worse failure: a duplicate card is visible and fixable, a silently
 // skipped issue is neither.
-func (s *Store) Record(ctx context.Context, watch Watch, repo RepoRef, number int64, issueURL, taskID string) error {
+func (s *Store) Record(ctx context.Context, watch Watch, repo scm.RepoRef, number int64, issueURL, taskID string) error {
 	host, err := s.host()
 	if err != nil {
 		return err
@@ -393,7 +394,7 @@ func storedKey(watch Watch) string {
 }
 
 // dedupKey is the ledger key for one issue under a watch's dedup scope.
-func dedupKey(watch Watch, repo RepoRef, number int64) string {
+func dedupKey(watch Watch, repo scm.RepoRef, number int64) string {
 	issue := repoDigest(repo) + "." + strconv.FormatInt(number, 10)
 	if watch.DedupScope == DedupScopeWorkspace {
 		return issueTaskKeyPrefix + issue
@@ -404,7 +405,7 @@ func dedupKey(watch Watch, repo RepoRef, number int64) string {
 // repoDigest reduces "owner/name" to a short, stable, key-legal component.
 // Repository names are long enough that including them raw would breach the
 // Host's 128-character key limit once combined with a watch id.
-func repoDigest(repo RepoRef) string {
+func repoDigest(repo scm.RepoRef) string {
 	sum := sha256.Sum256([]byte(strings.ToLower(repo.FullName())))
 	return hex.EncodeToString(sum[:6])
 }

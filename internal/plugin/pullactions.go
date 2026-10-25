@@ -9,7 +9,7 @@ import (
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 
-	"kandev-plugin-forgejo/internal/forgejo"
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
 
@@ -191,18 +191,18 @@ func (r *Runtime) changeRequestComment(ctx context.Context, request *pluginsdk.P
 // fixed message. The host masks a plain Go error as an internal error, which
 // would hide a failure the user can act on.
 func pullFailure(err error) (*pluginsdk.PluginActionResponse, error) {
-	var writeErr *forgejo.WriteError
-	var invalidErr *forgejo.InvalidError
+	var writeErr *scm.WriteError
+	var invalidErr *scm.InvalidError
 	switch {
-	case errors.Is(err, forgejo.ErrNotLinked):
+	case errors.Is(err, scm.ErrNotLinked):
 		return domainResponse(http.StatusNotFound, "That pull request is not linked to this task.")
 	case errors.As(err, &invalidErr):
 		return domainResponse(http.StatusUnprocessableEntity, invalidErr.Message)
-	case errors.Is(err, forgejo.ErrAmbiguous):
+	case errors.Is(err, scm.ErrAmbiguous):
 		return domainResponse(http.StatusConflict, "This task links more than one pull request; say which one.")
 	case errors.As(err, &writeErr):
 		return domainResponse(writeStatus(writeErr), writeReasonMessage(writeErr.Reason))
-	case errors.Is(err, forgejo.ErrUnauthorized):
+	case errors.Is(err, scm.ErrUnauthorized):
 		return domainResponse(http.StatusForbidden, safeMessage(err))
 	case errors.Is(err, context.DeadlineExceeded):
 		return domainResponse(http.StatusGatewayTimeout, "The instance took too long to answer.")
@@ -213,11 +213,11 @@ func pullFailure(err error) (*pluginsdk.PluginActionResponse, error) {
 
 // writeStatus keeps expected write failures in the 403/409/422 band the host
 // passes through.
-func writeStatus(err *forgejo.WriteError) int {
+func writeStatus(err *scm.WriteError) int {
 	switch err.Reason {
-	case forgejo.ReasonForbidden, forgejo.ReasonBlockedByProtection:
+	case scm.ReasonForbidden, scm.ReasonBlockedByProtection:
 		return http.StatusForbidden
-	case forgejo.ReasonInvalid, forgejo.ReasonSelfReview:
+	case scm.ReasonInvalid, scm.ReasonSelfReview:
 		return http.StatusUnprocessableEntity
 	default:
 		return http.StatusConflict

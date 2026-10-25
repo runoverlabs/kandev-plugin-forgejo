@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -69,7 +70,7 @@ func issuePath(owner, name string, number int64, suffix string) string {
 }
 
 // MergePullRequest merges, or with MergeWhenChecksSucceed schedules a merge.
-// Failures are *WriteError.
+// Failures are *scm.WriteError.
 func (c *Client) MergePullRequest(ctx context.Context, owner, name string, number int64, input MergeInput) error {
 	if input.Do == "" {
 		return errors.New("forgejo: a merge style is required")
@@ -138,8 +139,8 @@ func (c *Client) UpdateBranch(ctx context.Context, owner, name string, number in
 	}
 	query := url.Values{"style": []string{style}}
 	err := c.write(ctx, http.MethodPost, pullPath(owner, name, number, "/update"), query, nil, nil)
-	var writeErr *WriteError
-	if errors.As(err, &writeErr) && writeErr.Reason == ReasonUpToDate {
+	var writeErr *scm.WriteError
+	if errors.As(err, &writeErr) && writeErr.Reason == scm.ReasonUpToDate {
 		// Forgejo 16 answers 200 for a no-op; Gitea and Forgejo 7 answer 500.
 		// Both mean the branch is current, so the call is idempotent.
 		return nil
@@ -332,7 +333,7 @@ func (c *Client) BranchDetail(ctx context.Context, owner, name, branch string) (
 }
 
 // BranchProtection is the full protection rule. Only admins can read it; a
-// non-admin gets ErrUnauthorized or ErrNotFound, which callers report as
+// non-admin gets scm.ErrUnauthorized or scm.ErrNotFound, which callers report as
 // "unavailable to this token" rather than as a failure.
 type BranchProtection struct {
 	RuleName            string   `json:"rule_name"`

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"kandev-plugin-forgejo/internal/forgejo"
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -69,11 +69,11 @@ func (r *Runtime) agentWriteWorkspace(ctx context.Context, request *pluginsdk.Ag
 	}
 	host := r.Host()
 	if host == nil || strings.TrimSpace(request.Context.TaskID) == "" {
-		return "", forgejo.ErrNotLinked
+		return "", scm.ErrNotLinked
 	}
 	task, err := host.Tasks().Get(ctx, request.Context.TaskID)
 	if err != nil || task == nil {
-		return "", forgejo.ErrNotLinked
+		return "", scm.ErrNotLinked
 	}
 	return task.WorkspaceID, nil
 }
@@ -217,12 +217,12 @@ func agentWriteResult(text string, number int64) *pluginsdk.AgentToolResult {
 
 // agentWriteFailure turns an adapter error into a sentence an agent can act on.
 func agentWriteFailure(err error) *pluginsdk.AgentToolResult {
-	var invalidErr *forgejo.InvalidError
-	var writeErr *forgejo.WriteError
+	var invalidErr *scm.InvalidError
+	var writeErr *scm.WriteError
 	switch {
-	case errors.Is(err, forgejo.ErrNotLinked):
+	case errors.Is(err, scm.ErrNotLinked):
 		return toolError("No pull request is linked to this task. Open one first.")
-	case errors.Is(err, forgejo.ErrAmbiguous):
+	case errors.Is(err, scm.ErrAmbiguous):
 		return toolError("This task has more than one pull request; do this from the Forgejo UI.")
 	case errors.As(err, &invalidErr):
 		return toolError(invalidErr.Message)

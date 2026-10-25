@@ -12,6 +12,7 @@ import (
 
 	"kandev-plugin-forgejo/internal/forgejo"
 	"kandev-plugin-forgejo/internal/prautomation"
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 	"kandev-plugin-forgejo/internal/watches"
 
@@ -279,7 +280,7 @@ func (r *Runtime) connectionStatus(ctx context.Context, workspaceID string, forc
 
 	client, err := r.connection.Client(ctx)
 	if err != nil {
-		if errors.Is(err, forgejo.ErrNotConfigured) {
+		if errors.Is(err, scm.ErrNotConfigured) {
 			status["message"] = "Set the instance URL and access token in Settings > Plugins > Forgejo."
 		} else {
 			status["message"] = safeMessage(err)
@@ -473,15 +474,15 @@ func (r *Runtime) clearConnectionCache(ctx context.Context, workspaceID string) 
 // safeMessage maps an adapter error onto an operator-facing message. Provider
 // error bodies are never forwarded: on some deployments they echo the token.
 func safeMessage(err error) string {
-	var writeErr *forgejo.WriteError
+	var writeErr *scm.WriteError
 	switch {
 	case errors.As(err, &writeErr):
 		return writeReasonMessage(writeErr.Reason)
-	case errors.Is(err, forgejo.ErrUnauthorized):
+	case errors.Is(err, scm.ErrUnauthorized):
 		return "The instance rejected the access token. Check that it is valid and has repository scope."
-	case errors.Is(err, forgejo.ErrNotFound):
+	case errors.Is(err, scm.ErrNotFound):
 		return "The instance did not expose the expected REST v1 API at this URL."
-	case errors.Is(err, forgejo.ErrNotConfigured):
+	case errors.Is(err, scm.ErrNotConfigured):
 		return "Set the instance URL and access token in Settings > Plugins > Forgejo."
 	default:
 		return "Could not reach the configured instance."
@@ -490,25 +491,25 @@ func safeMessage(err error) string {
 
 // writeReasonMessage maps a classified write failure onto a fixed message. A
 // 403 on a write is a permission or protection problem, never a bad token.
-func writeReasonMessage(reason forgejo.Reason) string {
+func writeReasonMessage(reason scm.Reason) string {
 	switch reason {
-	case forgejo.ReasonNotMergeable:
+	case scm.ReasonNotMergeable:
 		return "The pull request cannot be merged right now."
-	case forgejo.ReasonChecking:
+	case scm.ReasonChecking:
 		return "The instance is still checking whether this can be merged. Try again in a moment."
-	case forgejo.ReasonConflict:
+	case scm.ReasonConflict:
 		return "The pull request has merge conflicts."
-	case forgejo.ReasonOutOfDate:
+	case scm.ReasonOutOfDate:
 		return "The branch is out of date with its base. Update it first."
-	case forgejo.ReasonHeadChanged:
+	case scm.ReasonHeadChanged:
 		return "The pull request changed since it was last read. Refresh and try again."
-	case forgejo.ReasonBlockedByProtection:
+	case scm.ReasonBlockedByProtection:
 		return "Branch protection blocks this: required approvals or checks are missing."
-	case forgejo.ReasonSelfReview:
+	case scm.ReasonSelfReview:
 		return "An account cannot review its own pull request."
-	case forgejo.ReasonAlreadyMerged:
+	case scm.ReasonAlreadyMerged:
 		return "The pull request is already merged."
-	case forgejo.ReasonForbidden:
+	case scm.ReasonForbidden:
 		return "The access token lacks permission for this action. It needs write access to the repository, and the write:repository scope (plus write:issue for comments and labels)."
 	default:
 		return "The instance rejected the request."

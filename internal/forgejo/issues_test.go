@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/watches"
 
 	"github.com/stretchr/testify/require"
@@ -112,7 +113,7 @@ func TestIssueSourceMapsOntoTheNeutralPort(t *testing.T) {
 	source := NewIssueSource(connection)
 
 	issues, err := source.ListIssues(context.Background(),
-		watches.RepoRef{Owner: "acme", Name: "app"}, watches.IssueQuery{})
+		scm.RepoRef{Owner: "acme", Name: "app"}, watches.IssueQuery{})
 	require.NoError(t, err)
 	require.Len(t, issues, 1)
 	require.Equal(t, watches.Issue{
@@ -148,7 +149,7 @@ func TestIssueSourceRedactsProviderErrors(t *testing.T) {
 			source := NewIssueSource(connection)
 
 			_, err := source.ListIssues(context.Background(),
-				watches.RepoRef{Owner: "acme", Name: "app"}, watches.IssueQuery{})
+				scm.RepoRef{Owner: "acme", Name: "app"}, watches.IssueQuery{})
 			require.Error(t, err)
 			require.Contains(t, err.Error(), testCase.want)
 			require.Contains(t, err.Error(), "acme/app")
@@ -179,7 +180,7 @@ func TestIssueSourceFollowsPagination(t *testing.T) {
 	source := NewIssueSource(connection)
 
 	issues, err := source.ListIssues(context.Background(),
-		watches.RepoRef{Owner: "acme", Name: "app"}, watches.IssueQuery{})
+		scm.RepoRef{Owner: "acme", Name: "app"}, watches.IssueQuery{})
 	require.NoError(t, err)
 	require.Equal(t, 2, pages)
 	require.Len(t, issues, maxIssuePageLimit+1)
@@ -214,7 +215,7 @@ func TestIssueSourceKeepsPagingWhenAFullPageIsMostlyPullRequests(t *testing.T) {
 	source := NewIssueSource(connection)
 
 	issues, err := source.ListIssues(context.Background(),
-		watches.RepoRef{Owner: "acme", Name: "app"}, watches.IssueQuery{})
+		scm.RepoRef{Owner: "acme", Name: "app"}, watches.IssueQuery{})
 	require.NoError(t, err)
 	require.EqualValues(t, 2, atomic.LoadInt32(&pages), "a full raw page means there may be more")
 	numbers := make([]int64, 0, len(issues))
@@ -236,7 +237,7 @@ func TestListIssuesChecksLabelsItself(t *testing.T) {
 	})
 	connection, _ := newTestConnection(t, api, "token-1")
 	source := NewIssueSource(connection)
-	repo := watches.RepoRef{Owner: "acme", Name: "app"}
+	repo := scm.RepoRef{Owner: "acme", Name: "app"}
 
 	issues, err := source.ListIssues(context.Background(), repo, watches.IssueQuery{State: "open", Labels: []string{"bug"}})
 	require.NoError(t, err)

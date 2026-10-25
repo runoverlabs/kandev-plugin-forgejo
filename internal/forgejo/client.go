@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -25,14 +26,6 @@ import (
 // maxResponseBytes bounds any single API response the plugin will buffer. A
 // misconfigured or hostile base_url must not be able to exhaust plugin memory.
 const maxResponseBytes = 8 << 20
-
-// ErrNotFound is returned for 404 and 410 responses. Callers translate it into
-// "not owned by this connection" rather than surfacing it as a transport error.
-var ErrNotFound = errors.New("forgejo: resource not found")
-
-// ErrUnauthorized is returned for 401/403. It never carries the response body,
-// which on some deployments echoes the presented token.
-var ErrUnauthorized = errors.New("forgejo: not authorized")
 
 // StatusError carries an unexpected HTTP status without the response body,
 // which on some deployments echoes the presented token. Callers that need to
@@ -125,7 +118,7 @@ func (c *Client) post(ctx context.Context, path string, body, out any) error {
 }
 
 // put issues an authenticated PUT against /api/v1<path>. Like delete, it
-// classifies failures into *WriteError.
+// classifies failures into *scm.WriteError.
 func (c *Client) put(ctx context.Context, path string, body, out any) error {
 	return c.write(ctx, http.MethodPut, path, nil, body, out)
 }
@@ -185,7 +178,7 @@ func (c *Client) do(ctx context.Context, method, prefix, path string, query url.
 }
 
 // write is do for mutations whose failures callers must tell apart: a 403 or
-// 409 becomes a *WriteError with a fixed Reason instead of being flattened.
+// 409 becomes a *scm.WriteError with a fixed Reason instead of being flattened.
 func (c *Client) write(ctx context.Context, method, path string, query url.Values, body, out any) error {
 	return c.send(ctx, method, apiV1, path, query, body, out, true)
 }
@@ -227,15 +220,15 @@ func (c *Client) exchange(ctx context.Context, method, prefix, path string, quer
 
 	switch {
 	case response.StatusCode == http.StatusNotFound, response.StatusCode == http.StatusGone:
-		return nil, ErrNotFound
+		return nil, scm.ErrNotFound
 	case response.StatusCode == http.StatusUnauthorized:
-		return nil, ErrUnauthorized
+		return nil, scm.ErrUnauthorized
 	case response.StatusCode == http.StatusForbidden && !classify:
-		return nil, ErrUnauthorized
+		return nil, scm.ErrUnauthorized
 	case response.StatusCode >= 400 && classify:
 		// The body is read only to classify and is never returned or logged.
 		raw, _ := io.ReadAll(io.LimitReader(response.Body, maxErrorBodyBytes))
-		return nil, &WriteError{Status: response.StatusCode, Reason: classifyWrite(response.StatusCode, string(raw))}
+		return nil, &scm.WriteError{Status: response.StatusCode, Reason: classifyWrite(response.StatusCode, string(raw))}
 	case response.StatusCode >= 400:
 		return nil, &StatusError{Method: method, Path: path, Status: response.StatusCode}
 	}
@@ -290,9 +283,9 @@ func (c *Client) getTail(ctx context.Context, path string, query url.Values, max
 
 	switch {
 	case response.StatusCode == http.StatusNotFound, response.StatusCode == http.StatusGone:
-		return "", false, ErrNotFound
+		return "", false, scm.ErrNotFound
 	case response.StatusCode == http.StatusUnauthorized, response.StatusCode == http.StatusForbidden:
-		return "", false, ErrUnauthorized
+		return "", false, scm.ErrUnauthorized
 	case response.StatusCode >= 400:
 		return "", false, &StatusError{Method: http.MethodGet, Path: path, Status: response.StatusCode}
 	}
@@ -368,9 +361,9 @@ func (c *Client) getHead(ctx context.Context, path string, query url.Values, max
 
 	switch {
 	case response.StatusCode == http.StatusNotFound, response.StatusCode == http.StatusGone:
-		return "", false, ErrNotFound
+		return "", false, scm.ErrNotFound
 	case response.StatusCode == http.StatusUnauthorized, response.StatusCode == http.StatusForbidden:
-		return "", false, ErrUnauthorized
+		return "", false, scm.ErrUnauthorized
 	case response.StatusCode >= 400:
 		return "", false, &StatusError{Method: http.MethodGet, Path: path, Status: response.StatusCode}
 	}

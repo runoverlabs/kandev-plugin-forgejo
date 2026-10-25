@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/stretchr/testify/require"
@@ -41,11 +42,11 @@ func TestMergeRequiresTheHeadTheCallerSaw(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := actions.Merge(ctx, "ws-1", "task-1", sourcecontrol.MergeRequest{Number: 7})
-	var invalidErr *InvalidError
+	var invalidErr *scm.InvalidError
 	require.ErrorAs(t, err, &invalidErr, "a merge without head_sha must be refused")
 
 	_, err = actions.Merge(ctx, "ws-1", "task-1", sourcecontrol.MergeRequest{Number: 7, HeadSHA: "deadbeef"})
-	requireReason(t, err, ReasonHeadChanged)
+	requireReason(t, err, scm.ReasonHeadChanged)
 	require.Zero(t, merge.calls.Load(), "a stale head must never reach the merge endpoint")
 
 	_, err = actions.Merge(ctx, "ws-1", "task-1", sourcecontrol.MergeRequest{Number: 7, HeadSHA: "not hex!"})
@@ -67,7 +68,7 @@ func TestMergeSendsTheHeadAndPicksAnAllowedStyle(t *testing.T) {
 	require.Equal(t, true, merge.body["delete_branch_after_merge"])
 
 	_, err = actions.Merge(ctx, "ws-1", "task-1", sourcecontrol.MergeRequest{Number: 7, HeadSHA: "abc1234", Style: "rebase"})
-	var invalidErr *InvalidError
+	var invalidErr *scm.InvalidError
 	require.ErrorAs(t, err, &invalidErr, "a style the repository does not allow is refused")
 	_, err = actions.Merge(ctx, "ws-1", "task-1", sourcecontrol.MergeRequest{Number: 7, HeadSHA: "abc1234", Style: "bogus"})
 	require.ErrorAs(t, err, &invalidErr)
@@ -94,7 +95,7 @@ func TestMergeCancelAndFinishedPullRequests(t *testing.T) {
 		"number": 7, "state": "closed", "merged": true, "head": map[string]any{"sha": "abc"},
 	})
 	_, err = actions.Merge(ctx, "ws-1", "task-1", sourcecontrol.MergeRequest{Number: 7, HeadSHA: "abc1234"})
-	requireReason(t, err, ReasonAlreadyMerged)
+	requireReason(t, err, scm.ReasonAlreadyMerged)
 	require.Zero(t, merge.calls.Load())
 }
 
@@ -122,7 +123,7 @@ func TestReviewValidatesAttributesAndPinsTheCommit(t *testing.T) {
 	actions, api, _ := detailsFixture(t)
 	review := record(api, http.MethodPost, pullBase+"/reviews", 200)
 	ctx := context.Background()
-	var invalidErr *InvalidError
+	var invalidErr *scm.InvalidError
 
 	_, err := actions.Review(ctx, "ws-1", "task-1", sourcecontrol.ReviewRequest{Number: 7, Event: "merge"})
 	require.ErrorAs(t, err, &invalidErr)
@@ -135,7 +136,7 @@ func TestReviewValidatesAttributesAndPinsTheCommit(t *testing.T) {
 	require.Zero(t, review.calls.Load())
 
 	_, err = actions.Review(ctx, "ws-1", "task-1", sourcecontrol.ReviewRequest{Number: 7, Event: sourcecontrol.ReviewEventApprove, HeadSHA: "deadbeef"})
-	requireReason(t, err, ReasonHeadChanged)
+	requireReason(t, err, scm.ReasonHeadChanged)
 
 	result, err := actions.Review(ctx, "ws-1", "task-1", sourcecontrol.ReviewRequest{
 		Number: 7, Event: sourcecontrol.ReviewEventRequestChanges, Body: "please fix", HeadSHA: "abc1234",
@@ -163,7 +164,7 @@ func TestReviewersAndCommentAndUpdate(t *testing.T) {
 	comment := record(api, http.MethodPost, "/api/v1/repos/o/r/issues/7/comments", 201)
 	update := record(api, http.MethodPost, pullBase+"/update", 200)
 	ctx := context.Background()
-	var invalidErr *InvalidError
+	var invalidErr *scm.InvalidError
 
 	_, err := actions.RequestReviewers(ctx, "ws-1", "task-1", sourcecontrol.ReviewersRequest{Number: 7, Add: []string{"bob; drop"}})
 	require.ErrorAs(t, err, &invalidErr)
@@ -223,7 +224,7 @@ func TestEveryWriteRefusesAnUnlinkedPullRequest(t *testing.T) {
 		},
 	}
 	for name, call := range calls {
-		require.ErrorIs(t, call(), ErrNotLinked, name)
+		require.ErrorIs(t, call(), scm.ErrNotLinked, name)
 	}
 	require.Len(t, api.requests, before)
 }

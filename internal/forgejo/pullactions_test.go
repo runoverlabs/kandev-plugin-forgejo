@@ -3,6 +3,7 @@ package forgejo
 import (
 	"context"
 	"encoding/json"
+	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"strconv"
 	"testing"
@@ -51,28 +52,28 @@ func TestWriteStatusMapping(t *testing.T) {
 		name   string
 		status int
 		body   string
-		want   Reason
+		want   scm.Reason
 	}{
-		{"not mergeable", 405, `{"message":""}`, ReasonNotMergeable},
-		{"conflict", 409, `{"message":"Merge Conflict"}`, ReasonConflict},
-		{"out of date", 409, `{"message":"Merge push out of date"}`, ReasonOutOfDate},
-		{"head changed", 409, `{"message":"head commit does not match"}`, ReasonHeadChanged},
-		{"protected", 403, `{"message":"Not all required status checks successful"}`, ReasonBlockedByProtection},
-		{"approvals", 403, `{"message":"Does not have enough approvals yet"}`, ReasonBlockedByProtection},
-		{"protected merge, forgejo", 405, `{"message":"not allowed to merge [reason: Does not have enough approvals]"}`, ReasonBlockedByProtection},
-		{"protected merge, gitea 1.27", 405, `{"message":"Does not have enough approvals"}`, ReasonBlockedByProtection},
-		{"read-only merge", 405, `{"message":"User not allowed to merge PR"}`, ReasonForbidden},
-		{"missing scope", 403, `{"message":"token does not have at least one of required scope(s): [write:repository]"}`, ReasonForbidden},
-		{"missing scope, gitea 1.27", 403, `{"message":"token does not have at least one of required scope(s), required=[write:issue]"}`, ReasonForbidden},
-		{"permission is required", 403, `{"message":"write permission is required"}`, ReasonForbidden},
-		{"no permission", 403, `{"message":"user should have write permission"}`, ReasonForbidden},
-		{"self review", 422, `{"message":"approve your own pull is not allowed"}`, ReasonSelfReview},
-		{"already merged", 422, `{"message":"pull request has already merged"}`, ReasonAlreadyMerged},
-		{"merge without permission", 405, `{"message":"User not allowed to merge PR"}`, ReasonForbidden},
-		{"still computing", 405, `{"message":"Please try again later"}`, ReasonChecking},
-		{"gitea already merged", 405, `{"message":"The PR is already merged"}`, ReasonAlreadyMerged},
-		{"no-op update", 500, `{"message":"HeadBranch of PR 1 is up to date"}`, ReasonUpToDate},
-		{"invalid", 422, `{"message":"unsupported merge style"}`, ReasonInvalid},
+		{"not mergeable", 405, `{"message":""}`, scm.ReasonNotMergeable},
+		{"conflict", 409, `{"message":"Merge Conflict"}`, scm.ReasonConflict},
+		{"out of date", 409, `{"message":"Merge push out of date"}`, scm.ReasonOutOfDate},
+		{"head changed", 409, `{"message":"head commit does not match"}`, scm.ReasonHeadChanged},
+		{"protected", 403, `{"message":"Not all required status checks successful"}`, scm.ReasonBlockedByProtection},
+		{"approvals", 403, `{"message":"Does not have enough approvals yet"}`, scm.ReasonBlockedByProtection},
+		{"protected merge, forgejo", 405, `{"message":"not allowed to merge [reason: Does not have enough approvals]"}`, scm.ReasonBlockedByProtection},
+		{"protected merge, gitea 1.27", 405, `{"message":"Does not have enough approvals"}`, scm.ReasonBlockedByProtection},
+		{"read-only merge", 405, `{"message":"User not allowed to merge PR"}`, scm.ReasonForbidden},
+		{"missing scope", 403, `{"message":"token does not have at least one of required scope(s): [write:repository]"}`, scm.ReasonForbidden},
+		{"missing scope, gitea 1.27", 403, `{"message":"token does not have at least one of required scope(s), required=[write:issue]"}`, scm.ReasonForbidden},
+		{"permission is required", 403, `{"message":"write permission is required"}`, scm.ReasonForbidden},
+		{"no permission", 403, `{"message":"user should have write permission"}`, scm.ReasonForbidden},
+		{"self review", 422, `{"message":"approve your own pull is not allowed"}`, scm.ReasonSelfReview},
+		{"already merged", 422, `{"message":"pull request has already merged"}`, scm.ReasonAlreadyMerged},
+		{"merge without permission", 405, `{"message":"User not allowed to merge PR"}`, scm.ReasonForbidden},
+		{"still computing", 405, `{"message":"Please try again later"}`, scm.ReasonChecking},
+		{"gitea already merged", 405, `{"message":"The PR is already merged"}`, scm.ReasonAlreadyMerged},
+		{"no-op update", 500, `{"message":"HeadBranch of PR 1 is up to date"}`, scm.ReasonUpToDate},
+		{"invalid", 422, `{"message":"unsupported merge style"}`, scm.ReasonInvalid},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -83,7 +84,7 @@ func TestWriteStatusMapping(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			})
 			err := client.MergePullRequest(context.Background(), "o", "r", 7, MergeInput{Do: "merge"})
-			var werr *WriteError
+			var werr *scm.WriteError
 			require.ErrorAs(t, err, &werr)
 			require.Equal(t, tc.status, werr.Status)
 			require.Equal(t, tc.want, werr.Reason)
@@ -96,10 +97,10 @@ func TestWriteKeepsUnauthorizedAndNotFound(t *testing.T) {
 	t.Parallel()
 	client, api := newActionsClient(t)
 	api.handle(http.MethodPost, pullBase+"/merge", http.StatusUnauthorized, nil)
-	require.ErrorIs(t, client.MergePullRequest(context.Background(), "o", "r", 7, MergeInput{Do: "merge"}), ErrUnauthorized)
+	require.ErrorIs(t, client.MergePullRequest(context.Background(), "o", "r", 7, MergeInput{Do: "merge"}), scm.ErrUnauthorized)
 
 	api.handle(http.MethodPost, pullBase+"/merge", http.StatusNotFound, nil)
-	require.ErrorIs(t, client.MergePullRequest(context.Background(), "o", "r", 7, MergeInput{Do: "merge"}), ErrNotFound)
+	require.ErrorIs(t, client.MergePullRequest(context.Background(), "o", "r", 7, MergeInput{Do: "merge"}), scm.ErrNotFound)
 }
 
 func TestWriteErrorsDoNotLeakBodyOrToken(t *testing.T) {
@@ -352,7 +353,7 @@ func TestBranchDetailDecodesProtection(t *testing.T) {
 	require.Equal(t, []string{"ci"}, branch.StatusCheckContext)
 
 	_, err = client.BranchProtectionRule(ctx, "o", "r", "main")
-	require.ErrorIs(t, err, ErrUnauthorized, "a non-admin read is unavailable, not a failure")
+	require.ErrorIs(t, err, scm.ErrUnauthorized, "a non-admin read is unavailable, not a failure")
 }
 
 // An absent field must decode to nil (unknown), not to zero or false.

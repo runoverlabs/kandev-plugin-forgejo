@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/watches"
 )
 
@@ -30,7 +31,7 @@ func NewIssueSource(connection *Connection) *IssueSource {
 
 // ListIssues returns every issue in a repository matching the query, following
 // pagination up to maxIssuePages.
-func (s *IssueSource) ListIssues(ctx context.Context, repo watches.RepoRef, query watches.IssueQuery) ([]watches.Issue, error) {
+func (s *IssueSource) ListIssues(ctx context.Context, repo scm.RepoRef, query watches.IssueQuery) ([]watches.Issue, error) {
 	client, err := s.connection.Client(ctx)
 	if err != nil {
 		return nil, err
@@ -90,11 +91,11 @@ func (s *IssueSource) ListIssues(ctx context.Context, repo watches.RepoRef, quer
 // translateIssueError maps a transport error onto an operator-facing message.
 // Provider error bodies are never forwarded: on some deployments they echo the
 // token.
-func translateIssueError(repo watches.RepoRef, err error) error {
+func translateIssueError(repo scm.RepoRef, err error) error {
 	switch {
-	case errors.Is(err, ErrNotFound):
+	case errors.Is(err, scm.ErrNotFound):
 		return fmt.Errorf("%s is not visible to this token", repo.FullName())
-	case errors.Is(err, ErrUnauthorized):
+	case errors.Is(err, scm.ErrUnauthorized):
 		return fmt.Errorf("the instance rejected the access token for %s", repo.FullName())
 	default:
 		return fmt.Errorf("could not read issues for %s", repo.FullName())

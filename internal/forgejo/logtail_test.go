@@ -3,6 +3,7 @@ package forgejo
 import (
 	"context"
 	"fmt"
+	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"strings"
 	"testing"
@@ -66,7 +67,7 @@ func TestJobLogTailMissingEndpoint(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
 	_, _, err := newTestClient(t, api).JobLogTail(context.Background(), "kandev", "demo", 42, 1024)
-	require.ErrorIs(t, err, ErrNotFound)
+	require.ErrorIs(t, err, scm.ErrNotFound)
 }
 
 func TestAppendTail(t *testing.T) {
@@ -119,7 +120,7 @@ func TestJobLogTailNormalizesGiteaServerError(t *testing.T) {
 	})
 
 	_, _, err := newTestClient(t, api).JobLogTail(context.Background(), "kandev", "demo", 42, 1024)
-	require.ErrorIs(t, err, ErrNotFound)
+	require.ErrorIs(t, err, scm.ErrNotFound)
 }
 
 // TestJobLogTailKeepsOtherFailuresDistinct keeps that normalization narrow: a
@@ -132,7 +133,7 @@ func TestJobLogTailKeepsOtherFailuresDistinct(t *testing.T) {
 	})
 
 	_, _, err := newTestClient(t, api).JobLogTail(context.Background(), "kandev", "demo", 42, 1024)
-	require.NotErrorIs(t, err, ErrNotFound)
+	require.NotErrorIs(t, err, scm.ErrNotFound)
 	var status *StatusError
 	require.ErrorAs(t, err, &status)
 	require.Equal(t, http.StatusTooManyRequests, status.Status)

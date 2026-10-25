@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -90,7 +91,7 @@ func (r *Repositories) List(ctx context.Context, _ string, query string, cursor 
 func (r *Repositories) Inspect(ctx context.Context, _ string, rawURL string) (*sourcecontrol.Repository, error) {
 	client, err := r.connection.Client(ctx)
 	if err != nil {
-		if errors.Is(err, ErrNotConfigured) {
+		if errors.Is(err, scm.ErrNotConfigured) {
 			return nil, nil
 		}
 		return nil, err
@@ -102,7 +103,7 @@ func (r *Repositories) Inspect(ctx context.Context, _ string, rawURL string) (*s
 	repo, err := client.Repo(ctx, owner, name)
 	if err != nil {
 		// Not found or not visible to this token means "not owned here".
-		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnauthorized) {
+		if errors.Is(err, scm.ErrNotFound) || errors.Is(err, scm.ErrUnauthorized) {
 			return nil, nil
 		}
 		return nil, err
@@ -147,7 +148,7 @@ func (r *Repositories) ListBranches(ctx context.Context, _ string, repository so
 	}
 	branches, err := client.Branches(ctx, repository.OwnerOrProject, repository.Name, 1, branchPageLimit)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, scm.ErrNotFound) {
 			return nil, nil
 		}
 		return nil, err
@@ -173,7 +174,7 @@ func (r *Repositories) ListBranches(ctx context.Context, _ string, repository so
 func (r *Repositories) ResolveAttached(ctx context.Context, action pluginsdk.VerifiedActionContext) (sourcecontrol.Repository, error) {
 	host := r.hosts()
 	if host == nil {
-		return sourcecontrol.Repository{}, ErrNotConfigured
+		return sourcecontrol.Repository{}, scm.ErrNotConfigured
 	}
 	client, err := r.connection.Client(ctx)
 	if err != nil {
@@ -223,7 +224,7 @@ func (r *Repositories) resolveHostRepository(ctx context.Context, client *Client
 				if converted, ok := r.toRepository(client, repo); ok {
 					return converted, nil
 				}
-			} else if !errors.Is(err, ErrNotFound) {
+			} else if !errors.Is(err, scm.ErrNotFound) {
 				return sourcecontrol.Repository{}, err
 			}
 		}

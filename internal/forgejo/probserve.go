@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"kandev-plugin-forgejo/internal/prautomation"
+	"kandev-plugin-forgejo/internal/scm"
 )
 
 // Team is a team as the pull request and /user/teams report it.
@@ -286,7 +287,7 @@ func observeReviewComments(ctx context.Context, client *Client, owner, name stri
 		}
 		fetched++
 		comments, err := client.ReviewComments(ctx, owner, name, number, review.ID)
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, scm.ErrNotFound) {
 			// Deleted since the list was read: it has nothing left to say.
 			continue
 		}

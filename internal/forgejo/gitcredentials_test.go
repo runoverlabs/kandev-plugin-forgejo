@@ -2,6 +2,7 @@ package forgejo
 
 import (
 	"context"
+	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"net/url"
 	"strings"
@@ -106,7 +107,7 @@ func TestGitCredentialsResolveWithoutConfigIsNotConfigured(t *testing.T) {
 
 	_, err := NewGitCredentials(connection).Resolve(context.Background(),
 		resolveRequest("forge.example.com", "/tools/widgets.git", "repository-1"))
-	require.ErrorIs(t, err, ErrNotConfigured)
+	require.ErrorIs(t, err, scm.ErrNotConfigured)
 }
 
 func TestGitCredentialsBindingIsStableAndOpaque(t *testing.T) {

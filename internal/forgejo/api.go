@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"kandev-plugin-forgejo/internal/scm"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -243,7 +244,7 @@ func (c *Client) ProbeFlavor(ctx context.Context, version string) (Flavor, error
 	switch {
 	case err == nil:
 		return FlavorForgejo, nil
-	case errors.Is(err, ErrNotFound), errors.Is(err, ErrUnauthorized):
+	case errors.Is(err, scm.ErrNotFound), errors.Is(err, scm.ErrUnauthorized):
 		return flavorFromVersion(version), nil
 	default:
 		return "", err

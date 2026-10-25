@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -120,7 +121,7 @@ func TestAssociationErrorsSurface(t *testing.T) {
 	require.ErrorContains(t, associations.Link(context.Background(), "  ", identity("s", "7", 1)), "task id is required")
 
 	missingHost := NewAssociations(func() pluginsdk.Host { return nil })
-	require.ErrorIs(t, missingHost.Link(context.Background(), "task-1", identity("s", "7", 1)), ErrNotConfigured)
+	require.ErrorIs(t, missingHost.Link(context.Background(), "task-1", identity("s", "7", 1)), scm.ErrNotConfigured)
 }
 
 func TestAssociationKeyStaysWithinHostKeyVocabulary(t *testing.T) {

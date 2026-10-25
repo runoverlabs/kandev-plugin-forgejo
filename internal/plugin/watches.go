@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/watches"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -476,7 +477,7 @@ func watchFromRequest(workspaceID string, base watches.Watch, body watchRequest)
 	}
 
 	if body.Repos != nil {
-		repos := make([]watches.RepoRef, 0, len(body.Repos))
+		repos := make([]scm.RepoRef, 0, len(body.Repos))
 		for _, raw := range body.Repos {
 			if strings.TrimSpace(string(raw)) == "" {
 				continue
