@@ -51,6 +51,48 @@ func TestUnlinkedRecordIsDeleted(t *testing.T) {
 	require.False(t, found)
 }
 
+func TestTickDoesNotOverwriteARecordThePanelCreatedMeanwhile(t *testing.T) {
+	h := newHarness(t)
+	h.settings(Settings{Defaults: Switches{AutoMerge: true}})
+	// After the tick listed the records, a human turns auto-merge off for
+	// this pull request, which creates its record.
+	h.state.onGet = func(key string) {
+		if key != settingsKey {
+			return
+		}
+		h.state.onGet = nil
+		_, err := h.engine.Upsert(context.Background(), testWorkspace, testRef, func(r *Record, created bool) error {
+			require.True(t, created)
+			r.ApplySwitches(Switches{OnMerged: true})
+			return nil
+		})
+		require.NoError(t, err)
+	}
+	h.engine.Tick(context.Background())
+	record := h.record()
+	require.True(t, record.Seeded)
+	require.Equal(t, Switches{OnMerged: true}, record.Switches, "the workspace default does not replace a human's choice")
+}
+
+func TestUnseededRecordBacksOffWhenItCannotBeObserved(t *testing.T) {
+	h := newHarness(t)
+	h.settings(Settings{Defaults: Switches{AutoFix: true}})
+	h.observer.err = context.DeadlineExceeded
+	h.engine.Tick(context.Background())
+	require.Equal(t, 1, h.observer.calls)
+	require.False(t, h.record().Seeded)
+
+	h.advance(defaultTick)
+	h.engine.Tick(context.Background())
+	require.Equal(t, 1, h.observer.calls, "a failing record waits errorInterval like any other")
+
+	h.advance(errorInterval)
+	h.observer.err = nil
+	h.engine.Tick(context.Background())
+	require.Equal(t, 2, h.observer.calls)
+	require.True(t, h.record().Seeded)
+}
+
 func TestIntegrationSwitchedOffDoesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.switches(Switches{AutoFix: true, AutoMerge: true})
@@ -149,7 +191,7 @@ func TestActionTakenHoldExpires(t *testing.T) {
 	require.Len(t, h.messenger.sent, 2)
 }
 
-func TestTurnEndingWithoutOutcomeResendsTheWholeFeedback(t *testing.T) {
+func TestTurnEndingWithoutOutcomeResendsItsFeedback(t *testing.T) {
 	h := newHarness(t)
 	h.switches(Switches{AutoFix: true})
 	h.setObs(func(obs *Observation) {
@@ -181,6 +223,48 @@ func TestTurnEndingWithoutOutcomeResendsTheWholeFeedback(t *testing.T) {
 	require.Contains(t, retry, "ended without reporting an outcome")
 	require.Contains(t, retry, "ci/test")
 	require.Contains(t, retry, "old")
+}
+
+func TestRetryLeavesOutWhatAnEarlierOutcomeHandled(t *testing.T) {
+	h := newHarness(t)
+	h.switches(Switches{AutoFix: true})
+	h.setObs(func(obs *Observation) {
+		obs.Comments = []Comment{{ID: 1, Author: "alice", Body: "handled already"}}
+	})
+	h.evaluate()
+	_, err := h.engine.Outcome(context.Background(), testWorkspace, testRef.TaskID, "", "", OutcomeActionTaken, "")
+	require.NoError(t, err)
+
+	h.setObs(func(obs *Observation) {
+		obs.HeadSHA = "bbbbbbbbbbbb"
+		obs.Comments = append(obs.Comments, Comment{ID: 2, Author: "alice", Body: "one more thing"})
+	})
+	h.evaluate()
+	require.Len(t, h.messenger.sent, 2)
+	h.advance(idleGrace + retryCooldown)
+	h.evaluate()
+	require.Len(t, h.messenger.sent, 3)
+	retry := h.messenger.sent[2].text
+	require.Contains(t, retry, "ended without reporting an outcome")
+	require.Contains(t, retry, "one more thing")
+	require.NotContains(t, retry, "handled already")
+}
+
+func TestRetryOfOnlyBotFeedbackIsDropped(t *testing.T) {
+	h := newHarness(t)
+	h.switches(Switches{AutoFix: true})
+	h.setObs(func(obs *Observation) {
+		obs.Comments = []Comment{
+			{ID: 1, Author: "alice", Body: "rename it"},
+			{ID: 2, Author: "ci[bot]", Bot: true, Body: "coverage report"},
+		}
+	})
+	h.evaluate()
+	h.setObs(func(obs *Observation) { obs.Comments = obs.Comments[1:] })
+	h.advance(idleGrace + retryCooldown)
+	record := h.evaluate()
+	require.Len(t, h.messenger.sent, 1, "a bot's comment alone does not wake the agent, on a retry either")
+	require.Nil(t, record.Attempt)
 }
 
 func TestIdleSessionWithoutOutcomeBecomesRetryableAfterGrace(t *testing.T) {
@@ -226,6 +310,24 @@ func TestRoundsAreCappedAndResetByTogglingAutoFix(t *testing.T) {
 	record = h.evaluate()
 	require.Len(t, h.messenger.sent, MaxRounds+1)
 	require.Equal(t, 1, record.Rounds)
+}
+
+func TestExhaustedRetryDoesNotHoldAutoMergeBack(t *testing.T) {
+	h := newHarness(t)
+	h.switches(Switches{AutoFix: true, AutoMerge: true})
+	h.setObs(func(obs *Observation) {
+		obs.Comments = []Comment{{ID: 1, Author: "alice", Body: "nit"}}
+	})
+	_, err := h.engine.Update(context.Background(), testWorkspace, testRef, func(r *Record) error {
+		r.Rounds = MaxRounds
+		r.Attempt = &Attempt{ID: "last", Round: MaxRounds, State: AttemptRetryable, SessionID: "s-1", SentAt: h.now.Add(-time.Hour)}
+		return nil
+	})
+	require.NoError(t, err)
+	record := h.evaluate()
+	require.True(t, record.Exhausted)
+	require.Nil(t, record.Attempt)
+	require.Len(t, h.merger.calls, 1)
 }
 
 func TestSendFailuresSpendNoRound(t *testing.T) {
@@ -438,6 +540,41 @@ func TestAutoMergeWaitsForAutoFix(t *testing.T) {
 	require.Len(t, h.messenger.sent, 1)
 	require.Empty(t, h.merger.calls)
 	require.Contains(t, record.Status, "auto-fix round is in progress")
+}
+
+func TestAutoMergeWaitsForTheChangeTheAgentReported(t *testing.T) {
+	h := newHarness(t)
+	h.switches(Switches{AutoMerge: true, AutoFix: true})
+	h.setObs(func(obs *Observation) {
+		obs.Comments = []Comment{{ID: 1, Author: "alice", Body: "please rename"}}
+	})
+	h.evaluate()
+	_, err := h.engine.Outcome(context.Background(), testWorkspace, testRef.TaskID, "", "", OutcomeActionTaken, "")
+	require.NoError(t, err)
+
+	record := h.evaluate()
+	require.Empty(t, h.merger.calls, "the head the agent was asked to change is not merged")
+	require.Contains(t, record.Status, "waiting for the agent's change")
+
+	h.setObs(func(obs *Observation) { obs.HeadSHA = "dddddddddddd" })
+	h.evaluate()
+	require.Equal(t, []mergeCall{{ref: testRef, head: "dddddddddddd"}}, h.merger.calls)
+}
+
+func TestAutoMergeHoldForTheAgentsChangeExpires(t *testing.T) {
+	h := newHarness(t)
+	h.switches(Switches{AutoMerge: true, AutoFix: true})
+	h.setObs(func(obs *Observation) {
+		obs.Comments = []Comment{{ID: 1, Author: "alice", Body: "is this right?"}}
+	})
+	h.evaluate()
+	_, err := h.engine.Outcome(context.Background(), testWorkspace, testRef.TaskID, "", "", OutcomeActionTaken, "answered")
+	require.NoError(t, err)
+	h.evaluate()
+	require.Empty(t, h.merger.calls)
+	h.advance(progressWindow + time.Second)
+	h.evaluate()
+	require.Len(t, h.merger.calls, 1, "a change that needed no push merges once the window passes")
 }
 
 func TestLifecyclePrompts(t *testing.T) {

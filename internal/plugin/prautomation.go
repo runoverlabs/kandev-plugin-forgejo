@@ -226,10 +226,17 @@ func (r *Runtime) handleAutomationAction(ctx context.Context, request *pluginsdk
 
 	case ActionAutomationSet:
 		var changes []string
-		record, err := r.automation.Update(ctx, workspaceID, ref, func(record *prautomation.Record) error {
+		// Upsert: when the loop has not seen this link yet, a human's choice
+		// does not wait for it, and the record starts from what they set.
+		record, err := r.automation.Upsert(ctx, workspaceID, ref, func(record *prautomation.Record, created bool) error {
+			if created {
+				changes = append(changes, "created")
+			}
 			next := record.Switches
 			apply := func(name string, value *bool, field *bool) {
-				if value != nil && *value != *field {
+				// A new record logs every switch it was given, off ones too:
+				// "created" alone would not say a human refused one.
+				if value != nil && (created || *value != *field) {
 					*field = *value
 					changes = append(changes, fmt.Sprintf("%s=%t", name, *value))
 				}
@@ -242,26 +249,6 @@ func (r *Runtime) handleAutomationAction(ctx context.Context, request *pluginsdk
 			record.ApplySwitches(next)
 			return nil
 		})
-		if errors.Is(err, prautomation.ErrNotFound) {
-			// The loop has not seen this link yet. A human's choice does not
-			// wait for it: the record starts from what they set.
-			record = prautomation.Record{TaskID: ref.TaskID, RepositoryID: ref.RepositoryID, Number: ref.Number}
-			var next prautomation.Switches
-			changes = []string{"created"}
-			setIf := func(name string, value *bool, field *bool) {
-				if value != nil {
-					*field = *value
-					changes = append(changes, fmt.Sprintf("%s=%t", name, *value))
-				}
-			}
-			setIf("auto_fix", input.AutoFix, &next.AutoFix)
-			setIf("auto_merge", input.AutoMerge, &next.AutoMerge)
-			setIf("on_review_requested", input.OnReviewRequested, &next.OnReviewRequested)
-			setIf("on_merged", input.OnMerged, &next.OnMerged)
-			setIf("on_closed", input.OnClosed, &next.OnClosed)
-			record.ApplySwitches(next)
-			err = r.automation.Store().Put(ctx, workspaceID, record)
-		}
 		if err != nil {
 			return nil, err
 		}

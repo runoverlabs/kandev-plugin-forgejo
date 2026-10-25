@@ -18,11 +18,17 @@ import (
 type fakeState struct {
 	mu      sync.Mutex
 	entries map[string]map[string]map[string]any // scopeID → key → value
+	// onGet, when set, runs before a read of key, outside the lock: a hook to
+	// interleave a concurrent write.
+	onGet func(key string)
 }
 
 func newFakeState() *fakeState { return &fakeState{entries: map[string]map[string]map[string]any{}} }
 
 func (f *fakeState) GetState(_ context.Context, _, scopeID, key string) (map[string]any, bool, error) {
+	if f.onGet != nil {
+		f.onGet(key)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	value, ok := f.entries[scopeID][key]

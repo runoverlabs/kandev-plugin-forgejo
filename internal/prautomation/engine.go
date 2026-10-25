@@ -237,14 +237,17 @@ func (e *Engine) tickWorkspace(ctx context.Context, workspaceID string, tracked 
 		if _, ok := byKey[key]; ok {
 			continue
 		}
-		record := Record{TaskID: ref.TaskID, RepositoryID: ref.RepositoryID, Number: ref.Number}
-		if !settings.Defaults.Any() {
-			// Nothing to copy, so nothing to learn about the pull request
-			// first: the record starts with every switch off.
-			record.Seeded = true
-		}
-		record.UpdatedAt = e.now().UTC()
-		if err := e.store.Put(ctx, workspaceID, record); err != nil {
+		// Upsert, not Put: the panel may have created the record with a
+		// human's choice since the list was read.
+		record, err := e.Upsert(ctx, workspaceID, ref, func(record *Record, created bool) error {
+			if created && !settings.Defaults.Any() {
+				// Nothing to copy, so nothing to learn about the pull request
+				// first: the record starts with every switch off.
+				record.Seeded = true
+			}
+			return nil
+		})
+		if err != nil {
 			e.logf("prautomation: create record: %v", err)
 			continue
 		}
@@ -253,7 +256,7 @@ func (e *Engine) tickWorkspace(ctx context.Context, workspaceID string, tracked 
 	for key, record := range byKey {
 		if !linked[key] {
 			// Unlinked from the task: automation for it ends with the link.
-			if err := e.store.Delete(ctx, workspaceID, record.Ref()); err != nil {
+			if err := e.remove(ctx, workspaceID, record.Ref()); err != nil {
 				e.logf("prautomation: delete record: %v", err)
 			}
 			delete(byKey, key)
@@ -283,12 +286,11 @@ func (e *Engine) tickWorkspace(ctx context.Context, workspaceID string, tracked 
 }
 
 func (e *Engine) isDue(record Record, now time.Time) bool {
-	if !record.Seeded {
-		return true
-	}
-	if !record.Switches.Any() || record.Terminal() {
+	if record.Seeded && (!record.Switches.Any() || record.Terminal()) {
 		return false
 	}
+	// An unseeded record is due until it is seeded, at the pace its last
+	// observation set: a pull request that cannot be read waits errorInterval.
 	return !record.NextDue.After(now)
 }
 
@@ -563,13 +565,11 @@ func (r *evaluation) autoFix() {
 		r.status(fmt.Sprintf("Auto-fix round %d ended without an outcome; it is retried shortly.", record.Attempt.Round))
 		return
 	}
+	// A retry resends the delta too: its own items were never checkpointed,
+	// so they are in it unless they went away.
 	items := Delta(snapshot.Items, record.Checkpoint)
-	if retry {
-		items = snapshot.Items
-		if len(items) == 0 {
-			record.Attempt = nil
-			retry = false
-		}
+	if retry && len(items) == 0 {
+		record.Attempt = nil
 	}
 	if len(items) == 0 {
 		r.status("Auto-fix: nothing new to fix.")
@@ -583,7 +583,11 @@ func (r *evaluation) autoFix() {
 		record.HoldHead, record.HoldUntil = "", time.Time{}
 	}
 	if record.Rounds >= MaxRounds {
+		// The retryable attempt is dropped, not kept: it would hold auto-merge
+		// back with no round left to send it. Its items stay out of the
+		// checkpoint, so a reset sends them again.
 		record.Exhausted = true
+		record.Attempt = nil
 		r.status(fmt.Sprintf("Auto-fix paused after %d rounds. Reset the rounds to continue.", MaxRounds))
 		return
 	}
@@ -689,6 +693,10 @@ func (r *evaluation) mergeBlocker() string {
 		return "the branch has conflicts."
 	case record.Attempt != nil:
 		return "an auto-fix round is in progress."
+	case record.HoldHead == obs.HeadSHA && r.now.Before(record.HoldUntil):
+		// The agent reported a change: the head from before it is not the
+		// one to merge until a new head shows or the window passes.
+		return "waiting for the agent's change to show up."
 	case record.BlockedHead == obs.HeadSHA && r.now.Before(record.BlockedUntil):
 		return "the agent reported that a change is needed but blocked."
 	}
@@ -889,6 +897,16 @@ func (e *Engine) workspaceOf(taskID string) (string, bool) {
 // Update applies change to one record under its lock and stores it. A change
 // that returns an error stores nothing.
 func (e *Engine) Update(ctx context.Context, workspaceID string, ref PullRef, change func(*Record) error) (Record, error) {
+	return e.modify(ctx, workspaceID, ref, false, func(record *Record, _ bool) error { return change(record) })
+}
+
+// Upsert is Update that starts a record for ref when there is none; created
+// tells change which happened.
+func (e *Engine) Upsert(ctx context.Context, workspaceID string, ref PullRef, change func(record *Record, created bool) error) (Record, error) {
+	return e.modify(ctx, workspaceID, ref, true, change)
+}
+
+func (e *Engine) modify(ctx context.Context, workspaceID string, ref PullRef, create bool, change func(*Record, bool) error) (Record, error) {
 	unlock := e.locks.lock(recordKey(ref))
 	defer unlock()
 	record, found, err := e.store.Get(ctx, workspaceID, ref)
@@ -896,13 +914,25 @@ func (e *Engine) Update(ctx context.Context, workspaceID string, ref PullRef, ch
 		return Record{}, err
 	}
 	if !found {
-		return Record{}, ErrNotFound
+		if !create {
+			return Record{}, ErrNotFound
+		}
+		record = Record{TaskID: ref.TaskID, RepositoryID: ref.RepositoryID, Number: ref.Number}
 	}
-	if err := change(&record); err != nil {
+	if err := change(&record, !found); err != nil {
 		return Record{}, err
 	}
-	e.save(ctx, workspaceID, &record)
+	record.UpdatedAt = e.now().UTC()
+	if err := e.store.Put(ctx, workspaceID, record); err != nil {
+		return Record{}, err
+	}
 	return record, nil
+}
+
+func (e *Engine) remove(ctx context.Context, workspaceID string, ref PullRef) error {
+	unlock := e.locks.lock(recordKey(ref))
+	defer unlock()
+	return e.store.Delete(ctx, workspaceID, ref)
 }
 
 func (e *Engine) update(ctx context.Context, workspaceID string, ref PullRef, change func(*Record)) {
