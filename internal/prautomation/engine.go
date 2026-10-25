@@ -105,10 +105,10 @@ type Engine struct {
 	// meanwhile holds what track adds while a tick rebuilds tracked, which
 	// the rebuilt index would otherwise drop. Nil between ticks.
 	meanwhile map[string]trackedTask
-	running context.Context
-	cancel  context.CancelFunc
-	stopped chan struct{}
-	hints   sync.WaitGroup
+	running   context.Context
+	cancel    context.CancelFunc
+	stopped   chan struct{}
+	hints     sync.WaitGroup
 }
 
 // Config wires an Engine.
