@@ -9,6 +9,7 @@ import (
 
 	"kandev-plugin-forgejo/internal/forgejo"
 	"kandev-plugin-forgejo/internal/prautomation"
+	"kandev-plugin-forgejo/internal/watches"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"google.golang.org/grpc/codes"
@@ -60,17 +61,7 @@ func (r *Runtime) workspaceIDs(ctx context.Context) ([]string, error) {
 	if host == nil {
 		return nil, prautomation.ErrNoHost
 	}
-	workspaces, _, err := host.Workspaces().List(ctx, pluginsdk.Page{Limit: 200})
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(workspaces))
-	for _, workspace := range workspaces {
-		if id := strings.TrimSpace(workspace.ID); id != "" {
-			ids = append(ids, id)
-		}
-	}
-	return ids, nil
+	return watches.WorkspaceIDs(ctx, host)
 }
 
 // automationMessenger reaches task agents through the Host. It needs

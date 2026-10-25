@@ -31,6 +31,14 @@ func issue(number int64, title string) Issue {
 	}
 }
 
+func TestWorkspaceIDsWalksEveryPage(t *testing.T) {
+	host := newFakeHost("a", "b", "c", "d", "e")
+	host.workspacePage = 2
+	ids, err := WorkspaceIDs(context.Background(), host)
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b", "c", "d", "e"}, ids)
+}
+
 func TestRunWatchCreatesOneTaskPerIssue(t *testing.T) {
 	t.Parallel()
 	host := newFakeHost("ws-1")
