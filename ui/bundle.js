@@ -448,6 +448,15 @@ function reviewRequest(event, body, inline) {
   return { request: { event, body: body.trim(), comments } };
 }
 
+// ui/src/workspace.ts
+function useWorkspaceId(host, routedWorkspaceId) {
+  const [activeWorkspaceId, setActiveWorkspaceId] = host.React.useState(
+    () => host.context.getActiveWorkspaceId()
+  );
+  host.React.useEffect(() => host.context.subscribeActiveWorkspace(setActiveWorkspaceId), []);
+  return text(routedWorkspaceId) || text(activeWorkspaceId);
+}
+
 // ui/src/automation.ts
 function createAutomationSection(host) {
   return function AutomationSection(props) {
@@ -591,11 +600,7 @@ function useAutomationSettings(host, routedWorkspaceId) {
   const [template, setTemplate] = host.React.useState(null);
   const [error, setError] = host.React.useState(null);
   const [busy, setBusy] = host.React.useState(false);
-  const [activeWorkspaceId, setActiveWorkspaceId] = host.React.useState(
-    () => host.context.getActiveWorkspaceId()
-  );
-  host.React.useEffect(() => host.context.subscribeActiveWorkspace(setActiveWorkspaceId), []);
-  const workspaceId = (routedWorkspaceId ?? activeWorkspaceId ?? "").trim();
+  const workspaceId = useWorkspaceId(host, routedWorkspaceId);
   host.React.useEffect(() => {
     if (!workspaceId) return;
     let cancelled = false;
@@ -895,9 +900,9 @@ function createReviewPanel(host, options) {
       busyActionId: busy,
       onAction: async (request) => {
         if (request.actionId !== "comment") return;
-        const text3 = (request.body ?? "").trim();
-        if (!text3) return;
-        await writes.run("comment", () => writes.act("change_requests.comment", { body: text3 }), "Comment posted");
+        const text2 = (request.body ?? "").trim();
+        if (!text2) return;
+        await writes.run("comment", () => writes.act("change_requests.comment", { body: text2 }), "Comment posted");
       },
       headerActions: renderHeaderActions(host, state, writes),
       notice: renderNotice(host, AutomationSection, state)
@@ -1350,9 +1355,6 @@ function createForgejoIcon(host) {
 }
 
 // ui/src/connection-model.ts
-function text2(value) {
-  return typeof value === "string" ? value.trim() : "";
-}
 function connectionView(workspaceId, status) {
   const configured = status?.configured === true;
   const connected = status?.connected === true;
@@ -1367,13 +1369,13 @@ function connectionView(workspaceId, status) {
 }
 function connectionDetail(workspaceId, status, configured, connected) {
   if (!workspaceId) return "Open a workspace to check the Forgejo connection.";
-  if (!connected) return text2(status?.message) || (configured ? "Not verified yet." : "Not configured.");
+  if (!connected) return text(status?.message) || (configured ? "Not verified yet." : "Not configured.");
   return connectedLine(status);
 }
 function connectedLine(status) {
-  const version = text2(status?.instance_version);
-  const flavor = text2(status?.flavor);
-  return `Connected to ${text2(status?.instance_url)} as ${text2(status?.account)}` + (version ? ` (${flavor || "instance"} ${version})` : "");
+  const version = text(status?.instance_version);
+  const flavor = text(status?.flavor);
+  return `Connected to ${text(status?.instance_url)} as ${text(status?.account)}` + (version ? ` (${flavor || "instance"} ${version})` : "");
 }
 
 // ui/src/connection-panel.ts
@@ -1410,16 +1412,6 @@ function useConnection(host, routedWorkspaceId) {
     return () => controller.abort();
   }, [load]);
   return { workspaceId, status, checking, error, setEnabled, setAgentMerge, load };
-}
-function useWorkspaceId(host, routedWorkspaceId) {
-  const [activeWorkspaceId, setActiveWorkspaceId] = host.React.useState(
-    () => host.context.getActiveWorkspaceId()
-  );
-  host.React.useEffect(
-    () => host.context.subscribeActiveWorkspace(setActiveWorkspaceId),
-    []
-  );
-  return text2(routedWorkspaceId) || text2(activeWorkspaceId) || "";
 }
 function useEnabledSwitch(scope) {
   const { host, workspaceId, setStatus, setError, publishEnabled } = scope;
@@ -2087,11 +2079,7 @@ function useWatchList(host, kind, routedWorkspaceId) {
   const [busy, setBusy] = host.React.useState(null);
   const [error, setError] = host.React.useState(null);
   const [notice, setNotice] = host.React.useState(null);
-  const [activeWorkspaceId, setActiveWorkspaceId] = host.React.useState(
-    () => host.context.getActiveWorkspaceId()
-  );
-  host.React.useEffect(() => host.context.subscribeActiveWorkspace(setActiveWorkspaceId), []);
-  const workspaceId = (routedWorkspaceId ?? activeWorkspaceId ?? "").trim();
+  const workspaceId = useWorkspaceId(host, routedWorkspaceId);
   const call = host.React.useCallback(
     async (key, body, signal) => host.api.invokeAction(
       key,

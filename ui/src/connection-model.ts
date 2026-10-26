@@ -1,3 +1,5 @@
+import { text } from "./review-model";
+
 /** The `connection.get` / `connection.test` response; any field may be absent. */
 export type ConnectionStatus = {
   enabled?: unknown;
@@ -10,10 +12,6 @@ export type ConnectionStatus = {
   account?: unknown;
   message?: unknown;
 };
-
-export function text(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
 
 export type ConnectionView = {
   configured: boolean;

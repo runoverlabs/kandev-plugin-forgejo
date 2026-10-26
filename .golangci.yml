@@ -4,7 +4,11 @@
 version: "2"
 
 run:
-  # Both SDK targets compile different archive files; lint the standard one.
+  # No tags here: the caller picks the SDK target, whose archive files differ.
+  # CI lints each matrix leg against its own SDK (GOFLAGS=-tags=kandev_min on
+  # the minimum one); `make lint-go` lints both tags against whichever SDK the
+  # sibling checkout holds, so the minimum leg is only proven in CI or after
+  # checking out its pin.
   build-tags: []
 
 linters:

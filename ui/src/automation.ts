@@ -12,6 +12,7 @@ import {
   type SwitchKey,
 } from "./automation-model";
 import { failureMessage } from "./panel-model";
+import { useWorkspaceId } from "./workspace";
 
 export {
   TRUST_LEVELS,
@@ -223,11 +224,7 @@ function useAutomationSettings(host: PluginHostApi, routedWorkspaceId: string | 
   const [template, setTemplate] = host.React.useState(null as string | null);
   const [error, setError] = host.React.useState(null as string | null);
   const [busy, setBusy] = host.React.useState(false);
-  const [activeWorkspaceId, setActiveWorkspaceId] = host.React.useState<string | undefined>(() =>
-    host.context.getActiveWorkspaceId(),
-  );
-  host.React.useEffect(() => host.context.subscribeActiveWorkspace(setActiveWorkspaceId), []);
-  const workspaceId = (routedWorkspaceId ?? activeWorkspaceId ?? "").trim();
+  const workspaceId = useWorkspaceId(host, routedWorkspaceId);
 
   host.React.useEffect(() => {
     if (!workspaceId) return;

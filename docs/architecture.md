@@ -63,7 +63,7 @@ The browser bundle follows the same rule at a smaller scale:
  repository-provider.ts,          each a hook or two for state and effects plus
  *-panel.ts, review-dialog.ts,    plain render helpers
  watch-form.ts, automation.ts,
- forgejo-icon.ts
+ forgejo-icon.ts, workspace.ts
  *-model.ts, detail.ts,           pure models: parsing, drafts, formatting, view
  references.ts, review-store.ts   models. No React, no host calls
  host-contract.ts                 type-level contract with the host

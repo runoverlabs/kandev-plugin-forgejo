@@ -1,5 +1,6 @@
 import type { Component, PluginHostApi } from "@kandev/plugin-sdk";
-import { connectionView, text, type ConnectionStatus, type ConnectionView } from "./connection-model";
+import { connectionView, type ConnectionStatus, type ConnectionView } from "./connection-model";
+import { useWorkspaceId } from "./workspace";
 
 /**
  * Turns any failure from the action bridge into something an operator can act
@@ -86,19 +87,6 @@ function useConnection(host: PluginHostApi, routedWorkspaceId: string | undefine
   }, [load]);
 
   return { workspaceId, status, checking, error, setEnabled, setAgentMerge, load };
-}
-
-// The host routes a workspace into this panel, but the same component can
-// be mounted without one; fall back to the active workspace and follow it.
-function useWorkspaceId(host: PluginHostApi, routedWorkspaceId: string | undefined): string {
-  const [activeWorkspaceId, setActiveWorkspaceId] = host.React.useState<string | undefined>(
-    () => host.context.getActiveWorkspaceId(),
-  );
-  host.React.useEffect(
-    () => host.context.subscribeActiveWorkspace(setActiveWorkspaceId),
-    [],
-  );
-  return text(routedWorkspaceId) || text(activeWorkspaceId) || "";
 }
 
 function useEnabledSwitch(scope: ConnectionScope): (next: boolean) => Promise<void> {

@@ -14,6 +14,7 @@ import {
   type WatchKind,
   type WatchOptions,
 } from "./watch-model";
+import { useWorkspaceId } from "./workspace";
 
 export type { Watch, WatchKind } from "./watch-model";
 
@@ -126,11 +127,7 @@ function useWatchList(host: PluginHostApi, kind: WatchKind, routedWorkspaceId: s
   const [error, setError] = host.React.useState<string | null>(null);
   const [notice, setNotice] = host.React.useState<string | null>(null);
 
-  const [activeWorkspaceId, setActiveWorkspaceId] = host.React.useState<string | undefined>(() =>
-    host.context.getActiveWorkspaceId(),
-  );
-  host.React.useEffect(() => host.context.subscribeActiveWorkspace(setActiveWorkspaceId), []);
-  const workspaceId = (routedWorkspaceId ?? activeWorkspaceId ?? "").trim();
+  const workspaceId = useWorkspaceId(host, routedWorkspaceId);
 
   const call = host.React.useCallback(
     async <T,>(key: string, body?: unknown, signal?: AbortSignal): Promise<T> =>

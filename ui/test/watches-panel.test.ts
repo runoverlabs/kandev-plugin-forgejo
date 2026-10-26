@@ -146,6 +146,21 @@ describe("watches panel", () => {
     expect(selector.workspaceId).toBe("workspace-active");
   });
 
+  // Every panel shares one rule: a blank routed id is no route at all.
+  it("falls back to the active workspace when the routed one is blank", async () => {
+    const { host, render } = makeHost({
+      context: {
+        getActiveWorkspaceId: () => "workspace-active",
+        subscribeActiveWorkspace: () => () => {},
+      },
+    });
+    render({ workspaceId: "  " });
+    await Promise.resolve();
+
+    const [, selector] = host.api.invokeAction.mock.calls[0]!;
+    expect(selector.workspaceId).toBe("workspace-active");
+  });
+
   // With no workspace there is nothing to scope a read to, so the panel says so
   // rather than issuing a call the host will reject.
   it("asks for a workspace instead of calling without one", async () => {
