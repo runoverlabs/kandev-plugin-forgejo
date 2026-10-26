@@ -26,9 +26,13 @@
   the whole capability set, so **every gated feature (repository picker, review
   panel, watches) is refused until an administrator re-approves** in Settings →
   Plugins → Forgejo.
-- The watch panels treat a blank workspace routed by the host as none and
-  fall back to the active workspace, as the connection panel already did.
-  Before, they asked for a workspace instead.
+- The watch panels and the automation settings treat a blank workspace routed
+  by the host as none and fall back to the active workspace, as the connection
+  panel already did. Before, they asked for a workspace instead.
+- When the active workspace changes, the watch panels and the automation
+  settings no longer keep the previous workspace's list, settings or open
+  draft. Before, a watch drafted in one workspace could be saved into another
+  with the first one's workflow and column.
 - The review panel's checks and the `ci` tool's commit-status fallback listed
   only the first 30 statuses of a commit with more, and took the overall state
   from those 30 alone. They now read every page.

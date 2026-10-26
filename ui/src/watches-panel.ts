@@ -14,7 +14,7 @@ import {
   type WatchKind,
   type WatchOptions,
 } from "./watch-model";
-import { useWorkspaceId } from "./workspace";
+import { useWorkspaceId, useWorkspaceState } from "./workspace";
 
 export type { Watch, WatchKind } from "./watch-model";
 
@@ -119,15 +119,14 @@ export function createWatchesPanel(
 }
 
 function useWatchList(host: PluginHostApi, kind: WatchKind, routedWorkspaceId: string | undefined): WatchList {
-  const [watches, setWatches] = host.React.useState<Watch[]>([]);
-  const [options, setOptions] = host.React.useState<WatchOptions>({});
-  const [draft, setDraft] = host.React.useState<Draft | null>(null);
-  const [loading, setLoading] = host.React.useState(false);
-  const [busy, setBusy] = host.React.useState<string | null>(null);
-  const [error, setError] = host.React.useState<string | null>(null);
-  const [notice, setNotice] = host.React.useState<string | null>(null);
-
   const workspaceId = useWorkspaceId(host, routedWorkspaceId);
+  const [watches, setWatches] = useWorkspaceState<Watch[]>(host, workspaceId, []);
+  const [options, setOptions] = useWorkspaceState<WatchOptions>(host, workspaceId, {});
+  const [draft, setDraft] = useWorkspaceState<Draft | null>(host, workspaceId, null);
+  const [loading, setLoading] = useWorkspaceState(host, workspaceId, false);
+  const [busy, setBusy] = useWorkspaceState<string | null>(host, workspaceId, null);
+  const [error, setError] = useWorkspaceState<string | null>(host, workspaceId, null);
+  const [notice, setNotice] = useWorkspaceState<string | null>(host, workspaceId, null);
 
   const call = host.React.useCallback(
     async <T,>(key: string, body?: unknown, signal?: AbortSignal): Promise<T> =>

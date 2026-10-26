@@ -12,7 +12,7 @@ import {
   type SwitchKey,
 } from "./automation-model";
 import { failureMessage } from "./panel-model";
-import { useWorkspaceId } from "./workspace";
+import { useWorkspaceId, useWorkspaceState } from "./workspace";
 
 export {
   TRUST_LEVELS,
@@ -220,11 +220,11 @@ export function createAutomationSettings(host: PluginHostApi): Component<{ works
 }
 
 function useAutomationSettings(host: PluginHostApi, routedWorkspaceId: string | undefined): SettingsPanel {
-  const [settings, setSettings] = host.React.useState(null as AutomationSettings | null);
-  const [template, setTemplate] = host.React.useState(null as string | null);
-  const [error, setError] = host.React.useState(null as string | null);
-  const [busy, setBusy] = host.React.useState(false);
   const workspaceId = useWorkspaceId(host, routedWorkspaceId);
+  const [settings, setSettings] = useWorkspaceState<AutomationSettings | null>(host, workspaceId, null);
+  const [template, setTemplate] = useWorkspaceState<string | null>(host, workspaceId, null);
+  const [error, setError] = useWorkspaceState<string | null>(host, workspaceId, null);
+  const [busy, setBusy] = useWorkspaceState(host, workspaceId, false);
 
   host.React.useEffect(() => {
     if (!workspaceId) return;
@@ -234,7 +234,6 @@ function useAutomationSettings(host: PluginHostApi, routedWorkspaceId: string | 
       .then((loaded) => {
         if (cancelled) return;
         setSettings(loaded);
-        setTemplate(null);
         setError(null);
       })
       .catch((cause) => {
@@ -269,10 +268,10 @@ function useAutomationSettings(host: PluginHostApi, routedWorkspaceId: string | 
 
   return {
     workspaceId,
-    settings: settings as AutomationSettings | null,
-    template: template as string | null,
+    settings,
+    template,
     setTemplate,
-    error: error as string | null,
+    error,
     busy,
     save,
   };

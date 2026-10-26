@@ -456,6 +456,14 @@ function useWorkspaceId(host, routedWorkspaceId) {
   host.React.useEffect(() => host.context.subscribeActiveWorkspace(setActiveWorkspaceId), []);
   return text(routedWorkspaceId) || text(activeWorkspaceId);
 }
+function useWorkspaceState(host, workspaceId, initial) {
+  const [byWorkspace, setByWorkspace] = host.React.useState(() => /* @__PURE__ */ new Map());
+  const set = host.React.useCallback(
+    (value) => setByWorkspace((previous) => new Map(previous).set(workspaceId, value)),
+    [workspaceId]
+  );
+  return [byWorkspace.has(workspaceId) ? byWorkspace.get(workspaceId) : initial, set];
+}
 
 // ui/src/automation.ts
 function createAutomationSection(host) {
@@ -596,18 +604,17 @@ function createAutomationSettings(host) {
   };
 }
 function useAutomationSettings(host, routedWorkspaceId) {
-  const [settings, setSettings] = host.React.useState(null);
-  const [template, setTemplate] = host.React.useState(null);
-  const [error, setError] = host.React.useState(null);
-  const [busy, setBusy] = host.React.useState(false);
   const workspaceId = useWorkspaceId(host, routedWorkspaceId);
+  const [settings, setSettings] = useWorkspaceState(host, workspaceId, null);
+  const [template, setTemplate] = useWorkspaceState(host, workspaceId, null);
+  const [error, setError] = useWorkspaceState(host, workspaceId, null);
+  const [busy, setBusy] = useWorkspaceState(host, workspaceId, false);
   host.React.useEffect(() => {
     if (!workspaceId) return;
     let cancelled = false;
     host.api.invokeAction("automation.settings", { workspaceId }).then((loaded) => {
       if (cancelled) return;
       setSettings(loaded);
-      setTemplate(null);
       setError(null);
     }).catch((cause) => {
       if (!cancelled) setError(failureMessage(cause));
@@ -2072,14 +2079,14 @@ function createWatchesPanel(host, { kind = "issue" } = {}) {
   };
 }
 function useWatchList(host, kind, routedWorkspaceId) {
-  const [watches, setWatches] = host.React.useState([]);
-  const [options, setOptions] = host.React.useState({});
-  const [draft, setDraft] = host.React.useState(null);
-  const [loading, setLoading] = host.React.useState(false);
-  const [busy, setBusy] = host.React.useState(null);
-  const [error, setError] = host.React.useState(null);
-  const [notice, setNotice] = host.React.useState(null);
   const workspaceId = useWorkspaceId(host, routedWorkspaceId);
+  const [watches, setWatches] = useWorkspaceState(host, workspaceId, []);
+  const [options, setOptions] = useWorkspaceState(host, workspaceId, {});
+  const [draft, setDraft] = useWorkspaceState(host, workspaceId, null);
+  const [loading, setLoading] = useWorkspaceState(host, workspaceId, false);
+  const [busy, setBusy] = useWorkspaceState(host, workspaceId, null);
+  const [error, setError] = useWorkspaceState(host, workspaceId, null);
+  const [notice, setNotice] = useWorkspaceState(host, workspaceId, null);
   const call = host.React.useCallback(
     async (key, body, signal) => host.api.invokeAction(
       key,
