@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.5.0
+
+Pull request automation (auto-fix, auto-merge and lifecycle prompts) and
+webhook automation conditions. **Two breaking changes:** every install must
+re-approve the plugin's capabilities after upgrading, and Gitea's floor is now
+1.27 (stay on 0.4.x for Gitea 1.20 to 1.26). Tested against Forgejo 7, 11, 15
+and 17 and Gitea 1.27.
+
 - **Pull request automation** ([#8](https://github.com/runoverlabs/kandev-plugin-forgejo/issues/8)):
   the plugin's counterpart of Kandev's GitHub CI auto-fix, auto-merge and pull
   request prompts. Per linked pull request, from a new Automation section in the
@@ -39,7 +47,6 @@
 - The `pr` agent tool's schema no longer describes `title` ("required for
   open" is still the answer when it is missing), to make room for `outcome`
   within the same size budget.
-
 - **Automation conditions** ([#7](https://github.com/runoverlabs/kandev-plugin-forgejo/issues/7)):
   Forgejo and Gitea webhooks can start a Kandev automation. Three conditions
   appear in the automation editor: a push to a branch, a pull request event
