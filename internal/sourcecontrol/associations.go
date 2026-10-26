@@ -47,7 +47,7 @@ func (a *Associations) Link(ctx context.Context, taskID string, identity ChangeR
 		"number":           identity.Number,
 	}
 	if err := host.SetState(ctx, "workspace", workspaceID, associationKey(taskID, identity), value); err != nil {
-		return fmt.Errorf("forgejo: store task association: %w", err)
+		return fmt.Errorf("associations: store task association: %w", err)
 	}
 	return nil
 }
@@ -59,7 +59,7 @@ func (a *Associations) Unlink(ctx context.Context, taskID string, identity Chang
 		return err
 	}
 	if err := host.DeleteState(ctx, "workspace", workspaceID, associationKey(taskID, identity)); err != nil {
-		return fmt.Errorf("forgejo: remove task association: %w", err)
+		return fmt.Errorf("associations: remove task association: %w", err)
 	}
 	return nil
 }
@@ -72,7 +72,7 @@ func (a *Associations) ListForWorkspace(ctx context.Context, workspaceID string)
 	}
 	entries, err := host.ListState(ctx, "workspace", workspaceID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("forgejo: list task associations: %w", err)
+		return nil, nil, fmt.Errorf("associations: list task associations: %w", err)
 	}
 	identities := make([]ChangeRequestIdentity, 0, len(entries))
 	taskIDs := make([]string, 0, len(entries))
@@ -116,14 +116,14 @@ func (a *Associations) resolveWorkspace(ctx context.Context, taskID string) (plu
 		return nil, "", scm.ErrNotConfigured
 	}
 	if strings.TrimSpace(taskID) == "" {
-		return nil, "", errors.New("forgejo: task id is required")
+		return nil, "", errors.New("associations: task id is required")
 	}
 	task, err := host.Tasks().Get(ctx, taskID)
 	if err != nil {
-		return nil, "", fmt.Errorf("forgejo: resolve task workspace: %w", err)
+		return nil, "", fmt.Errorf("associations: resolve task workspace: %w", err)
 	}
 	if task == nil || strings.TrimSpace(task.WorkspaceID) == "" {
-		return nil, "", fmt.Errorf("forgejo: task %s has no workspace", taskID)
+		return nil, "", fmt.Errorf("associations: task %s has no workspace", taskID)
 	}
 	return host, task.WorkspaceID, nil
 }
