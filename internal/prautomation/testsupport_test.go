@@ -27,6 +27,20 @@ type fakeState struct {
 	gets   map[string]int // key → reads
 }
 
+// roundTrip copies value through JSON, as the Host's wire does: a read hands
+// out a copy, so mutating it changes nothing stored.
+func roundTrip(value map[string]any) (map[string]any, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return nil, err
+	}
+	return decoded, nil
+}
+
 func newFakeState() *fakeState { return &fakeState{entries: map[string]map[string]map[string]any{}} }
 
 func (f *fakeState) GetState(_ context.Context, _, scopeID, key string) (map[string]any, bool, error) {
@@ -40,19 +54,19 @@ func (f *fakeState) GetState(_ context.Context, _, scopeID, key string) (map[str
 	}
 	f.gets[key]++
 	value, ok := f.entries[scopeID][key]
-	return value, ok, nil
+	if !ok {
+		return nil, false, nil
+	}
+	read, err := roundTrip(value)
+	return read, err == nil, err
 }
 
 func (f *fakeState) SetState(_ context.Context, _, scopeID, key string, value map[string]any) error {
 	if f.setErr != nil {
 		return f.setErr
 	}
-	encoded, err := json.Marshal(value)
+	decoded, err := roundTrip(value)
 	if err != nil {
-		return err
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		return err
 	}
 	f.mu.Lock()
@@ -77,7 +91,11 @@ func (f *fakeState) ListState(_ context.Context, _, scopeID string) ([]pluginsdk
 	f.lists++
 	var entries []pluginsdk.StateEntry
 	for key, value := range f.entries[scopeID] {
-		entries = append(entries, pluginsdk.StateEntry{Key: key, Value: value})
+		read, err := roundTrip(value)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, pluginsdk.StateEntry{Key: key, Value: read})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Key < entries[j].Key })
 	return entries, nil

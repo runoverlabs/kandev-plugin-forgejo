@@ -56,7 +56,8 @@ func (h *Host) GetState(_ context.Context, scope, scopeID, key string) (map[stri
 	if !found {
 		return nil, false, nil
 	}
-	return value.(map[string]any), true, nil
+	read, err := roundTrip(value.(map[string]any))
+	return read, err == nil, err
 }
 
 // SetState writes one entry. Host state round-trips through JSON, so this
@@ -71,16 +72,26 @@ func (h *Host) SetState(_ context.Context, scope, scopeID, key string, value map
 	if h.state[name] == nil {
 		h.state[name] = map[string]any{}
 	}
-	encoded, err := json.Marshal(value)
+	decoded, err := roundTrip(value)
 	if err != nil {
-		return err
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		return err
 	}
 	h.state[name][key] = decoded
 	return nil
+}
+
+// roundTrip copies value through JSON, as the host's wire does. A read hands
+// out a copy too, so a caller mutating what it read changes nothing stored.
+func roundTrip(value map[string]any) (map[string]any, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return nil, err
+	}
+	return decoded, nil
 }
 
 // DeleteState removes one entry; a missing one is not an error.
@@ -103,7 +114,11 @@ func (h *Host) ListState(_ context.Context, scope, scopeID string) ([]pluginsdk.
 	}
 	entries := make([]pluginsdk.StateEntry, 0)
 	for key, value := range h.state[bucket(scope, scopeID)] {
-		entries = append(entries, pluginsdk.StateEntry{Key: key, Value: value.(map[string]any)})
+		read, err := roundTrip(value.(map[string]any))
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, pluginsdk.StateEntry{Key: key, Value: read})
 	}
 	return entries, nil
 }
