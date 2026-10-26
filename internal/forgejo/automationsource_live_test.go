@@ -22,13 +22,13 @@ import (
 
 // liveAutomationSource is the automation adapter on the admin token, which is
 // the operator account here.
-func liveAutomationSource(t *testing.T) (*AutomationSource, *rest.Client) {
+func liveAutomationSource(t *testing.T) (*AutomationSource, *liveAccount) {
 	t.Helper()
 	admin, _, associations, _, _, host := liveAdapters(t)
 	return NewAutomationSource(NewConnection(func() pluginsdk.Host { return host }), associations), admin
 }
 
-func liveRepoRef(t *testing.T, client *rest.Client, owner, repo string, number int64) prautomation.PullRef {
+func liveRepoRef(t *testing.T, client *liveAccount, owner, repo string, number int64) prautomation.PullRef {
 	t.Helper()
 	found, err := client.Repo(context.Background(), owner, repo)
 	require.NoError(t, err)

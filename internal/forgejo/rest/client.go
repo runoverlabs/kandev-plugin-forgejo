@@ -138,12 +138,6 @@ func (c *Client) delete(ctx context.Context, path string, body any) error {
 	return c.write(ctx, http.MethodDelete, path, nil, body, nil)
 }
 
-// Do performs one call against /api/v1<path>, for an endpoint with no typed
-// method here. Failures are not classified into *scm.WriteError.
-func (c *Client) Do(ctx context.Context, method, path string, query url.Values, body, out any) error {
-	return c.do(ctx, method, apiV1, path, query, body, out)
-}
-
 // newRequest builds one authenticated request against <base><prefix><path>.
 func (c *Client) newRequest(ctx context.Context, method, prefix, path string, query url.Values, body any) (*http.Request, error) {
 	if err := ctx.Err(); err != nil {

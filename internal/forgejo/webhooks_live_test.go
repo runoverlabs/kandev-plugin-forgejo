@@ -269,21 +269,19 @@ func requireScenario(t *testing.T, name string, event automations.Event, reposit
 	}
 }
 
-func liveOptionalClient(t *testing.T, envVar string) *rest.Client {
+func liveOptionalClient(t *testing.T, envVar string) *liveAccount {
 	t.Helper()
 	token := strings.TrimSpace(os.Getenv(envVar))
 	if token == "" {
 		return nil
 	}
 	baseURL, _, _, _ := liveConfig(t)
-	client, err := rest.NewClient(baseURL, token, &http.Client{Timeout: 30 * time.Second})
-	require.NoError(t, err)
-	return client
+	return newLiveAccount(t, baseURL, token)
 }
 
 // mergeEventually merges, retrying while the instance is still computing
 // mergeability (Gitea answers 405 for a moment after a push).
-func mergeEventually(t *testing.T, client *rest.Client, path string) {
+func mergeEventually(t *testing.T, client *liveAccount, path string) {
 	t.Helper()
 	var err error
 	for range 20 {

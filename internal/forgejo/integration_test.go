@@ -1,9 +1,12 @@
 package forgejo
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -44,13 +47,12 @@ func liveConfig(t *testing.T) (baseURL, token, owner, repo string) {
 	return baseURL, token, owner, repo
 }
 
-func liveAdapters(t *testing.T) (*rest.Client, *Repositories, *sourcecontrol.Associations, *Reviews, *References, *fakeHost) {
+func liveAdapters(t *testing.T) (*liveAccount, *Repositories, *sourcecontrol.Associations, *Reviews, *References, *fakeHost) {
 	t.Helper()
 	baseURL, token, _, _ := liveConfig(t)
 	host := newFakeHost(map[string]any{"base_url": baseURL, "api_token": token})
 	connection := NewConnection(func() pluginsdk.Host { return host })
-	client, err := connection.Client(context.Background())
-	require.NoError(t, err)
+	client := newLiveAccount(t, baseURL, token)
 	repositories := NewRepositories(connection, func() pluginsdk.Host { return host }, "forgejo")
 	associations := sourcecontrol.NewAssociations(func() pluginsdk.Host { return host })
 	reviews := NewReviews(connection, repositories, associations, "forgejo")
@@ -247,7 +249,7 @@ func TestLiveCreatePullRequest(t *testing.T) {
 
 // createBranch is test support: the plugin never creates branches at runtime,
 // Kandev's executor does.
-func createBranch(ctx context.Context, client *rest.Client, owner, repo, newBranch, fromBranch string) error {
+func createBranch(ctx context.Context, client *liveAccount, owner, repo, newBranch, fromBranch string) error {
 	body := map[string]string{"new_branch_name": newBranch, "old_branch_name": fromBranch}
 	path := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/branches"
 	return client.Do(ctx, http.MethodPost, path, nil, body, nil)
@@ -530,20 +532,75 @@ func TestLivePullRequestActions(t *testing.T) {
 // liveUserClient returns a client for a second seeded user, skipping when the
 // instance has none. Each is a different account with a different role on the
 // repository: `reviewer` can write, `readonly` can only read.
-func liveUserClient(t *testing.T, envVar string) *rest.Client {
+func liveUserClient(t *testing.T, envVar string) *liveAccount {
 	t.Helper()
 	token := strings.TrimSpace(os.Getenv(envVar))
 	if token == "" {
 		t.Skipf("set %s to exercise multi-user behaviour", envVar)
 	}
 	baseURL, _, _, _ := liveConfig(t)
-	client, err := rest.NewClient(baseURL, token, nil)
+	return newLiveAccount(t, baseURL, token)
+}
+
+// liveAccount is one seeded account: the plugin's typed client, plus Do for
+// the fixtures the plugin never creates at runtime (repositories, branches,
+// files, hooks). The plugin's own client has no untyped call.
+type liveAccount struct {
+	*rest.Client
+	baseURL string
+	token   string
+	http    *http.Client
+}
+
+func newLiveAccount(t *testing.T, baseURL, token string) *liveAccount {
+	t.Helper()
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	client, err := rest.NewClient(baseURL, token, httpClient)
 	require.NoError(t, err)
-	return client
+	return &liveAccount{Client: client, baseURL: strings.TrimSuffix(baseURL, "/"), token: token, http: httpClient}
+}
+
+// Do performs one call against /api/v1<path>; path arrives already escaped.
+// A status of 400 or more is an error, and out, when given, receives the
+// decoded response.
+func (a *liveAccount) Do(ctx context.Context, method, path string, query url.Values, body, out any) error {
+	endpoint := a.baseURL + "/api/v1" + path
+	if query != nil {
+		endpoint += "?" + query.Encode()
+	}
+	var payload io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		payload = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, payload)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "token "+a.token)
+	request.Header.Set("Accept", "application/json")
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := a.http.Do(request)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode >= 400 {
+		return fmt.Errorf("%s %s: status %d", method, path, response.StatusCode)
+	}
+	if out == nil {
+		return nil
+	}
+	return json.NewDecoder(response.Body).Decode(out)
 }
 
 // livePull opens a fresh pull request as the admin and returns it.
-func livePull(t *testing.T, client *rest.Client) (rest.PullRequest, string, string) {
+func livePull(t *testing.T, client *liveAccount) (rest.PullRequest, string, string) {
 	t.Helper()
 	_, _, owner, repo := liveConfig(t)
 	base := strings.TrimSpace(os.Getenv("KANDEV_FORGEJO_HEAD_BRANCH"))
