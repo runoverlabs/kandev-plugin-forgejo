@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"kandev-plugin-forgejo/internal/kandev"
 )
 
 // Timing. The loop wakes every tick and evaluates the records that are due;
@@ -185,7 +187,8 @@ func (e *Engine) Stop() {
 // and the engine's lifetime. The host waits on event delivery with a short
 // deadline and drops events when its queue backs up, while a handler can wait
 // on a record an evaluation holds across provider requests. A hint while the
-// engine is stopped is dropped: nothing would act on it.
+// engine is stopped is dropped: nothing would act on it. Each hint reads the
+// plugin config once.
 func (e *Engine) Hint(handle func(ctx context.Context)) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -197,7 +200,7 @@ func (e *Engine) Hint(handle func(ctx context.Context)) {
 	go func() {
 		defer e.hints.Done()
 		defer cancel()
-		handle(ctx)
+		handle(kandev.ShareConfig(ctx))
 	}()
 }
 

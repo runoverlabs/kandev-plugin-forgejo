@@ -101,10 +101,11 @@ func (p *Poller) run(ctx context.Context) {
 	}
 }
 
-// Tick runs one pass over every workspace, polling the watches that are due.
-// It is exported so a test can drive the loop deterministically instead of
-// waiting on wall-clock ticks.
+// Tick runs one pass over every workspace, polling the watches that are due
+// and reading the plugin config once for the pass. It is exported so a test
+// can drive the loop deterministically instead of waiting on wall-clock ticks.
 func (p *Poller) Tick(ctx context.Context) {
+	ctx = kandev.ShareConfig(ctx)
 	host, err := p.store.host()
 	if err != nil {
 		// The broker dial has not finished. The next tick will find it.

@@ -54,13 +54,20 @@ func TestConfigOutsideASharedContextReadsEveryTime(t *testing.T) {
 	require.Equal(t, int64(3), host.reads.Load())
 }
 
-func TestConfigSharesAFailedRead(t *testing.T) {
+func TestConfigDoesNotShareAFailedRead(t *testing.T) {
 	t.Parallel()
 	host := &configCounter{err: errors.New("broker unavailable")}
 	ctx := ShareConfig(context.Background())
-	_, first := Config(ctx, host)
-	_, second := Config(ctx, host)
-	require.Error(t, first)
-	require.Equal(t, first, second)
-	require.Equal(t, int64(1), host.reads.Load())
+	_, err := Config(ctx, host)
+	require.Error(t, err)
+
+	// One caller's failure, such as its own context ending, is not the next
+	// caller's answer.
+	host.err = nil
+	config, err := Config(ctx, host)
+	require.NoError(t, err)
+	require.Equal(t, "https://forgejo.example", config["base_url"])
+	_, err = Config(ctx, host)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), host.reads.Load())
 }
