@@ -315,7 +315,10 @@ func parseRepositoryURL(scope, rawURL string) (string, string, bool) {
 
 // instancePath is the path of rawURL below the instance at scope, with any base
 // path the instance is mounted under dropped. It reports false for a URL on any
-// other host or outside that base path.
+// other host or outside that base path. Scheme and port are not compared: the
+// configured base URL can reach the instance directly (http, :3000) while the
+// URLs it hands out carry its public ROOT_URL, and an SSH remote has a port of
+// its own.
 func instancePath(scope, rawURL string) (string, bool) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Host == "" {
