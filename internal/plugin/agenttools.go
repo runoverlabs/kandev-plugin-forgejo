@@ -43,14 +43,33 @@ type agentTools struct {
 	hosts          kandev.Provider
 	switches       workspaceSwitches
 	audit          *auditTrail
-	connection     sourcecontrol.Connection
+	connection     instanceInfo
 	repositories   sourcecontrol.AttachedRepositoryResolver
 	changeRequests sourcecontrol.ChangeRequestService
 	associations   taskLinks
-	pulls          sourcecontrol.PullRequestReader
-	ci             sourcecontrol.CIReader
+	pulls          pullRequestReader
+	ci             ciReader
 	pullActions    linkedPullRequests
 	automation     outcomeRecorder
+}
+
+// pullRequestReader reads and readies pull requests in a resolved repository.
+type pullRequestReader interface {
+	PullRequest(ctx context.Context, repository sourcecontrol.Repository, number int64) (sourcecontrol.PullRequestSummary, error)
+	// OpenPullRequestForHead finds the open pull request whose head is branch,
+	// or nil when there is none.
+	OpenPullRequestForHead(ctx context.Context, repository sourcecontrol.Repository, branch string) (*sourcecontrol.PullRequestSummary, error)
+	// MarkReady clears pull's work-in-progress marker and reports whether
+	// anything changed. A pull request that is already ready is returned as is.
+	MarkReady(ctx context.Context, repository sourcecontrol.Repository, pull sourcecontrol.PullRequestSummary) (sourcecontrol.PullRequestSummary, bool, error)
+}
+
+// ciReader reports CI for a ref of a resolved repository.
+type ciReader interface {
+	CIStatus(ctx context.Context, repository sourcecontrol.Repository, ref string) (scm.CIStatus, error)
+	// JobLogTail returns at most maxBytes from the end of a job's log, and
+	// whether anything before it was cut.
+	JobLogTail(ctx context.Context, repository sourcecontrol.Repository, jobID int64, maxBytes int) (string, bool, error)
 }
 
 // outcomeRecorder records the agent's report on the auto-fix attempt in
@@ -166,7 +185,7 @@ func (h *agentTools) toolCI(ctx context.Context, request *pluginsdk.AgentToolReq
 // ceiling, so carrying the same bytes twice would halve the budget for no
 // gain. The structured entries record that a log was attached and whether it
 // was cut.
-func appendFailedJobLogs(ctx context.Context, ci sourcecontrol.CIReader, repository sourcecontrol.Repository,
+func appendFailedJobLogs(ctx context.Context, ci ciReader, repository sourcecontrol.Repository,
 	status scm.CIStatus, lines int, text *strings.Builder, entries []any) {
 	budget := ciLogTotalBytes
 	fetched := 0

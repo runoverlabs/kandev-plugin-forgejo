@@ -73,7 +73,7 @@ an import that crosses a layer, and on a new package missing from its table.
 | foundation | `internal/kandev/` | The late-bound host, the workspace walk, JSON action responses |
 | feature | `internal/sourcecontrol/` | The source-control recipe and the task association store: ports, no Forgejo |
 | feature | `internal/watches/` | Issue and review watch model, dedup ledger, poll loop, fork placement, cleanup: ports, no Forgejo |
-| feature | `internal/automations/` | Automation condition settings, the neutral webhook event, the filters, the `{{data.*}}` payload: ports, no Forgejo |
+| feature | `internal/automations/` | Automation condition settings, the neutral webhook event, the filters, the `{{data.*}}` payload: no Forgejo |
 | feature | `internal/prautomation/` | Pull request automation: switches, settings, the per pull request record, feedback and trust, auto-fix rounds, merge gates, lifecycle prompts, the loop: ports, no Forgejo |
 | adapter | `internal/forgejo/rest/` | The REST v1 wire client: every URL, pagination token, auth detail, wire type and write classification. Knows nothing of Kandev |
 | adapter | `internal/forgejo/` | The port implementations: provider quirks, webhook header and payload shape, mapping wire types onto the features' |

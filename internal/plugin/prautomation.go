@@ -11,7 +11,6 @@ import (
 	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/prautomation"
 	"kandev-plugin-forgejo/internal/scm"
-	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"google.golang.org/grpc/codes"
@@ -41,7 +40,7 @@ const (
 type automationActions struct {
 	automation       *prautomation.Engine
 	automationSource automationPulls
-	connection       sourcecontrol.Connection
+	connection       instanceInfo
 	associations     taskLinks
 	switches         workspaceSwitches
 	audit            *auditTrail

@@ -13,8 +13,8 @@ import (
 )
 
 // This file is the composition root: the only one in this package that names
-// a Forgejo adapter. Everything else reaches the instance through the ports
-// the features declare.
+// a Forgejo adapter. Everything else reaches the instance through ports: the
+// features' own, and the handlers' where no feature consumes one.
 
 // NewRuntime builds the runtime and its adapter graph. The Host is injected
 // after construction, so every adapter resolves it lazily through the provider
@@ -82,13 +82,8 @@ func NewRuntime() *Runtime {
 // newAutomationEngine wires the engine to the Host and the instance.
 func newAutomationEngine(hosts kandev.Provider, switches workspaceSwitches, audit *auditTrail, source *forgejo.AutomationSource) *prautomation.Engine {
 	return prautomation.NewEngine(prautomation.Config{
-		Store: prautomation.NewStore(func() prautomation.StateHost {
-			host := hosts()
-			if host == nil {
-				return nil
-			}
-			return host
-		}),
+		// A nil Host converts to a nil StateHost: interface to interface.
+		Store:     prautomation.NewStore(func() prautomation.StateHost { return hosts() }),
 		Links:     source,
 		Observer:  source,
 		Merger:    automationMerger{source: source, audit: audit},

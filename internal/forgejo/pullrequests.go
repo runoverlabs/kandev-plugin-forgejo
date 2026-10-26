@@ -24,11 +24,6 @@ type PullRequests struct {
 	connection *Connection
 }
 
-var (
-	_ sourcecontrol.PullRequestReader = (*PullRequests)(nil)
-	_ sourcecontrol.CIReader          = (*PullRequests)(nil)
-)
-
 // NewPullRequests returns the agent-facing reads over connection.
 func NewPullRequests(connection *Connection) *PullRequests {
 	return &PullRequests{connection: connection}

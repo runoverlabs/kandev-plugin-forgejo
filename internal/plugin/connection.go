@@ -19,9 +19,16 @@ import (
 // status, live test, and the two workspace switches.
 type connectionActions struct {
 	hosts      kandev.Provider
-	connection sourcecontrol.Connection
+	connection instanceConnection
 	switches   workspaceSwitches
 	audit      *auditTrail
+}
+
+// instanceConnection is the configured instance: what the config says, and
+// what a live check learns.
+type instanceConnection interface {
+	instanceInfo
+	Probe(ctx context.Context) (sourcecontrol.ConnectionProbe, error)
 }
 
 // connectionStatusCacheKey holds the last probe result per workspace so

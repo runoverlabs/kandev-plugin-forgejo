@@ -68,6 +68,13 @@ type taskLinks interface {
 	ListForTask(ctx context.Context, workspaceID, taskID string) ([]sourcecontrol.ChangeRequestIdentity, error)
 }
 
+// instanceInfo reports the configured instance without contacting it. Info
+// fails with scm.ErrNotConfigured or scm.ErrInvalidConfig when the operator
+// has not set a usable one.
+type instanceInfo interface {
+	Info(ctx context.Context) (sourcecontrol.ConnectionInfo, error)
+}
+
 // linkedPullRequests reads and writes a pull request linked to the verified task.
 type linkedPullRequests interface {
 	sourcecontrol.ChangeRequestDetailReader

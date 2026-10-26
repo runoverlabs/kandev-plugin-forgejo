@@ -20,8 +20,6 @@ type ConditionInstance struct {
 	cache      automationCache
 }
 
-var _ automations.Instance = (*ConditionInstance)(nil)
-
 // NewConditionInstance returns the condition-facing view of connection.
 func NewConditionInstance(connection *Connection) *ConditionInstance {
 	return &ConditionInstance{connection: connection}
@@ -75,8 +73,6 @@ func (s *ConditionInstance) RepositoryNames(ctx context.Context) []string {
 
 // Webhooks verifies and decodes deliveries; see webhooks.go.
 type Webhooks struct{}
-
-var _ automations.Webhooks = Webhooks{}
 
 // Verify checks the delivery's HMAC signature.
 func (Webhooks) Verify(secret string, body []byte, headers map[string]string) error {
