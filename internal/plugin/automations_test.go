@@ -284,10 +284,13 @@ func TestDescribeConfigured(t *testing.T) {
 	t.Run("ci on forgejo 15", func(t *testing.T) {
 		t.Parallel()
 		instance := newFakeInstance(t, "15.0.10+gitea-1.22.0", true)
-		runtime, _ := automationRuntime(t, map[string]any{"base_url": instance.server.URL, "api_token": automationToken})
+		runtime, host := automationRuntime(t, map[string]any{"base_url": instance.server.URL, "api_token": automationToken})
 		response, err := describe(t, runtime, automations.ConditionCIResult, settings)
 		require.NoError(t, err)
 		require.True(t, response.Available, response.Reason)
+		// The scope, account, version and repository checks share one config
+		// read: the host calls Describe twice per delivery, inside one budget.
+		require.Equal(t, int64(1), host.configReads.Load())
 	})
 	// The host's delivery worker cancels a receipt on available=false and
 	// retries on an error, so a transient failure must be an error.

@@ -26,13 +26,18 @@ type configHost struct {
 	mu        sync.Mutex
 	state     map[string]map[string]any
 	failState bool
+	// configReads counts GetConfig calls.
+	configReads atomic.Int64
 }
 
 func newConfigHost(config map[string]any) *configHost {
 	return &configHost{config: config, state: map[string]map[string]any{}}
 }
 
-func (h *configHost) GetConfig(context.Context) (map[string]any, error) { return h.config, nil }
+func (h *configHost) GetConfig(context.Context) (map[string]any, error) {
+	h.configReads.Add(1)
+	return h.config, nil
+}
 func (h *configHost) stateKey(scope, scopeID, key string) string {
 	return scope + "/" + scopeID + "/" + key
 }

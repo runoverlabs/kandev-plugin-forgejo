@@ -17,8 +17,8 @@ import (
 // Connection turns the plugin's operator config into a ready REST client. The
 // resolved client is cached and rebuilt whenever the operator changes the
 // instance URL or token. Kandev restarts a plugin on config change, so the
-// cache exists to avoid a GetConfig round trip per action, not to survive
-// rotation.
+// cache exists to avoid rebuilding the client per call, not to survive
+// rotation. The config itself is read once per RPC (see kandev.ShareConfig).
 type Connection struct {
 	hosts      kandev.Provider
 	httpClient *http.Client
@@ -48,7 +48,7 @@ func (c *Connection) Client(ctx context.Context) (*rest.Client, error) {
 	if host == nil {
 		return nil, scm.ErrNotConfigured
 	}
-	config, err := host.GetConfig(ctx)
+	config, err := kandev.Config(ctx, host)
 	if err != nil {
 		return nil, fmt.Errorf("forgejo: read plugin config: %w", err)
 	}
