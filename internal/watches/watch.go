@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"kandev-plugin-forgejo/internal/scm"
 )
 
 // DefaultPollInterval is the interval a watch polls at when the operator does
@@ -106,30 +108,14 @@ const (
 // than an issue watch's per-repository list.
 const MinReviewPollInterval = 60 * time.Second
 
-// RepoRef names one repository on the connected instance.
-type RepoRef struct {
-	Owner string `json:"owner"`
-	Name  string `json:"name"`
-}
-
-// FullName renders the canonical "owner/name" form.
-func (r RepoRef) FullName() string { return r.Owner + "/" + r.Name }
-
-// ParseRepoRef reads an "owner/name" string. It rejects anything with a
-// different shape rather than guessing, because a malformed entry would
-// otherwise become a 404 on every poll with no obvious cause. It is the one
-// definition of a repository reference: automation conditions use it too.
-func ParseRepoRef(raw string) (RepoRef, error) {
-	// A pasted path ("/owner/name/") loses its surrounding slashes; what is
-	// left must still be exactly owner/name.
-	trimmed := strings.Trim(strings.TrimSpace(raw), "/")
-	owner, name, found := strings.Cut(trimmed, "/")
-	owner, name = strings.TrimSpace(owner), strings.TrimSpace(name)
-	if !found || owner == "" || name == "" || strings.Contains(name, "/") ||
-		strings.ContainsAny(owner+name, " \t\r\n") {
-		return RepoRef{}, ValidationError(fmt.Sprintf("watches: repository %q must be in owner/name form", raw))
+// ParseRepoRef reads an "owner/name" string as scm.ParseRepoRef does, and
+// refuses a malformed one as a ValidationError the watch editor can show.
+func ParseRepoRef(raw string) (scm.RepoRef, error) {
+	ref, err := scm.ParseRepoRef(raw)
+	if err != nil {
+		return scm.RepoRef{}, ValidationError("watches: " + err.Error())
 	}
-	return RepoRef{Owner: owner, Name: name}, nil
+	return ref, nil
 }
 
 // Watch is one issue watch: a query against the Forgejo instance plus the
@@ -168,8 +154,8 @@ type Watch struct {
 	BaseBranch   string `json:"base_branch"`
 
 	// Query: which issues match.
-	Repos  []RepoRef `json:"repos"`
-	Labels []string  `json:"labels"`
+	Repos  []scm.RepoRef `json:"repos"`
+	Labels []string      `json:"labels"`
 	// State is "open", "closed", or "all". Empty means "open".
 	State string `json:"state"`
 	// Query is free text matched against title and body.
@@ -287,9 +273,16 @@ func (w *Watch) Normalize() {
 	}
 	w.normalizeKind()
 
-	labels := make([]string, 0, len(w.Labels))
+	w.Labels = normalizeLabels(w.Labels)
+	w.Repos = normalizeRepos(w.Repos)
+}
+
+// normalizeLabels trims the labels and drops empty and repeated ones, keeping
+// the first occurrence's order.
+func normalizeLabels(raw []string) []string {
+	labels := make([]string, 0, len(raw))
 	seen := map[string]struct{}{}
-	for _, label := range w.Labels {
+	for _, label := range raw {
 		trimmed := strings.TrimSpace(label)
 		if trimmed == "" {
 			continue
@@ -300,23 +293,27 @@ func (w *Watch) Normalize() {
 		seen[trimmed] = struct{}{}
 		labels = append(labels, trimmed)
 	}
-	w.Labels = labels
+	return labels
+}
 
-	repos := make([]RepoRef, 0, len(w.Repos))
-	seenRepo := map[string]struct{}{}
-	for _, repo := range w.Repos {
-		ref := RepoRef{Owner: strings.TrimSpace(repo.Owner), Name: strings.TrimSpace(repo.Name)}
+// normalizeRepos trims the repositories and drops incomplete ones and ones
+// repeated up to case, keeping the first occurrence.
+func normalizeRepos(raw []scm.RepoRef) []scm.RepoRef {
+	repos := make([]scm.RepoRef, 0, len(raw))
+	seen := map[string]struct{}{}
+	for _, repo := range raw {
+		ref := scm.RepoRef{Owner: strings.TrimSpace(repo.Owner), Name: strings.TrimSpace(repo.Name)}
 		if ref.Owner == "" || ref.Name == "" {
 			continue
 		}
 		key := strings.ToLower(ref.FullName())
-		if _, duplicate := seenRepo[key]; duplicate {
+		if _, duplicate := seen[key]; duplicate {
 			continue
 		}
-		seenRepo[key] = struct{}{}
+		seen[key] = struct{}{}
 		repos = append(repos, ref)
 	}
-	w.Repos = repos
+	return repos
 }
 
 // normalizeKind canonicalizes the review-only fields. An issue watch carries

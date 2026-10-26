@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"kandev-plugin-forgejo/internal/scm"
+
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )
 
@@ -250,7 +252,7 @@ func (f *fakeIssues) fail(repo string, err error) {
 	f.errs[repo] = err
 }
 
-func (f *fakeIssues) ListIssues(_ context.Context, repo RepoRef, query IssueQuery) ([]Issue, error) {
+func (f *fakeIssues) ListIssues(_ context.Context, repo scm.RepoRef, query IssueQuery) ([]Issue, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.queries = append(f.queries, query)
@@ -282,7 +284,7 @@ func newTestStore(host *fakeHost) *Store {
 
 // sampleWatch is a valid, saveable watch for the given workspace.
 func sampleWatch(workspaceID string, repos ...string) Watch {
-	refs := make([]RepoRef, 0, len(repos))
+	refs := make([]scm.RepoRef, 0, len(repos))
 	for _, raw := range repos {
 		ref, err := ParseRepoRef(raw)
 		if err != nil {
@@ -369,7 +371,7 @@ func newFakeReviews() *fakeReviews {
 	return &fakeReviews{details: map[string]PullDetail{}, states: map[string]PullState{}, errs: map[string]error{}}
 }
 
-func prKey(repo RepoRef, number int64) string {
+func prKey(repo scm.RepoRef, number int64) string {
 	return repo.FullName() + "#" + strconv.FormatInt(number, 10)
 }
 
@@ -388,7 +390,7 @@ func (f *fakeReviews) SearchReviewRequests(_ context.Context, q ReviewQuery) ([]
 	return f.requests, f.searchErr
 }
 
-func (f *fakeReviews) PullDetail(_ context.Context, repo RepoRef, number int64, _ ReviewScope) (PullDetail, error) {
+func (f *fakeReviews) PullDetail(_ context.Context, repo scm.RepoRef, number int64, _ ReviewScope) (PullDetail, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	key := prKey(repo, number)
@@ -399,7 +401,7 @@ func (f *fakeReviews) PullDetail(_ context.Context, repo RepoRef, number int64, 
 	return f.details[key], nil
 }
 
-func (f *fakeReviews) PullState(_ context.Context, repo RepoRef, number int64) (PullState, error) {
+func (f *fakeReviews) PullState(_ context.Context, repo scm.RepoRef, number int64) (PullState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	key := prKey(repo, number)

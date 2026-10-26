@@ -9,9 +9,8 @@ import (
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"github.com/stretchr/testify/require"
 
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
-
-	"kandev-plugin-forgejo/internal/forgejo"
 )
 
 func TestPullFailureUsesExplicitFixedStatuses(t *testing.T) {
@@ -20,12 +19,12 @@ func TestPullFailureUsesExplicitFixedStatuses(t *testing.T) {
 		err    error
 		status int
 	}{
-		{forgejo.ErrNotLinked, http.StatusNotFound},
-		{forgejo.ErrAmbiguous, http.StatusConflict},
-		{forgejo.ErrUnauthorized, http.StatusForbidden},
-		{&forgejo.WriteError{Status: 403, Reason: forgejo.ReasonBlockedByProtection}, http.StatusForbidden},
-		{&forgejo.WriteError{Status: 409, Reason: forgejo.ReasonHeadChanged}, http.StatusConflict},
-		{&forgejo.WriteError{Status: 422, Reason: forgejo.ReasonSelfReview}, http.StatusUnprocessableEntity},
+		{scm.ErrNotLinked, http.StatusNotFound},
+		{scm.ErrAmbiguous, http.StatusConflict},
+		{scm.ErrUnauthorized, http.StatusForbidden},
+		{&scm.WriteError{Status: 403, Reason: scm.ReasonBlockedByProtection}, http.StatusForbidden},
+		{&scm.WriteError{Status: 409, Reason: scm.ReasonHeadChanged}, http.StatusConflict},
+		{&scm.WriteError{Status: 422, Reason: scm.ReasonSelfReview}, http.StatusUnprocessableEntity},
 		{context.DeadlineExceeded, http.StatusGatewayTimeout},
 		{errors.New("token=super-secret"), http.StatusBadGateway},
 	}

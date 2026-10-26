@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"kandev-plugin-forgejo/internal/kandev"
+	"kandev-plugin-forgejo/internal/scm"
+
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"github.com/stretchr/testify/require"
 )
@@ -87,7 +90,7 @@ func TestStoreDeleteRemovesTheLedger(t *testing.T) {
 
 	saved, err := store.Put(context.Background(), sampleWatch("ws-1", "acme/app"))
 	require.NoError(t, err)
-	repo := RepoRef{Owner: "acme", Name: "app"}
+	repo := scm.RepoRef{Owner: "acme", Name: "app"}
 	require.NoError(t, store.Record(context.Background(), saved, repo, 1, "u1", "task-1"))
 	require.NoError(t, store.Record(context.Background(), saved, repo, 2, "u2", "task-2"))
 
@@ -112,7 +115,7 @@ func TestStoreForgetClearsTheLedgerOnly(t *testing.T) {
 
 	saved, err := store.Put(context.Background(), sampleWatch("ws-1", "acme/app"))
 	require.NoError(t, err)
-	repo := RepoRef{Owner: "acme", Name: "app"}
+	repo := scm.RepoRef{Owner: "acme", Name: "app"}
 	require.NoError(t, store.Record(context.Background(), saved, repo, 1, "u1", "task-1"))
 
 	forgotten, err := store.Forget(context.Background(), saved)
@@ -132,7 +135,7 @@ func TestStoreSeenReportsTheRecordedTask(t *testing.T) {
 	store := newTestStore(newFakeHost("ws-1"))
 	saved, err := store.Put(context.Background(), sampleWatch("ws-1", "acme/app"))
 	require.NoError(t, err)
-	repo := RepoRef{Owner: "acme", Name: "app"}
+	repo := scm.RepoRef{Owner: "acme", Name: "app"}
 
 	_, seen, err := store.Seen(context.Background(), saved, repo, 42)
 	require.NoError(t, err)
@@ -154,7 +157,7 @@ func TestStateKeysStayWithinTheHostVocabulary(t *testing.T) {
 	t.Parallel()
 	watch := sampleWatch("ws-1", "acme/app")
 	watch.ID = strings.Repeat("a", 32)
-	long := RepoRef{Owner: strings.Repeat("o", 100), Name: strings.Repeat("n", 100)}
+	long := scm.RepoRef{Owner: strings.Repeat("o", 100), Name: strings.Repeat("n", 100)}
 
 	for _, key := range []string{
 		watchKey(watch.ID),
@@ -170,15 +173,15 @@ func TestStateKeysStayWithinTheHostVocabulary(t *testing.T) {
 // satisfy a lookup under the other.
 func TestDedupKeysDifferByScope(t *testing.T) {
 	t.Parallel()
-	repo := RepoRef{Owner: "acme", Name: "app"}
+	repo := scm.RepoRef{Owner: "acme", Name: "app"}
 	perWatch := dedupKey(Watch{ID: "w1", DedupScope: DedupScopeWatch}, repo, 1)
 	perWorkspace := dedupKey(Watch{ID: "w1", DedupScope: DedupScopeWorkspace}, repo, 1)
 	require.NotEqual(t, perWatch, perWorkspace)
 
 	// Different repositories with the same issue number stay distinct.
 	require.NotEqual(t,
-		dedupKey(Watch{ID: "w1"}, RepoRef{Owner: "acme", Name: "app"}, 1),
-		dedupKey(Watch{ID: "w1"}, RepoRef{Owner: "acme", Name: "other"}, 1))
+		dedupKey(Watch{ID: "w1"}, scm.RepoRef{Owner: "acme", Name: "app"}, 1),
+		dedupKey(Watch{ID: "w1"}, scm.RepoRef{Owner: "acme", Name: "other"}, 1))
 }
 
 // Watch entries share the workspace state scope with the plugin's existing
@@ -231,7 +234,7 @@ func TestStoreRequiresAHost(t *testing.T) {
 	t.Parallel()
 	store := NewStore(func() pluginsdk.Host { return nil })
 	_, err := store.List(context.Background(), "ws-1")
-	require.ErrorIs(t, err, ErrNoHost)
+	require.ErrorIs(t, err, kandev.ErrNoHost)
 }
 
 func TestReviewWatchesLiveUnderTheirOwnPrefix(t *testing.T) {

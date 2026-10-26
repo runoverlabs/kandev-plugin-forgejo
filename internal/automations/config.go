@@ -12,7 +12,7 @@ import (
 	"path"
 	"strings"
 
-	"kandev-plugin-forgejo/internal/watches"
+	"kandev-plugin-forgejo/internal/scm"
 )
 
 // Condition keys. Each must match a manifest automation_conditions entry, and
@@ -174,7 +174,7 @@ func hasType(kind string, value any) bool {
 // to this condition, so a missing one matches nothing rather than everything.
 func parseRepository(value any) (string, error) {
 	text, _ := value.(string)
-	ref, err := watches.ParseRepoRef(text)
+	ref, err := scm.ParseRepoRef(text)
 	if err != nil {
 		return "", fmt.Errorf("%w: repository must be owner/name", ErrInvalidConfig)
 	}

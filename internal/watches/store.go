@@ -13,6 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"kandev-plugin-forgejo/internal/kandev"
+	"kandev-plugin-forgejo/internal/scm"
+
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )
 
@@ -45,15 +48,6 @@ const (
 // to enumerate them.
 const stateScope = "workspace"
 
-// HostProvider defers Host resolution to call time. The Host is injected from
-// a background goroutine after construction, so nothing may capture it
-// eagerly.
-type HostProvider func() pluginsdk.Host
-
-// ErrNoHost means the plugin has not finished connecting back to kandev. It is
-// transient: the broker dial happens once, shortly after start.
-var ErrNoHost = errors.New("watches: kandev host is not available yet")
-
 // ErrNotFound means no watch exists with the requested id in that workspace.
 var ErrNotFound = errors.New("watches: watch not found")
 
@@ -64,12 +58,12 @@ var ErrNotFound = errors.New("watches: watch not found")
 // state API has no compare-and-swap, so a shared list value would lose a
 // concurrent write — the same reason the association store is shaped this way.
 type Store struct {
-	hosts HostProvider
+	hosts kandev.Provider
 	now   func() time.Time
 }
 
 // NewStore returns a Host-state-backed store.
-func NewStore(hosts HostProvider) *Store {
+func NewStore(hosts kandev.Provider) *Store {
 	return &Store{hosts: hosts, now: time.Now}
 }
 
@@ -89,16 +83,7 @@ type TaskRecord struct {
 	CreatedAt string `json:"created_at"`
 }
 
-func (s *Store) host() (pluginsdk.Host, error) {
-	if s.hosts == nil {
-		return nil, ErrNoHost
-	}
-	host := s.hosts()
-	if host == nil {
-		return nil, ErrNoHost
-	}
-	return host, nil
-}
+func (s *Store) host() (pluginsdk.Host, error) { return s.hosts.Get() }
 
 // NewID returns an opaque identifier for a new watch. It is hex so it is
 // always a legal state key component.
@@ -237,7 +222,7 @@ func (s *Store) Delete(ctx context.Context, workspaceID, id string) error {
 
 // Seen reports whether an issue already produced a task under this watch's
 // dedup scope, and which task it was.
-func (s *Store) Seen(ctx context.Context, watch Watch, repo RepoRef, number int64) (TaskRecord, bool, error) {
+func (s *Store) Seen(ctx context.Context, watch Watch, repo scm.RepoRef, number int64) (TaskRecord, bool, error) {
 	host, err := s.host()
 	if err != nil {
 		return TaskRecord{}, false, err
@@ -263,7 +248,7 @@ func (s *Store) Seen(ctx context.Context, watch Watch, repo RepoRef, number int6
 // would permanently suppress the issue if task creation then failed, which is
 // the worse failure: a duplicate card is visible and fixable, a silently
 // skipped issue is neither.
-func (s *Store) Record(ctx context.Context, watch Watch, repo RepoRef, number int64, issueURL, taskID string) error {
+func (s *Store) Record(ctx context.Context, watch Watch, repo scm.RepoRef, number int64, issueURL, taskID string) error {
 	host, err := s.host()
 	if err != nil {
 		return err
@@ -393,7 +378,7 @@ func storedKey(watch Watch) string {
 }
 
 // dedupKey is the ledger key for one issue under a watch's dedup scope.
-func dedupKey(watch Watch, repo RepoRef, number int64) string {
+func dedupKey(watch Watch, repo scm.RepoRef, number int64) string {
 	issue := repoDigest(repo) + "." + strconv.FormatInt(number, 10)
 	if watch.DedupScope == DedupScopeWorkspace {
 		return issueTaskKeyPrefix + issue
@@ -404,7 +389,7 @@ func dedupKey(watch Watch, repo RepoRef, number int64) string {
 // repoDigest reduces "owner/name" to a short, stable, key-legal component.
 // Repository names are long enough that including them raw would breach the
 // Host's 128-character key limit once combined with a watch id.
-func repoDigest(repo RepoRef) string {
+func repoDigest(repo scm.RepoRef) string {
 	sum := sha256.Sum256([]byte(strings.ToLower(repo.FullName())))
 	return hex.EncodeToString(sum[:6])
 }

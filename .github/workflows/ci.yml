@@ -86,6 +86,35 @@ jobs:
         working-directory: kandev-plugin-forgejo
         run: npm run typecheck
 
+      # The release binary, checksummed, like gitleaks in security.yml:
+      # golangci-lint does not support `go install`. Keep the version in step
+      # with the Makefile. The matrix's GOFLAGS picks the build tag, so each
+      # SDK target is linted as it is built.
+      - name: Install golangci-lint
+        env:
+          GOLANGCI_LINT_VERSION: "2.15.0"
+          GOLANGCI_LINT_SHA256: "9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea"
+        run: |
+          set -euo pipefail
+          name="golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64"
+          curl -sfL "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}/${name}.tar.gz" -o golangci-lint.tar.gz
+          echo "${GOLANGCI_LINT_SHA256}  golangci-lint.tar.gz" | sha256sum -c -
+          tar xzf golangci-lint.tar.gz "${name}/golangci-lint"
+          sudo install -m 0755 "${name}/golangci-lint" /usr/local/bin/golangci-lint
+          golangci-lint version
+
+      # Static analysis and the complexity gate (.golangci.yml). The layer
+      # rules are internal/archtest, which runs with the Go tests.
+      - name: golangci-lint
+        working-directory: kandev-plugin-forgejo
+        run: golangci-lint run ./...
+
+      - name: Lint UI
+        working-directory: kandev-plugin-forgejo
+        run: |
+          npx eslint ui
+          npx depcruise ui/src ui/test --config .dependency-cruiser.cjs
+
       - name: Go tests
         working-directory: kandev-plugin-forgejo
         run: go test ./... -count=1

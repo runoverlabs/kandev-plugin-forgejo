@@ -12,7 +12,7 @@ import (
 func TestSearchBuildsImmutableCandidateIDs(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repos/issues/search", http.StatusOK, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/issues/search", http.StatusOK, []map[string]any{
 		{"number": 42, "title": "Add widgets", "state": "open", "html_url": "https://forge/pulls/42",
 			"repository": map[string]any{"id": 7, "owner": "acme", "name": "widgets", "full_name": "acme/widgets"}},
 		{"number": 9, "title": "Merged one", "state": "closed", "html_url": "https://forge/pulls/9",
@@ -38,7 +38,7 @@ func TestSearchBuildsImmutableCandidateIDs(t *testing.T) {
 func TestSearchRespectsLimit(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repos/issues/search", http.StatusOK, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/issues/search", http.StatusOK, []map[string]any{
 		{"number": 1, "title": "a", "repository": map[string]any{"id": 7, "owner": "o", "name": "r"}},
 		{"number": 2, "title": "b", "repository": map[string]any{"id": 7, "owner": "o", "name": "r"}},
 	})
@@ -58,7 +58,7 @@ func TestSearchIsQuietWhenUnconfiguredOrUnauthorized(t *testing.T) {
 	require.Empty(t, candidates)
 
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repos/issues/search", http.StatusForbidden, nil)
+	api.Handle(http.MethodGet, "/api/v1/repos/issues/search", http.StatusForbidden, nil)
 	connection, _ := newTestConnection(t, api, "token")
 	candidates, err = NewReferences(connection).Search(context.Background(), "workspace-1", "", 10)
 	require.NoError(t, err)
@@ -69,11 +69,11 @@ func TestSearchIsQuietWhenUnconfiguredOrUnauthorized(t *testing.T) {
 func TestAuthorizeFailsClosed(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repositories/7", http.StatusOK, repoPayload(7, "acme", "widgets"))
-	api.handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42", http.StatusOK, map[string]any{"number": 42})
-	api.handle(http.MethodGet, "/api/v1/repositories/8", http.StatusNotFound, nil)
-	api.handle(http.MethodGet, "/api/v1/repositories/9", http.StatusOK, repoPayload(9, "acme", "gone"))
-	api.handle(http.MethodGet, "/api/v1/repos/acme/gone/pulls/1", http.StatusNotFound, nil)
+	api.Handle(http.MethodGet, "/api/v1/repositories/7", http.StatusOK, repoPayload(7, "acme", "widgets"))
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42", http.StatusOK, map[string]any{"number": 42})
+	api.Handle(http.MethodGet, "/api/v1/repositories/8", http.StatusNotFound, nil)
+	api.Handle(http.MethodGet, "/api/v1/repositories/9", http.StatusOK, repoPayload(9, "acme", "gone"))
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/gone/pulls/1", http.StatusNotFound, nil)
 	connection, _ := newTestConnection(t, api, "token")
 	references := NewReferences(connection)
 
@@ -104,8 +104,8 @@ func TestAuthorizeFailsClosed(t *testing.T) {
 func TestAuthorizeAcceptsKeyField(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repositories/7", http.StatusOK, repoPayload(7, "acme", "widgets"))
-	api.handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42", http.StatusOK, map[string]any{"number": 42})
+	api.Handle(http.MethodGet, "/api/v1/repositories/7", http.StatusOK, repoPayload(7, "acme", "widgets"))
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42", http.StatusOK, map[string]any{"number": 42})
 	connection, _ := newTestConnection(t, api, "token")
 
 	allowed, err := NewReferences(connection).Authorize(context.Background(), "workspace-1", "search", map[string]any{"key": "7:42"})

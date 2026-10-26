@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"kandev-plugin-forgejo/internal/forgejo"
+	"kandev-plugin-forgejo/internal/kandev"
 	"kandev-plugin-forgejo/internal/prautomation"
-	"kandev-plugin-forgejo/internal/watches"
+	"kandev-plugin-forgejo/internal/scm"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"google.golang.org/grpc/codes"
@@ -35,46 +35,27 @@ const (
 	eventSessionStateChanged = "task_session.state_changed"
 )
 
-// newAutomationEngine wires the engine to the Host and the instance.
-func (r *Runtime) newAutomationEngine(hosts forgejo.HostProvider) *prautomation.Engine {
-	return prautomation.NewEngine(prautomation.Config{
-		Store: prautomation.NewStore(func() prautomation.StateHost {
-			host := hosts()
-			if host == nil {
-				return nil
-			}
-			return host
-		}),
-		Links:     r.automationSource,
-		Observer:  r.automationSource,
-		Merger:    automationMerger{runtime: r},
-		Messenger: automationMessenger{hosts: hosts},
-		// Fails closed: prompting an agent or merging in a workspace whose
-		// operator turned the integration off is worse than waiting a tick.
-		Gate:       r.integrationEnabledStrict,
-		Workspaces: r.workspaceIDs,
-		Describe:   safeMessage,
-	})
-}
-
-func (r *Runtime) workspaceIDs(ctx context.Context) ([]string, error) {
-	host := r.Host()
-	if host == nil {
-		return nil, prautomation.ErrNoHost
-	}
-	return watches.WorkspaceIDs(ctx, host)
+// automationActions serve the automation.* actions: one pull request's
+// switches, a retry, and the workspace defaults.
+type automationActions struct {
+	automation       *prautomation.Engine
+	automationSource automationPulls
+	connection       instanceInfo
+	associations     taskLinks
+	switches         workspaceSwitches
+	audit            *auditTrail
 }
 
 // automationMessenger reaches task agents through the Host. It needs
 // api_read: sessions and api_write: messages.
 type automationMessenger struct {
-	hosts forgejo.HostProvider
+	hosts kandev.Provider
 }
 
 func (m automationMessenger) Sessions(ctx context.Context, taskID string) ([]prautomation.Session, error) {
 	host := m.hosts()
 	if host == nil {
-		return nil, prautomation.ErrNoHost
+		return nil, kandev.ErrNoHost
 	}
 	// Every page: an attempt's session missing from the list reads as ended,
 	// and its prompt would be sent again while the agent still runs it.
@@ -114,7 +95,7 @@ var errTooManySessions = errors.New("kandev-plugin-forgejo: too many sessions on
 func (m automationMessenger) Send(ctx context.Context, taskID, sessionID, text string) (string, error) {
 	host := m.hosts()
 	if host == nil {
-		return "", prautomation.ErrNoHost
+		return "", kandev.ErrNoHost
 	}
 	dispatch, err := host.Messages().Send(ctx, taskID, sessionID, text)
 	if err != nil {
@@ -154,19 +135,20 @@ func hostMessagingError(err error) error {
 // retries those, an entry per retry would push the people's writes out of the
 // bounded trail, and "failed" would misreport a merge someone else made.
 type automationMerger struct {
-	runtime *Runtime
+	source automationPulls
+	audit  *auditTrail
 }
 
 func (m automationMerger) Merge(ctx context.Context, workspaceID string, ref prautomation.PullRef, headSHA string) error {
-	err := m.runtime.automationSource.MergeLinked(ctx, ref, headSHA)
-	var writeErr *forgejo.WriteError
+	err := m.source.MergeLinked(ctx, ref, headSHA)
+	var writeErr *scm.WriteError
 	answered := err == nil || errors.As(err, &writeErr)
 	if answered && (writeErr == nil || !transientMergeReason(writeErr.Reason)) {
 		outcome := "merged"
 		if err != nil {
 			outcome = "failed"
 		}
-		m.runtime.audit(ctx, auditRecord{
+		m.audit.Record(ctx, auditRecord{
 			Action: "automation.merge", Actor: "auto-merge", Workspace: workspaceID,
 			Task: ref.TaskID, Number: ref.Number, Outcome: outcome,
 		})
@@ -182,248 +164,261 @@ func (m automationMerger) Merge(ctx context.Context, workspaceID string, ref pra
 // transientMergeReason reports a refusal the next observation explains:
 // mergeability is computed, the new head is evaluated afresh, the merge is
 // seen.
-func transientMergeReason(reason forgejo.Reason) bool {
+func transientMergeReason(reason scm.Reason) bool {
 	switch reason {
-	case forgejo.ReasonChecking, forgejo.ReasonHeadChanged, forgejo.ReasonAlreadyMerged:
+	case scm.ReasonChecking, scm.ReasonHeadChanged, scm.ReasonAlreadyMerged:
 		return true
 	}
 	return false
 }
 
-// OnEvent receives the bus events the manifest subscribes to. It only marks
-// records due, and off the delivery path: the host waits on it, and marking a
-// record waits for any evaluation holding it.
-func (r *Runtime) OnEvent(_ context.Context, event *pluginsdk.Event) error {
-	if event == nil || r.automation == nil {
-		return nil
-	}
-	taskID, _ := event.Payload["task_id"].(string)
-	sessionID, _ := event.Payload["session_id"].(string)
-	if strings.TrimSpace(taskID) == "" {
-		return nil
-	}
-	switch {
-	case event.EventType == eventTurnCompleted || strings.HasPrefix(event.EventType, eventTurnCompleted+"."):
-		var startedAt time.Time
-		if raw, ok := event.Payload["started_at"].(string); ok {
-			startedAt, _ = time.Parse(time.RFC3339Nano, raw)
-		}
-		r.automation.Hint(func(ctx context.Context) { r.automation.TurnCompleted(ctx, taskID, sessionID, startedAt) })
-	case event.EventType == eventSessionStateChanged || strings.HasPrefix(event.EventType, eventSessionStateChanged+"."):
-		r.automation.Hint(func(ctx context.Context) { r.automation.SessionChanged(ctx, taskID) })
-	}
-	return nil
+// automationInput is the body of the task-scoped automation actions. The
+// switches are pointers so that a request changes only what it names.
+type automationInput struct {
+	Number            int64  `json:"number"`
+	AutoFix           *bool  `json:"auto_fix"`
+	AutoMerge         *bool  `json:"auto_merge"`
+	OnReviewRequested *bool  `json:"on_review_requested"`
+	OnMerged          *bool  `json:"on_merged"`
+	OnClosed          *bool  `json:"on_closed"`
+	What              string `json:"what"`
+	// ConfirmFork is the panel's record that a human confirmed the fork
+	// warning.
+	ConfirmFork bool `json:"confirm_fork"`
+}
+
+// enabling reports whether the request turns on a switch that runs an agent
+// on the pull request's code and comments.
+func (in automationInput) enabling() bool {
+	return (in.AutoFix != nil && *in.AutoFix) || (in.AutoMerge != nil && *in.AutoMerge)
 }
 
 // handleAutomationAction routes the automation actions.
-func (r *Runtime) handleAutomationAction(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
+func (h *automationActions) handleAutomationAction(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
 	workspaceID := strings.TrimSpace(request.Context.WorkspaceID)
 	if workspaceID == "" {
-		return domainResponse(422, "This action needs a verified workspace.")
+		return kandev.Refuse(422, "This action needs a verified workspace.")
 	}
 	switch request.ActionKey {
 	case ActionAutomationSettings:
-		return r.automationSettings(ctx, workspaceID)
+		return h.automationSettings(ctx, workspaceID)
 	case ActionAutomationSettingsSet:
-		return r.automationSettingsSet(ctx, request, workspaceID)
+		return h.automationSettingsSet(ctx, request, workspaceID)
 	}
 
-	var input struct {
-		Number            int64  `json:"number"`
-		AutoFix           *bool  `json:"auto_fix"`
-		AutoMerge         *bool  `json:"auto_merge"`
-		OnReviewRequested *bool  `json:"on_review_requested"`
-		OnMerged          *bool  `json:"on_merged"`
-		OnClosed          *bool  `json:"on_closed"`
-		What              string `json:"what"`
-		// ConfirmFork is the panel's record that a human confirmed the fork
-		// warning.
-		ConfirmFork bool `json:"confirm_fork"`
-	}
-	if bad := decodeActionBody(request, &input); bad != nil {
+	var input automationInput
+	if bad := kandev.DecodeBody(request, &input); bad != nil {
 		return bad, nil
 	}
-	ref, err := r.automationRef(ctx, workspaceID, request.Context.TaskID, input.Number)
+	ref, err := h.automationRef(ctx, workspaceID, request.Context.TaskID, input.Number)
 	if err != nil {
 		return pullFailure(err)
 	}
-
 	switch request.ActionKey {
 	case ActionAutomationGet:
-		record, found, err := r.automation.Store().Get(ctx, workspaceID, ref)
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			record = prautomation.Record{TaskID: ref.TaskID, RepositoryID: ref.RepositoryID, Number: ref.Number}
-		}
-		if record.Observed.IsZero() {
-			// Not observed yet, so the record cannot say whether this is a fork,
-			// and the panel decides on its warning from it. Shown, not stored:
-			// the loop's observation is what the record keeps.
-			if fork, err := r.automationSource.IsFork(ctx, ref); err == nil {
-				record.Fork = fork
-			}
-		}
-		return r.automationView(ctx, workspaceID, record)
-
+		return h.automationGet(ctx, workspaceID, ref)
 	case ActionAutomationSet:
-		// Auto-fix and auto-merge run an agent on a fork author's code and
-		// comments. That takes a human's confirmation, checked here and not
-		// only in the panel, which may not know yet that it is a fork.
-		var fork *bool
-		isFork := func() (bool, error) {
-			if fork == nil {
-				value, err := r.automationFork(ctx, workspaceID, ref)
-				if err != nil {
-					return false, err
-				}
-				fork = &value
-			}
-			return *fork, nil
-		}
-		enabling := (input.AutoFix != nil && *input.AutoFix) || (input.AutoMerge != nil && *input.AutoMerge)
-		if enabling && !input.ConfirmFork {
-			fork, err := isFork()
-			if err != nil {
-				return pullFailure(err)
-			}
-			if fork {
-				return domainResponse(http.StatusConflict, "This pull request comes from a fork. Confirm the warning in the panel to turn this on.")
-			}
-		}
-		// The defaults an unseeded record takes, as the loop would seed it: a
-		// fork never takes auto-fix or auto-merge from them.
-		settings, err := r.automation.Store().Settings(ctx, workspaceID)
-		if err != nil {
-			return nil, err
-		}
-		defaults := settings.Defaults
-		if defaults.AutoFix || defaults.AutoMerge {
-			fork, err := isFork()
-			if err != nil {
-				return pullFailure(err)
-			}
-			if fork {
-				defaults.AutoFix, defaults.AutoMerge = false, false
-			}
-		}
-		var changes []string
-		// Upsert: when the loop has not seen this link yet, a human's choice
-		// does not wait for it. An unseeded record starts from the defaults,
-		// with what they set on top.
-		record, err := r.automation.Upsert(ctx, workspaceID, ref, func(record *prautomation.Record, created bool) error {
-			if created {
-				changes = append(changes, "created")
-			}
-			next, fresh := record.Switches, !record.Seeded
-			if fresh {
-				next = defaults
-			}
-			apply := func(name string, value *bool, field *bool) {
-				// A new record logs every switch it was given, off ones too:
-				// "created" alone would not say a human refused one.
-				if value != nil && (fresh || *value != *field) {
-					*field = *value
-					changes = append(changes, fmt.Sprintf("%s=%t", name, *value))
-				}
-			}
-			apply("auto_fix", input.AutoFix, &next.AutoFix)
-			apply("auto_merge", input.AutoMerge, &next.AutoMerge)
-			apply("on_review_requested", input.OnReviewRequested, &next.OnReviewRequested)
-			apply("on_merged", input.OnMerged, &next.OnMerged)
-			apply("on_closed", input.OnClosed, &next.OnClosed)
-			record.ApplySwitches(next)
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-		r.audit(ctx, auditRecord{
-			Action: request.ActionKey, Actor: request.Context.ActorID, Workspace: workspaceID,
-			Task: ref.TaskID, Number: ref.Number, Outcome: strings.Join(changes, ","),
-		})
-		return r.automationView(ctx, workspaceID, record)
-
+		return h.automationSet(ctx, request, workspaceID, ref, input)
 	case ActionAutomationRetry:
-		if input.What != "merge" && input.What != "rounds" {
-			return domainResponse(422, "what must be merge or rounds.")
-		}
-		record, err := r.automation.Update(ctx, workspaceID, ref, func(record *prautomation.Record) error {
-			if input.What == "merge" {
-				record.MergeRetry = true
-			} else {
-				record.Rounds, record.Exhausted = 0, false
-			}
-			record.NextDue = time.Time{}
-			return nil
-		})
-		if errors.Is(err, prautomation.ErrNotFound) {
-			return domainResponse(409, "Automation has not looked at this pull request yet.")
-		}
-		if err != nil {
-			return nil, err
-		}
-		r.audit(ctx, auditRecord{
-			Action: request.ActionKey, Actor: request.Context.ActorID, Workspace: workspaceID,
-			Task: ref.TaskID, Number: ref.Number, Outcome: "retry=" + input.What,
-		})
-		return r.automationView(ctx, workspaceID, record)
+		return h.automationRetry(ctx, request, workspaceID, ref, input.What)
 	}
-	return domainResponse(404, "Unknown automation action.")
+	return kandev.Refuse(404, "Unknown automation action.")
+}
+
+func (h *automationActions) automationGet(ctx context.Context, workspaceID string, ref prautomation.PullRef) (*pluginsdk.PluginActionResponse, error) {
+	record, found, err := h.automation.Store().Get(ctx, workspaceID, ref)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		record = prautomation.Record{TaskID: ref.TaskID, RepositoryID: ref.RepositoryID, Number: ref.Number}
+	}
+	if record.Observed.IsZero() {
+		// Not observed yet, so the record cannot say whether this is a fork,
+		// and the panel decides on its warning from it. Shown, not stored:
+		// the loop's observation is what the record keeps.
+		if fork, err := h.automationSource.IsFork(ctx, ref); err == nil {
+			record.Fork = fork
+		}
+	}
+	return h.automationView(ctx, workspaceID, record)
+}
+
+func (h *automationActions) automationSet(ctx context.Context, request *pluginsdk.PluginActionRequest, workspaceID string, ref prautomation.PullRef, input automationInput) (*pluginsdk.PluginActionResponse, error) {
+	fork := h.forkOnce(ctx, workspaceID, ref)
+	// Auto-fix and auto-merge run an agent on a fork author's code and
+	// comments. That takes a human's confirmation, checked here and not only
+	// in the panel, which may not know yet that it is a fork.
+	if input.enabling() && !input.ConfirmFork {
+		isFork, err := fork()
+		if err != nil {
+			return pullFailure(err)
+		}
+		if isFork {
+			return kandev.Refuse(http.StatusConflict, "This pull request comes from a fork. Confirm the warning in the panel to turn this on.")
+		}
+	}
+	settings, err := h.automation.Store().Settings(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defaults, err := seedSwitches(settings.Defaults, fork)
+	if err != nil {
+		return pullFailure(err)
+	}
+	var changes []string
+	// Upsert: when the loop has not seen this link yet, a human's choice
+	// does not wait for it. An unseeded record starts from the defaults,
+	// with what they set on top.
+	record, err := h.automation.Upsert(ctx, workspaceID, ref, func(record *prautomation.Record, created bool) error {
+		if created {
+			changes = append(changes, "created")
+		}
+		changes = append(changes, applySwitches(record, defaults, input)...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	h.audit.Record(ctx, auditRecord{
+		Action: request.ActionKey, Actor: request.Context.ActorID, Workspace: workspaceID,
+		Task: ref.TaskID, Number: ref.Number, Outcome: strings.Join(changes, ","),
+	})
+	return h.automationView(ctx, workspaceID, record)
+}
+
+// forkOnce reads whether the pull request is a fork at most once per request.
+func (h *automationActions) forkOnce(ctx context.Context, workspaceID string, ref prautomation.PullRef) func() (bool, error) {
+	var fork *bool
+	return func() (bool, error) {
+		if fork == nil {
+			value, err := h.automationFork(ctx, workspaceID, ref)
+			if err != nil {
+				return false, err
+			}
+			fork = &value
+		}
+		return *fork, nil
+	}
+}
+
+// seedSwitches are the defaults an unseeded record takes, as the loop would
+// seed it: a fork never takes auto-fix or auto-merge from them.
+func seedSwitches(defaults prautomation.Switches, fork func() (bool, error)) (prautomation.Switches, error) {
+	if !defaults.AutoFix && !defaults.AutoMerge {
+		return defaults, nil
+	}
+	isFork, err := fork()
+	if err != nil {
+		return prautomation.Switches{}, err
+	}
+	if isFork {
+		defaults.AutoFix, defaults.AutoMerge = false, false
+	}
+	return defaults, nil
+}
+
+// applySwitches sets the switches a request names on record and returns the
+// changes for the audit trail. A new record logs every switch it was given,
+// off ones too: "created" alone would not say a human refused one.
+func applySwitches(record *prautomation.Record, defaults prautomation.Switches, input automationInput) []string {
+	var changes []string
+	next, fresh := record.Switches, !record.Seeded
+	if fresh {
+		next = defaults
+	}
+	apply := func(name string, value *bool, field *bool) {
+		if value != nil && (fresh || *value != *field) {
+			*field = *value
+			changes = append(changes, fmt.Sprintf("%s=%t", name, *value))
+		}
+	}
+	apply("auto_fix", input.AutoFix, &next.AutoFix)
+	apply("auto_merge", input.AutoMerge, &next.AutoMerge)
+	apply("on_review_requested", input.OnReviewRequested, &next.OnReviewRequested)
+	apply("on_merged", input.OnMerged, &next.OnMerged)
+	apply("on_closed", input.OnClosed, &next.OnClosed)
+	record.ApplySwitches(next)
+	return changes
+}
+
+func (h *automationActions) automationRetry(ctx context.Context, request *pluginsdk.PluginActionRequest, workspaceID string, ref prautomation.PullRef, what string) (*pluginsdk.PluginActionResponse, error) {
+	if what != "merge" && what != "rounds" {
+		return kandev.Refuse(422, "what must be merge or rounds.")
+	}
+	record, err := h.automation.Update(ctx, workspaceID, ref, func(record *prautomation.Record) error {
+		if what == "merge" {
+			record.MergeRetry = true
+		} else {
+			record.Rounds, record.Exhausted = 0, false
+		}
+		record.NextDue = time.Time{}
+		return nil
+	})
+	if errors.Is(err, prautomation.ErrNotFound) {
+		return kandev.Refuse(409, "Automation has not looked at this pull request yet.")
+	}
+	if err != nil {
+		return nil, err
+	}
+	h.audit.Record(ctx, auditRecord{
+		Action: request.ActionKey, Actor: request.Context.ActorID, Workspace: workspaceID,
+		Task: ref.TaskID, Number: ref.Number, Outcome: "retry=" + what,
+	})
+	return h.automationView(ctx, workspaceID, record)
 }
 
 // automationFork reports whether a linked pull request comes from a fork: as
 // the loop last observed it, or read now when it has not observed it yet.
-func (r *Runtime) automationFork(ctx context.Context, workspaceID string, ref prautomation.PullRef) (bool, error) {
-	record, found, err := r.automation.Store().Get(ctx, workspaceID, ref)
+func (h *automationActions) automationFork(ctx context.Context, workspaceID string, ref prautomation.PullRef) (bool, error) {
+	record, found, err := h.automation.Store().Get(ctx, workspaceID, ref)
 	if err != nil {
 		return false, err
 	}
 	if found && !record.Observed.IsZero() {
 		return record.Fork, nil
 	}
-	return r.automationSource.IsFork(ctx, ref)
+	return h.automationSource.IsFork(ctx, ref)
 }
 
 // automationRef resolves the pull request a task-scoped call may act on, from
 // the task's own links on the configured instance.
-func (r *Runtime) automationRef(ctx context.Context, workspaceID, taskID string, number int64) (prautomation.PullRef, error) {
+func (h *automationActions) automationRef(ctx context.Context, workspaceID, taskID string, number int64) (prautomation.PullRef, error) {
 	if strings.TrimSpace(taskID) == "" {
-		return prautomation.PullRef{}, forgejo.ErrNotLinked
+		return prautomation.PullRef{}, scm.ErrNotLinked
 	}
-	client, err := r.connection.Client(ctx)
+	info, err := h.connection.Info(ctx)
 	if err != nil {
 		return prautomation.PullRef{}, err
 	}
-	identities, err := r.associations.ListForTask(ctx, workspaceID, taskID)
+	identities, err := h.associations.ListForTask(ctx, workspaceID, taskID)
 	if err != nil {
 		return prautomation.PullRef{}, err
 	}
 	var matches []prautomation.PullRef
 	for _, identity := range identities {
-		if identity.ConnectionScope != client.Scope() || (number != 0 && identity.Number != number) {
+		if identity.ConnectionScope != info.URL || (number != 0 && identity.Number != number) {
 			continue
 		}
 		matches = append(matches, prautomation.PullRef{TaskID: taskID, RepositoryID: identity.RepositoryID, Number: identity.Number})
 	}
 	switch len(matches) {
 	case 0:
-		return prautomation.PullRef{}, forgejo.ErrNotLinked
+		return prautomation.PullRef{}, scm.ErrNotLinked
 	case 1:
 		return matches[0], nil
 	default:
-		return prautomation.PullRef{}, forgejo.ErrAmbiguous
+		return prautomation.PullRef{}, scm.ErrAmbiguous
 	}
 }
 
 // automationView is the panel's model of one record.
-func (r *Runtime) automationView(ctx context.Context, workspaceID string, record prautomation.Record) (*pluginsdk.PluginActionResponse, error) {
-	settings, err := r.automation.Store().Settings(ctx, workspaceID)
+func (h *automationActions) automationView(ctx context.Context, workspaceID string, record prautomation.Record) (*pluginsdk.PluginActionResponse, error) {
+	settings, err := h.automation.Store().Settings(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	enabled, _ := r.integrationEnabled(ctx, workspaceID)
+	enabled, _ := h.switches.Enabled(ctx, workspaceID)
 	// An unseeded record shows the switches it is about to take, which a
 	// change from the panel keeps: showing them off would let one toggle turn
 	// on defaults nobody saw. A fork never takes auto-fix or auto-merge from
@@ -467,15 +462,15 @@ func (r *Runtime) automationView(ctx context.Context, workspaceID string, record
 	if attempt := record.Attempt; attempt != nil {
 		view["attempt"] = map[string]any{"round": attempt.Round, "state": attempt.State, "dispatch": attempt.Dispatch}
 	}
-	return jsonResponse(view)
+	return kandev.JSON(view)
 }
 
-func (r *Runtime) automationSettings(ctx context.Context, workspaceID string) (*pluginsdk.PluginActionResponse, error) {
-	settings, err := r.automation.Store().Settings(ctx, workspaceID)
+func (h *automationActions) automationSettings(ctx context.Context, workspaceID string) (*pluginsdk.PluginActionResponse, error) {
+	settings, err := h.automation.Store().Settings(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	return jsonResponse(settingsView(settings))
+	return kandev.JSON(settingsView(settings))
 }
 
 func settingsView(settings prautomation.Settings) map[string]any {
@@ -494,16 +489,16 @@ func settingsView(settings prautomation.Settings) map[string]any {
 	}
 }
 
-func (r *Runtime) automationSettingsSet(ctx context.Context, request *pluginsdk.PluginActionRequest, workspaceID string) (*pluginsdk.PluginActionResponse, error) {
+func (h *automationActions) automationSettingsSet(ctx context.Context, request *pluginsdk.PluginActionRequest, workspaceID string) (*pluginsdk.PluginActionResponse, error) {
 	var input struct {
 		Defaults *prautomation.Switches `json:"defaults"`
 		Trust    *string                `json:"trust"`
 		Template *string                `json:"template"`
 	}
-	if bad := decodeActionBody(request, &input); bad != nil {
+	if bad := kandev.DecodeBody(request, &input); bad != nil {
 		return bad, nil
 	}
-	settings, err := r.automation.Store().Settings(ctx, workspaceID)
+	settings, err := h.automation.Store().Settings(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -517,9 +512,9 @@ func (r *Runtime) automationSettingsSet(ctx context.Context, request *pluginsdk.
 		settings.Template = *input.Template
 	}
 	if err := settings.Validate(); err != nil {
-		return domainResponse(422, strings.ToUpper(err.Error()[:1])+err.Error()[1:]+".")
+		return kandev.Refuse(422, strings.ToUpper(err.Error()[:1])+err.Error()[1:]+".")
 	}
-	if err := r.automation.Store().PutSettings(ctx, workspaceID, settings); err != nil {
+	if err := h.automation.Store().PutSettings(ctx, workspaceID, settings); err != nil {
 		return nil, err
 	}
 	// Every field the request set, the template only as custom or default:
@@ -543,45 +538,34 @@ func (r *Runtime) automationSettingsSet(ctx context.Context, request *pluginsdk.
 		}
 		changes = append(changes, "template="+template)
 	}
-	r.audit(ctx, auditRecord{
+	h.audit.Record(ctx, auditRecord{
 		Action: request.ActionKey, Actor: request.Context.ActorID, Workspace: workspaceID,
 		Outcome: strings.Join(changes, ","),
 	})
-	return jsonResponse(settingsView(settings.Normalize()))
+	return kandev.JSON(settingsView(settings.Normalize()))
 }
 
-// prOutcome records the agent's report on the auto-fix attempt in flight.
-func (r *Runtime) prOutcome(ctx context.Context, request *pluginsdk.AgentToolRequest) (*pluginsdk.AgentToolResult, error) {
-	outcome := strings.ToLower(argString(request.Arguments, "outcome"))
-	if !prautomation.ValidOutcome(outcome) {
-		return toolError("outcome must be action_taken, non_actionable, or blocked."), nil
+// OnEvent receives the bus events the manifest subscribes to. It only marks
+// records due, and off the delivery path: the host waits on it, and marking a
+// record waits for any evaluation holding it.
+func (r *Runtime) OnEvent(_ context.Context, event *pluginsdk.Event) error {
+	if event == nil || r.automation == nil {
+		return nil
 	}
-	workspaceID, err := r.agentWriteWorkspace(ctx, request)
-	if err != nil {
-		return toolError("This task is not in a workspace this plugin can see."), nil
+	taskID, _ := event.Payload["task_id"].(string)
+	sessionID, _ := event.Payload["session_id"].(string)
+	if strings.TrimSpace(taskID) == "" {
+		return nil
 	}
-	record, err := r.automation.Outcome(ctx, workspaceID, request.Context.TaskID, request.Context.SessionID,
-		argString(request.Arguments, "repo"), outcome, argString(request.Arguments, "body"))
-	// Audited like the writing ops: blocked holds auto-merge back, and the
-	// trail says which session asked for it.
-	audited := outcome
-	if err != nil {
-		audited = "refused"
-	}
-	r.audit(ctx, auditRecord{
-		Action: "agent.pr.outcome", Actor: "agent:" + request.Context.SessionID, Workspace: workspaceID,
-		Task: request.Context.TaskID, Number: record.Number, Outcome: audited,
-	})
 	switch {
-	case errors.Is(err, prautomation.ErrNoAttempt), errors.Is(err, prautomation.ErrAmbiguousAttempt):
-		return toolError(err.Error() + "."), nil
-	case err != nil:
-		return nil, err
+	case event.EventType == eventTurnCompleted || strings.HasPrefix(event.EventType, eventTurnCompleted+"."):
+		var startedAt time.Time
+		if raw, ok := event.Payload["started_at"].(string); ok {
+			startedAt, _ = time.Parse(time.RFC3339Nano, raw)
+		}
+		r.automation.Hint(func(ctx context.Context) { r.automation.TurnCompleted(ctx, taskID, sessionID, startedAt) })
+	case event.EventType == eventSessionStateChanged || strings.HasPrefix(event.EventType, eventSessionStateChanged+"."):
+		r.automation.Hint(func(ctx context.Context) { r.automation.SessionChanged(ctx, taskID) })
 	}
-	return &pluginsdk.AgentToolResult{
-		Text: fmt.Sprintf("Recorded %s for %s#%d.", outcome, record.Repository, record.Number),
-		StructuredContent: map[string]any{
-			"outcome": outcome, "repository": record.Repository, "number": record.Number,
-		},
-	}, nil
+	return nil
 }

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"kandev-plugin-forgejo/internal/kandev"
+
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )
 
@@ -42,11 +44,16 @@ type auditRecord struct {
 	Outcome   string
 }
 
-var auditMu sync.Mutex
+// auditTrail stores the trail in workspace Host state. Writes are serialized
+// so the trim after each one sees every key.
+type auditTrail struct {
+	hosts kandev.Provider
+	mu    sync.Mutex
+}
 
-// audit records a write. It never fails the write: a trail that cannot be
+// Record records a write. It never fails the write: a trail that cannot be
 // stored is reported on stderr and otherwise ignored.
-func (r *Runtime) audit(ctx context.Context, record auditRecord) {
+func (a *auditTrail) Record(ctx context.Context, record auditRecord) {
 	now := time.Now().UTC()
 	if line, err := json.Marshal(map[string]any{
 		"@level": "info", "@message": "pull request write", "@timestamp": now.Format(time.RFC3339Nano),
@@ -56,12 +63,12 @@ func (r *Runtime) audit(ctx context.Context, record auditRecord) {
 		fmt.Fprintln(os.Stderr, string(line))
 	}
 
-	host := r.Host()
+	host := a.hosts()
 	if host == nil || strings.TrimSpace(record.Workspace) == "" {
 		return
 	}
-	auditMu.Lock()
-	defer auditMu.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	key := fmt.Sprintf("%s%020d", auditKeyPrefix, now.UnixNano())
 	if err := host.SetState(ctx, "workspace", record.Workspace, key, map[string]any{
 		"at": now.Format(time.RFC3339Nano), "action": record.Action, "actor": record.Actor,
@@ -92,16 +99,16 @@ func auditKeys(entries []pluginsdk.StateEntry) []string {
 	return keys
 }
 
-// listAudit serves connection.audit: the most recent writes, newest first.
-func (r *Runtime) listAudit(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
+// list serves connection.audit: the most recent writes, newest first.
+func (a *auditTrail) list(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
 	workspaceID := strings.TrimSpace(request.Context.WorkspaceID)
-	host := r.Host()
+	host := a.hosts()
 	if workspaceID == "" || host == nil {
-		return jsonResponse(map[string]any{"entries": []any{}})
+		return kandev.JSON(map[string]any{"entries": []any{}})
 	}
 	entries, err := host.ListState(ctx, "workspace", workspaceID)
 	if err != nil {
-		return domainResponse(502, "The audit trail could not be read.")
+		return kandev.Refuse(502, "The audit trail could not be read.")
 	}
 	byKey := make(map[string]map[string]any, len(entries))
 	for _, entry := range entries {
@@ -112,5 +119,5 @@ func (r *Runtime) listAudit(ctx context.Context, request *pluginsdk.PluginAction
 	for i := len(keys) - 1; i >= 0 && len(shown) < auditShown; i-- {
 		shown = append(shown, byKey[keys[i]])
 	}
-	return jsonResponse(map[string]any{"entries": shown})
+	return kandev.JSON(map[string]any{"entries": shown})
 }

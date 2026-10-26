@@ -2,15 +2,14 @@ import type {
   PluginHostApi,
   PluginIcon,
   PluginRegistry,
-  RepositoryInspection,
-  RepositoryProviderRegistration,
   ReviewSummary,
   ReviewTaskAssociation,
-  ReviewTaskStatus,
 } from "@kandev/plugin-sdk";
 import type { ChangeRequestDetailModel } from "./detail";
-import { createReviewPanel } from "./review-panel";
-import { createSnapshotStore } from "./review-store";
+import { createRepositoryProvider } from "./repository-provider";
+import { createReviewPanel, type PanelProps } from "./review-panel";
+import { normalizeAssociation, normalizeReview, positiveInteger } from "./review-model";
+import { createSnapshotStore, type SnapshotStore } from "./review-store";
 
 export type SourceControlRecipeOptions = {
   providerId: string;
@@ -28,221 +27,55 @@ export type SourceControlRecipeLifecycle = {
   destroy(): void;
 };
 
-type RepositoryPageResponse = {
-  repositories?: unknown[];
-  next_cursor?: unknown;
-};
-
-type RepositoryInspectionResponse = { repository?: unknown };
-type BranchListResponse = { branches?: unknown[] };
 type ReviewListResponse = { reviews?: unknown[] };
 type ReviewAssociationListResponse = { associations?: unknown[] };
-type CreateChangeRequestResponse = {
-  url?: unknown;
-  output?: unknown;
-  linked?: unknown;
-  association_error?: unknown;
+
+/** What every part of a registered recipe shares. */
+type Recipe = {
+  host: PluginHostApi;
+  options: SourceControlRecipeOptions;
+  reviewStore: SnapshotStore<string, ReviewSummary>;
+  associationStore: SnapshotStore<string, ReviewTaskAssociation>;
+  overlays: Set<{ close(): void }>;
 };
 
-function record(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
+type ReviewProviderRegistration = Parameters<PluginRegistry["registerReviewProvider"]>[0];
 
-function text(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function finiteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function nonNegativeInteger(value: unknown): number | undefined {
-  const number = finiteNumber(value);
-  return number !== undefined && Number.isInteger(number) && number >= 0 ? number : undefined;
-}
-
-function positiveInteger(value: unknown): number | undefined {
-  const number = nonNegativeInteger(value);
-  return number !== undefined && number > 0 ? number : undefined;
-}
-
-function normalizeTaskStatus(value: unknown): ReviewTaskStatus | undefined {
-  const source = record(value);
-  const number = positiveInteger(source.number);
-  const state = text(source.state);
-  const pipelineState = text(source.pipeline_state);
-  if (
-    number === undefined ||
-    !(["open", "merged", "closed", "draft"] as const).includes(
-      state as "open" | "merged" | "closed" | "draft",
-    ) ||
-    !(["success", "failure", "pending", "neutral"] as const).includes(
-      pipelineState as "success" | "failure" | "pending" | "neutral",
-    )
-  ) {
-    return undefined;
-  }
-
-  const checks = Array.isArray(source.checks)
-    ? source.checks.flatMap((value) => {
-        const check = record(value);
-        const id = text(check.id);
-        const label = text(check.label);
-        const checkState = text(check.state);
-        if (
-          !id ||
-          !label ||
-          !(["success", "failure", "pending", "neutral"] as const).includes(
-            checkState as "success" | "failure" | "pending" | "neutral",
-          )
-        ) {
-          return [];
-        }
-        const detail = text(check.detail);
-        const url = text(check.url);
-        return [{
-          id,
-          label,
-          state: checkState as "success" | "failure" | "pending" | "neutral",
-          ...(detail ? { detail } : {}),
-          ...(url ? { url } : {}),
-        }];
-      })
-    : [];
-
-  const reviewSource = record(source.review);
-  const reviewState = text(reviewSource.state);
-  const approved = nonNegativeInteger(reviewSource.approved);
-  const required = nonNegativeInteger(reviewSource.required);
-  const requested = nonNegativeInteger(reviewSource.requested);
-  const review =
-    approved !== undefined &&
-    (["approved", "changes_requested", "pending"] as const).includes(
-      reviewState as "approved" | "changes_requested" | "pending",
-    )
-      ? {
-          state: reviewState as "approved" | "changes_requested" | "pending",
-          approved,
-          ...(required === undefined ? {} : { required }),
-          ...(requested === undefined ? {} : { requested }),
-        }
-      : undefined;
-  const unresolvedComments = nonNegativeInteger(source.unresolved_comments);
-  const updatedAt = finiteNumber(source.updated_at);
-
-  return {
-    number,
-    state: state as "open" | "merged" | "closed" | "draft",
-    pipelineState: pipelineState as "success" | "failure" | "pending" | "neutral",
-    checks,
-    ...(review ? { review } : {}),
-    ...(unresolvedComments === undefined ? {} : { unresolvedComments }),
-    ...(updatedAt === undefined ? {} : { updatedAt }),
-  };
-}
-
-function normalizeReview(providerId: string, value: unknown): ReviewSummary | null {
-  const source = record(value);
-  const reviewKey = text(source.review_key);
-  const title = text(source.title);
-  const url = text(source.url);
-  const connectionScope = text(source.connection_scope);
-  const repositoryId = text(source.repository_id);
-  const changeRequestNumber = positiveInteger(source.change_request_number);
-  if (
-    !reviewKey ||
-    !title ||
-    !url ||
-    !connectionScope ||
-    !repositoryId ||
-    changeRequestNumber === undefined
-  ) {
-    return null;
-  }
-  const state = text(source.state);
-  const taskStatus = normalizeTaskStatus(source.task_status);
-  return {
-    providerId,
-    reviewKey,
-    title,
-    url,
-    connectionScope,
-    repositoryId,
-    changeRequestNumber,
-    state,
-    ...(taskStatus ? { taskStatus } : {}),
-  };
-}
-
-function normalizeAssociation(providerId: string, value: unknown): ReviewTaskAssociation | null {
-  const source = record(value);
-  const taskId = text(source.task_id);
-  const reviewKey = text(source.review_key);
-  const connectionScope = text(source.connection_scope);
-  const repositoryId = text(source.repository_id);
-  const changeRequestNumber = positiveInteger(source.change_request_number);
-  if (
-    !taskId ||
-    !reviewKey ||
-    !connectionScope ||
-    !repositoryId ||
-    changeRequestNumber === undefined
-  ) {
-    return null;
-  }
-  return {
-    providerId,
-    taskId,
-    reviewKey,
-    connectionScope,
-    repositoryId,
-    changeRequestNumber,
-  };
-}
-
-function normalizeRepository(providerId: string, value: unknown): RepositoryInspection | null {
-  const source = record(value);
-  const providerHost = text(source.provider_host);
-  const ownerOrProject = text(source.owner_or_project);
-  const repositoryId = text(source.repository_id);
-  const repositoryName = text(source.name);
-  const cloneUrl = text(source.clone_url);
-  if (!providerHost || !ownerOrProject || !repositoryId || !repositoryName || !cloneUrl) return null;
-  const providerScope = text(source.provider_scope);
-  const defaultBranch = text(source.default_branch);
-  return {
-    providerId,
-    providerHost,
-    ...(providerScope ? { providerScope } : {}),
-    ownerOrProject,
-    repositoryId,
-    repositoryName,
-    cloneUrl,
-    ...(defaultBranch ? { defaultBranch } : {}),
-  };
-}
-
-function credentialFreeRepository(repository: RepositoryInspection) {
-  return {
-    provider_id: repository.providerId,
-    provider_host: repository.providerHost,
-    provider_scope: repository.providerScope ?? "",
-    provider_repository_id: repository.repositoryId,
-    owner_or_project: repository.ownerOrProject,
-    name: repository.repositoryName,
-    clone_url: repository.cloneUrl,
-    default_branch: repository.defaultBranch ?? "",
-  };
-}
+type Refreshers = {
+  refreshReviews(taskId: string, signal: AbortSignal, workspaceId?: string): Promise<void>;
+  refreshAssociations(workspaceId: string, signal: AbortSignal): Promise<void>;
+  refreshAfterMutation(workspaceId: string, taskId: string, signal: AbortSignal): Promise<void>;
+};
 
 export function registerSourceControlRecipe(
   registry: PluginRegistry,
   host: PluginHostApi,
   options: SourceControlRecipeOptions,
 ): SourceControlRecipeLifecycle {
-  const reviewStore = createSnapshotStore<string, ReviewSummary>();
-  const associationStore = createSnapshotStore<string, ReviewTaskAssociation>();
-  const overlays = new Set<{ close(): void }>();
+  const recipe: Recipe = {
+    host,
+    options,
+    reviewStore: createSnapshotStore<string, ReviewSummary>(),
+    associationStore: createSnapshotStore<string, ReviewTaskAssociation>(),
+    overlays: new Set<{ close(): void }>(),
+  };
+  const refreshers = createRefreshers(recipe);
+
+  registry.registerRepositoryProvider(createRepositoryProvider(host, options, refreshers.refreshAfterMutation));
+  registerLinkAction(registry, recipe, refreshers);
+  registry.registerReviewProvider(reviewProvider(recipe, refreshers));
+  return {
+    destroy() {
+      recipe.overlays.forEach((overlay) => overlay.close());
+      recipe.overlays.clear();
+      recipe.reviewStore.clear();
+      recipe.associationStore.clear();
+    },
+  };
+}
+
+function createRefreshers(recipe: Recipe): Refreshers {
+  const { host, options, reviewStore, associationStore } = recipe;
 
   async function refreshReviews(taskId: string, signal: AbortSignal, workspaceId?: string) {
     const token = reviewStore.beginRefresh(taskId);
@@ -294,102 +127,11 @@ export function registerSourceControlRecipe(
     }
   }
 
-  const repositoryProvider: RepositoryProviderRegistration = {
-    id: options.providerId,
-    label: options.label,
-    ...(options.icon ? { icon: options.icon } : {}),
-    ...(options.matchesURL ? { matchesURL: options.matchesURL } : {}),
-    ...(options.supportsDraft === undefined ? {} : { supportsDraft: options.supportsDraft }),
+  return { refreshReviews, refreshAssociations, refreshAfterMutation };
+}
 
-    async listRepositories({ workspaceId, query = "", cursor = "", limit = 100, signal }) {
-      signal.throwIfAborted();
-      const response = await host.api.invokeAction<RepositoryPageResponse>(
-        "repositories.list",
-        { workspaceId, body: { query, cursor, limit } },
-        { signal },
-      );
-      signal.throwIfAborted();
-      const nextCursor = text(response.next_cursor);
-      return {
-        repositories: (response.repositories ?? []).flatMap((repository) => {
-          const normalized = normalizeRepository(options.providerId, repository);
-          return normalized ? [normalized] : [];
-        }),
-        // Omit the key entirely rather than setting it to undefined: the host
-        // types it as an optional string under exactOptionalPropertyTypes.
-        ...(nextCursor ? { nextCursor } : {}),
-      };
-    },
-
-    async listBranches({ workspaceId, repository, signal }) {
-      signal.throwIfAborted();
-      const response = await host.api.invokeAction<BranchListResponse>(
-        "repositories.branches",
-        { workspaceId, body: { repository: credentialFreeRepository(repository) } },
-        { signal },
-      );
-      signal.throwIfAborted();
-      return (response.branches ?? []).flatMap((branch) => {
-        const name = text(record(branch).name);
-        return name ? [{ name }] : [];
-      });
-    },
-
-    async inspectURL({ workspaceId, url, signal }) {
-      signal.throwIfAborted();
-      const response = await host.api.invokeAction<RepositoryInspectionResponse>(
-        "repositories.inspect",
-        { workspaceId, body: { url } },
-        { signal },
-      );
-      signal.throwIfAborted();
-      return normalizeRepository(options.providerId, response.repository);
-    },
-
-    async createChangeRequest({
-      workspaceId,
-      taskId,
-      sessionId,
-      repositoryId,
-      title,
-      body,
-      baseBranch,
-      draft,
-      signal,
-    }) {
-      signal.throwIfAborted();
-      const response = await host.api.invokeAction<CreateChangeRequestResponse>(
-        "change_requests.create",
-        {
-          workspaceId,
-          taskId,
-          sessionId,
-          repositoryId,
-          body: {
-            title,
-            description: body,
-            destination: baseBranch ?? "",
-            draft,
-          },
-        },
-        { signal },
-      );
-      const url = text(response.url);
-      if (!url) throw new Error("source-control recipe: create response did not include a URL");
-      await refreshAfterMutation(workspaceId, taskId, signal);
-      const output = text(response.output);
-      const associationError = text(response.association_error);
-      return {
-        url,
-        provider: options.providerId,
-        ...(output ? { output } : {}),
-        ...(typeof response.linked === "boolean" ? { linked: response.linked } : {}),
-        ...(associationError ? { associationError } : {}),
-      };
-    },
-  };
-
-  registry.registerRepositoryProvider(repositoryProvider);
+function registerLinkAction(registry: PluginRegistry, recipe: Recipe, refreshers: Refreshers): void {
+  const { host, options, overlays } = recipe;
   registry.registerTaskAction({
     id: `${options.providerId}-link-change-request`,
     label: `${options.label} ${options.changeRequestNoun}`,
@@ -422,27 +164,34 @@ export function registerSourceControlRecipe(
             },
             { signal },
           );
-          await refreshAfterMutation(context.workspaceId, context.taskId, signal);
+          await refreshers.refreshAfterMutation(context.workspaceId, context.taskId, signal);
         },
       });
       overlays.add(dialog);
     },
   });
+}
+
+/** The snapshot review a panel was opened for, until the full details arrive. */
+function snapshotFallback(recipe: Recipe, props: PanelProps): ChangeRequestDetailModel | null {
+  const review = recipe.reviewStore.get(props.taskId).find(
+    (candidate) =>
+      candidate.reviewKey === props.reviewKey &&
+      candidate.connectionScope === props.connectionScope &&
+      candidate.repositoryId === props.repositoryId &&
+      String(candidate.changeRequestNumber) === String(props.changeRequestNumber),
+  );
+  return review ? (recipe.options.toChangeRequestDetail(review) as ChangeRequestDetailModel) : null;
+}
+
+function reviewProvider(recipe: Recipe, refreshers: Refreshers): ReviewProviderRegistration {
+  const { host, options, reviewStore, associationStore } = recipe;
   const reviewPanel = createReviewPanel(host, {
-    fallback: (props) => {
-      const review = reviewStore.get(props.taskId).find(
-        (candidate) =>
-          candidate.reviewKey === props.reviewKey &&
-          candidate.connectionScope === props.connectionScope &&
-          candidate.repositoryId === props.repositoryId &&
-          String(candidate.changeRequestNumber) === String(props.changeRequestNumber),
-      );
-      return review ? (options.toChangeRequestDetail(review) as ChangeRequestDetailModel) : null;
-    },
+    fallback: (props) => snapshotFallback(recipe, props),
     afterMutation: (workspaceId, taskId) =>
-      refreshAfterMutation(workspaceId, taskId, new AbortController().signal),
+      refreshers.refreshAfterMutation(workspaceId, taskId, new AbortController().signal),
   });
-  registry.registerReviewProvider({
+  return {
     id: options.providerId,
     label: options.label,
     ...(options.icon ? { icon: options.icon } : {}),
@@ -450,11 +199,11 @@ export function registerSourceControlRecipe(
     order: options.order ?? 100,
     getSnapshot: (taskId) => reviewStore.get(taskId),
     subscribe: (taskId, listener) => reviewStore.subscribe(taskId, listener),
-    refresh: (taskId, signal) => refreshReviews(taskId, signal),
+    refresh: (taskId, signal) => refreshers.refreshReviews(taskId, signal),
     getAssociationSnapshot: (workspaceId) => associationStore.get(workspaceId),
     subscribeAssociations: (workspaceId, listener) =>
       associationStore.subscribe(workspaceId, listener),
-    refreshAssociations,
+    refreshAssociations: refreshers.refreshAssociations,
     async unlink({
       workspaceId,
       taskId,
@@ -488,13 +237,5 @@ export function registerSourceControlRecipe(
     // The panel is stateful, so its component type is created once here. A new
     // type per render would remount it every time and lose the loaded details.
     ReviewPanel: (props) => host.jsx(reviewPanel, props),
-  });
-  return {
-    destroy() {
-      overlays.forEach((overlay) => overlay.close());
-      overlays.clear();
-      reviewStore.clear();
-      associationStore.clear();
-    },
   };
 }

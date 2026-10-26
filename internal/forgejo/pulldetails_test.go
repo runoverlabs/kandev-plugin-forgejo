@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -14,44 +16,44 @@ import (
 
 // detailsFixture links PRs 7 and 8 of repository 5 to task-1 and serves a
 // complete set of responses for PR 7 on a protected base branch.
-func detailsFixture(t *testing.T) (*PullActions, *apiServer, *Associations) {
+func detailsFixture(t *testing.T) (*PullActions, *apiServer, *sourcecontrol.Associations) {
 	t.Helper()
 	api := newAPIServer(t)
 	connection, host := newTestConnection(t, api, "token")
 	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "ws-1"}
 	hosts := func() pluginsdk.Host { return host }
 	repositories := NewRepositories(connection, hosts, "forgejo")
-	associations := NewAssociations(hosts)
+	associations := sourcecontrol.NewAssociations(hosts)
 	actions := NewPullActions(connection, repositories, associations, "forgejo")
 	for _, number := range []int64{7, 8} {
-		require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.url(), "5", number)))
+		require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.URL(), "5", number)))
 	}
 
 	repo := map[string]any{
 		"id": 5, "name": "r", "full_name": "o/r", "owner": map[string]any{"login": "o"},
-		"clone_url": api.url() + "/o/r.git", "html_url": api.url() + "/o/r", "default_branch": "main",
+		"clone_url": api.URL() + "/o/r.git", "html_url": api.URL() + "/o/r", "default_branch": "main",
 		"allow_squash_merge": true, "allow_merge_commits": true, "default_merge_style": "squash",
 	}
-	api.handle(http.MethodGet, "/api/v1/repositories/5", 200, repo)
-	api.handle(http.MethodGet, "/api/v1/repos/o/r", 200, repo)
-	api.handle(http.MethodGet, "/api/v1/user", 200, map[string]any{"login": "kandev"})
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7", 200, map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repositories/5", 200, repo)
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r", 200, repo)
+	api.Handle(http.MethodGet, "/api/v1/user", 200, map[string]any{"login": "kandev"})
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7", 200, map[string]any{
 		"number": 7, "title": "Add x", "state": "open", "mergeable": false,
 		"user": map[string]any{"login": "alice"},
 		"head": map[string]any{"ref": "feat", "sha": "abc1234"}, "base": map[string]any{"ref": "main"},
 		"requested_reviewers": []map[string]any{{"login": "bob"}},
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/branches/main", 200, map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/branches/main", 200, map[string]any{
 		"name": "main", "protected": true, "required_approvals": 1,
 		"enable_status_check": true, "user_can_merge": true,
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/commits/abc1234/status", 200, map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/commits/abc1234/status", 200, map[string]any{
 		"state": "failure", "statuses": []map[string]any{{"id": 1, "status": "failure", "context": "ci"}},
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", 200, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7/reviews", 200, []map[string]any{
 		{"id": 1, "state": "REQUEST_CHANGES", "user": map[string]any{"login": "bob"}, "body": "no"},
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/issues/7/comments", 200, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/issues/7/comments", 200, []map[string]any{
 		{"id": 9, "body": "hi", "user": map[string]any{"login": "alice"}},
 	})
 	return actions, api, associations
@@ -90,22 +92,22 @@ func TestDetailsReturnsTheFullModel(t *testing.T) {
 func TestDetailsRefusesAPullRequestTheTaskDoesNotLink(t *testing.T) {
 	t.Parallel()
 	actions, api, _ := detailsFixture(t)
-	before := len(api.requests)
+	before := len(api.Requests())
 
 	_, err := actions.Details(context.Background(), "ws-1", "task-1", 99)
-	require.ErrorIs(t, err, ErrNotLinked)
+	require.ErrorIs(t, err, scm.ErrNotLinked)
 	_, err = actions.Details(context.Background(), "ws-1", "other-task", 7)
-	require.ErrorIs(t, err, ErrNotLinked)
+	require.ErrorIs(t, err, scm.ErrNotLinked)
 	_, err = actions.Details(context.Background(), "ws-1", "", 7)
-	require.ErrorIs(t, err, ErrNotLinked)
-	require.Len(t, api.requests, before, "a refused call must not reach the instance")
+	require.ErrorIs(t, err, scm.ErrNotLinked)
+	require.Len(t, api.Requests(), before, "a refused call must not reach the instance")
 }
 
 func TestDetailsNeedsANumberWhenSeveralAreLinked(t *testing.T) {
 	t.Parallel()
 	actions, _, _ := detailsFixture(t)
 	_, err := actions.Details(context.Background(), "ws-1", "task-1", 0)
-	require.ErrorIs(t, err, ErrAmbiguous)
+	require.ErrorIs(t, err, scm.ErrAmbiguous)
 }
 
 // A token that cannot see protection, statuses, reviews or comments still gets
@@ -113,13 +115,13 @@ func TestDetailsNeedsANumberWhenSeveralAreLinked(t *testing.T) {
 func TestDetailsDegradesWhenPartsAreNotVisible(t *testing.T) {
 	t.Parallel()
 	actions, api, associations := detailsFixture(t)
-	require.NoError(t, associations.Unlink(context.Background(), "task-1", identity(api.url(), "5", 8)))
-	api.handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7", 200, map[string]any{
+	require.NoError(t, associations.Unlink(context.Background(), "task-1", identity(api.URL(), "5", 8)))
+	api.Handle(http.MethodGet, "/api/v1/repos/o/r/pulls/7", 200, map[string]any{
 		"number": 7, "title": "Add x", "state": "open",
 		"head": map[string]any{"ref": "feat", "sha": "abc1234"}, "base": map[string]any{"ref": "main"},
 	})
 	for _, path := range []string{"/branches/main", "/commits/abc1234/status", "/pulls/7/reviews", "/issues/7/comments"} {
-		api.handle(http.MethodGet, "/api/v1/repos/o/r"+path, 403, nil)
+		api.Handle(http.MethodGet, "/api/v1/repos/o/r"+path, 403, nil)
 	}
 
 	got, err := actions.Details(context.Background(), "ws-1", "task-1", 0)
@@ -148,7 +150,7 @@ func TestRecentNotMergeableIsUnknownNotConflicts(t *testing.T) {
 	t.Parallel()
 	actions, _, _ := detailsFixture(t)
 	no := false
-	pull := PullRequest{Mergeable: &no, UpdatedAt: "2026-10-09T12:00:00Z"}
+	pull := rest.PullRequest{Mergeable: &no, UpdatedAt: "2026-10-09T12:00:00Z"}
 
 	actions.now = func() time.Time { return time.Date(2026, 10, 9, 12, 0, 5, 0, time.UTC) }
 	require.Nil(t, actions.settledMergeable(pull), "5s after the change a false is not trusted")
@@ -159,13 +161,13 @@ func TestRecentNotMergeableIsUnknownNotConflicts(t *testing.T) {
 	require.False(t, *got, "a false that has held for minutes is real")
 
 	yes := true
-	require.Equal(t, &yes, actions.settledMergeable(PullRequest{Mergeable: &yes, UpdatedAt: "2026-10-09T12:04:59Z"}))
+	require.Equal(t, &yes, actions.settledMergeable(rest.PullRequest{Mergeable: &yes, UpdatedAt: "2026-10-09T12:04:59Z"}))
 }
 
 func TestDetailReviewsKeepTheNewest(t *testing.T) {
-	reviews := make([]Review, maxDetailReviews+10)
+	reviews := make([]rest.Review, maxDetailReviews+10)
 	for i := range reviews {
-		reviews[i] = Review{ID: int64(i + 1)}
+		reviews[i] = rest.Review{ID: int64(i + 1)}
 	}
 	var truncated []string
 	out := detailReviews(reviews, &truncated)

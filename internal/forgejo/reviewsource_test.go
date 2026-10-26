@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"testing"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/watches"
 
 	"github.com/stretchr/testify/require"
@@ -34,7 +36,7 @@ func TestSearchReviewRequestsAsksTheInstanceForMyRequests(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
 	var query map[string][]string
-	api.handleFunc(http.MethodGet, "/api/v1/repos/issues/search", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc(http.MethodGet, "/api/v1/repos/issues/search", func(w http.ResponseWriter, r *http.Request) {
 		query = r.URL.Query()
 		hit := searchHit(4, "acme/web")
 		hit["labels"] = []any{map[string]any{"name": "Needs-Review"}, map[string]any{"name": "ui"}}
@@ -52,7 +54,7 @@ func TestSearchReviewRequestsAsksTheInstanceForMyRequests(t *testing.T) {
 	require.Equal(t, []string{"1"}, query["page"])
 	require.Len(t, found, 1)
 	require.Equal(t, watches.PullRequest{
-		Repo: watches.RepoRef{Owner: "acme", Name: "web"}, Number: 4, Title: "PR 4",
+		Repo: scm.RepoRef{Owner: "acme", Name: "web"}, Number: 4, Title: "PR 4",
 		URL: "https://git.example/acme/web/pulls/4", Author: "alice", UpdatedAt: "2026-09-19T10:00:00Z",
 	}, found[0])
 }
@@ -60,11 +62,11 @@ func TestSearchReviewRequestsAsksTheInstanceForMyRequests(t *testing.T) {
 func TestSearchReviewRequestsFiltersByRepositoryCaseInsensitively(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repos/issues/search", http.StatusOK, []any{
+	api.Handle(http.MethodGet, "/api/v1/repos/issues/search", http.StatusOK, []any{
 		searchHit(1, "Acme/Web"), searchHit(2, "acme/other"), searchHit(3, "elsewhere/web"),
 	})
 	found, err := newReviewSource(t, api).SearchReviewRequests(context.Background(), watches.ReviewQuery{
-		Repos: []watches.RepoRef{{Owner: "acme", Name: "web"}},
+		Repos: []scm.RepoRef{{Owner: "acme", Name: "web"}},
 	})
 	require.NoError(t, err)
 	require.Len(t, found, 1)
@@ -74,7 +76,7 @@ func TestSearchReviewRequestsFiltersByRepositoryCaseInsensitively(t *testing.T) 
 func TestSearchReviewRequestsWithNoRepositoryFilterReturnsEverything(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repos/issues/search", http.StatusOK, []any{
+	api.Handle(http.MethodGet, "/api/v1/repos/issues/search", http.StatusOK, []any{
 		searchHit(1, "acme/web"), searchHit(2, "acme/other"),
 	})
 	found, err := newReviewSource(t, api).SearchReviewRequests(context.Background(), watches.ReviewQuery{})
@@ -88,13 +90,13 @@ func TestSearchReviewRequestsContinuesOnTheRawPageLength(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
 	var pages []string
-	api.handleFunc(http.MethodGet, "/api/v1/repos/issues/search", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc(http.MethodGet, "/api/v1/repos/issues/search", func(w http.ResponseWriter, r *http.Request) {
 		page := r.URL.Query().Get("page")
 		pages = append(pages, page)
 		var hits []any
 		switch page {
 		case "1", "2":
-			for i := 0; i < maxIssuePageLimit; i++ {
+			for i := 0; i < rest.MaxIssuePageLimit; i++ {
 				hits = append(hits, searchHit(i+1, "elsewhere/noise"))
 			}
 		case "3":
@@ -103,7 +105,7 @@ func TestSearchReviewRequestsContinuesOnTheRawPageLength(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(hits)
 	})
 	found, err := newReviewSource(t, api).SearchReviewRequests(context.Background(), watches.ReviewQuery{
-		Repos: []watches.RepoRef{{Owner: "acme", Name: "web"}},
+		Repos: []scm.RepoRef{{Owner: "acme", Name: "web"}},
 	})
 	require.NoError(t, err)
 	require.Equal(t, []string{"1", "2", "3"}, pages)
@@ -115,10 +117,10 @@ func TestSearchReviewRequestsIsBoundedByThePageCap(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
 	calls := 0
-	api.handleFunc(http.MethodGet, "/api/v1/repos/issues/search", func(w http.ResponseWriter, _ *http.Request) {
+	api.HandleFunc(http.MethodGet, "/api/v1/repos/issues/search", func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		var hits []any
-		for i := 0; i < maxIssuePageLimit; i++ {
+		for i := 0; i < rest.MaxIssuePageLimit; i++ {
 			hits = append(hits, searchHit(i+1, "acme/web"))
 		}
 		_ = json.NewEncoder(w).Encode(hits)
@@ -144,11 +146,11 @@ func TestReviewErrorsNeverCarryTheResponseBody(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			api := newAPIServer(t)
-			api.handleFunc(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", func(w http.ResponseWriter, _ *http.Request) {
+			api.HandleFunc(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(`{"message":"token-1 is invalid"}`))
 			})
-			_, err := newReviewSource(t, api).PullState(context.Background(), watches.RepoRef{Owner: "acme", Name: "web"}, 7)
+			_, err := newReviewSource(t, api).PullState(context.Background(), scm.RepoRef{Owner: "acme", Name: "web"}, 7)
 			require.Error(t, err)
 			require.NotContains(t, err.Error(), "token-1")
 			require.Contains(t, err.Error(), tc.message)
@@ -175,8 +177,8 @@ func pullBody(overrides map[string]any) map[string]any {
 func TestPullDetailMapsBranchesAndAuthor(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(nil))
-	detail, err := newReviewSource(t, api).PullDetail(context.Background(), watches.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(nil))
+	detail, err := newReviewSource(t, api).PullDetail(context.Background(), scm.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
 	require.NoError(t, err)
 	require.Equal(t, watches.PullDetail{
 		Title: "Add export", URL: "https://git.example/acme/web/pulls/7", Author: "alice",
@@ -195,15 +197,15 @@ func TestPullDetailFlagsDraftsByFieldAndByTitle(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			api := newAPIServer(t)
-			api.handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(overrides))
-			detail, err := newReviewSource(t, api).PullDetail(context.Background(), watches.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
+			api.Handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(overrides))
+			detail, err := newReviewSource(t, api).PullDetail(context.Background(), scm.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
 			require.NoError(t, err)
 			require.True(t, detail.Draft)
 		})
 	}
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(map[string]any{"title": "Swipe the WIP out"}))
-	detail, err := newReviewSource(t, api).PullDetail(context.Background(), watches.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(map[string]any{"title": "Swipe the WIP out"}))
+	detail, err := newReviewSource(t, api).PullDetail(context.Background(), scm.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
 	require.NoError(t, err)
 	require.False(t, detail.Draft, "only a prefix marks a draft")
 }
@@ -234,8 +236,8 @@ func TestPullDetailForkDetectionFailsClosed(t *testing.T) {
 			if tc.base != nil {
 				overrides["base"] = tc.base
 			}
-			api.handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(overrides))
-			detail, err := newReviewSource(t, api).PullDetail(context.Background(), watches.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
+			api.Handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(overrides))
+			detail, err := newReviewSource(t, api).PullDetail(context.Background(), scm.RepoRef{Owner: "acme", Name: "web"}, 7, watches.ReviewScopeUserAndTeams)
 			require.NoError(t, err)
 			require.Equal(t, tc.fork, detail.Fork)
 		})
@@ -245,14 +247,14 @@ func TestPullDetailForkDetectionFailsClosed(t *testing.T) {
 func TestPullDetailChecksTheDirectRequestOnlyForUserScope(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(nil))
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(nil))
 	userCalls := 0
-	api.handleFunc(http.MethodGet, "/api/v1/user", func(w http.ResponseWriter, _ *http.Request) {
+	api.HandleFunc(http.MethodGet, "/api/v1/user", func(w http.ResponseWriter, _ *http.Request) {
 		userCalls++
 		_ = json.NewEncoder(w).Encode(map[string]any{"login": "bob"})
 	})
 	source := newReviewSource(t, api)
-	repo := watches.RepoRef{Owner: "acme", Name: "web"}
+	repo := scm.RepoRef{Owner: "acme", Name: "web"}
 
 	detail, err := source.PullDetail(context.Background(), repo, 7, watches.ReviewScopeUserAndTeams)
 	require.NoError(t, err)
@@ -264,7 +266,7 @@ func TestPullDetailChecksTheDirectRequestOnlyForUserScope(t *testing.T) {
 	require.True(t, detail.RequestedFromMe, "the login is compared case-insensitively")
 	require.Equal(t, 1, userCalls)
 
-	api.handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(map[string]any{"requested_reviewers": []any{}}))
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(map[string]any{"requested_reviewers": []any{}}))
 	detail, err = source.PullDetail(context.Background(), repo, 7, watches.ReviewScopeUser)
 	require.NoError(t, err)
 	require.False(t, detail.RequestedFromMe, "a team-only request is not a direct one")
@@ -283,8 +285,8 @@ func TestPullStateReadsMergedClosedAndOpen(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			api := newAPIServer(t)
-			api.handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(tc.overrides))
-			state, err := newReviewSource(t, api).PullState(context.Background(), watches.RepoRef{Owner: "acme", Name: "web"}, 7)
+			api.Handle(http.MethodGet, "/api/v1/repos/acme/web/pulls/7", http.StatusOK, pullBody(tc.overrides))
+			state, err := newReviewSource(t, api).PullState(context.Background(), scm.RepoRef{Owner: "acme", Name: "web"}, 7)
 			require.NoError(t, err)
 			require.Equal(t, tc.want, state)
 		})
@@ -298,7 +300,7 @@ func TestSearchReviewRequestsChecksLabelsItself(t *testing.T) {
 	api := newAPIServer(t)
 	labelled := searchHit(1, "acme/web")
 	labelled["labels"] = []any{map[string]any{"name": "ui"}}
-	api.handle(http.MethodGet, "/api/v1/repos/issues/search", http.StatusOK, []any{labelled, searchHit(2, "acme/web")})
+	api.Handle(http.MethodGet, "/api/v1/repos/issues/search", http.StatusOK, []any{labelled, searchHit(2, "acme/web")})
 	found, err := newReviewSource(t, api).SearchReviewRequests(context.Background(), watches.ReviewQuery{Labels: []string{"ui"}})
 	require.NoError(t, err)
 	require.Len(t, found, 1)
@@ -308,19 +310,19 @@ func TestSearchReviewRequestsChecksLabelsItself(t *testing.T) {
 }
 
 func TestIsForkReadsTheEmbeddedRepositoryID(t *testing.T) {
-	same := PullRequest{
-		Head: PullRequestRef{Repo: &Repo{ID: 4, FullName: "o/r"}},
-		Base: PullRequestRef{RepoID: 4, Repo: &Repo{ID: 4, FullName: "o/r"}},
+	same := rest.PullRequest{
+		Head: rest.PullRequestRef{Repo: &rest.Repo{ID: 4, FullName: "o/r"}},
+		Base: rest.PullRequestRef{RepoID: 4, Repo: &rest.Repo{ID: 4, FullName: "o/r"}},
 	}
 	require.False(t, isFork(same))
-	fork := PullRequest{
-		Head: PullRequestRef{Repo: &Repo{ID: 9, FullName: "o/r"}},
-		Base: PullRequestRef{Repo: &Repo{ID: 4, FullName: "o/r"}},
+	fork := rest.PullRequest{
+		Head: rest.PullRequestRef{Repo: &rest.Repo{ID: 9, FullName: "o/r"}},
+		Base: rest.PullRequestRef{Repo: &rest.Repo{ID: 4, FullName: "o/r"}},
 	}
 	require.True(t, isFork(fork), "the ids decide when both are known")
-	unnumbered := PullRequest{
-		Head: PullRequestRef{Repo: &Repo{FullName: "someone/r"}},
-		Base: PullRequestRef{Repo: &Repo{FullName: "o/r"}},
+	unnumbered := rest.PullRequest{
+		Head: rest.PullRequestRef{Repo: &rest.Repo{FullName: "someone/r"}},
+		Base: rest.PullRequestRef{Repo: &rest.Repo{FullName: "o/r"}},
 	}
 	require.True(t, isFork(unnumbered), "without ids the names decide")
 }

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 
+	"kandev-plugin-forgejo/internal/scm"
+
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"github.com/stretchr/testify/require"
 )
@@ -100,7 +102,7 @@ func TestReviewWatchDoesNotFileTheSamePullRequestTwice(t *testing.T) {
 func TestReviewWatchPassesItsFilterToTheSource(t *testing.T) {
 	t.Parallel()
 	rig := newReviewRig(t)
-	rig.watch.Repos = []RepoRef{{Owner: "acme", Name: "web"}}
+	rig.watch.Repos = []scm.RepoRef{{Owner: "acme", Name: "web"}}
 	rig.watch.Labels = []string{"needs-review"}
 	rig.watch.Query = "export"
 	rig.run(t)
@@ -298,7 +300,7 @@ func filedPR(t *testing.T, rig *reviewRig, number int64) string {
 func rigErr(_ Result, err error) error { return err }
 
 func (r *reviewRig) finish(number int64, state PullState) {
-	r.reviews.states[prKey(RepoRef{Owner: "acme", Name: "web"}, number)] = state
+	r.reviews.states[prKey(scm.RepoRef{Owner: "acme", Name: "web"}, number)] = state
 }
 
 func TestCleanupPolicyNeverMakesNoRequests(t *testing.T) {

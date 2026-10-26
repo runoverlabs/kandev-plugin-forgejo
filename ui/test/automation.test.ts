@@ -340,6 +340,75 @@ describe("automation settings", () => {
     expect(t.calls.at(-1)?.input.body).toEqual({ template: "" });
   });
 
+  // Every panel shares one rule: a blank routed id is no route at all.
+  it("falls back to the active workspace when the routed one is blank", async () => {
+    const t = makeHost({ "automation.settings": () => ({ ...SETTINGS }) });
+    const Panel = createAutomationSettings(t.host);
+    t.begin();
+    Panel({ workspaceId: "  " });
+    await t.settle();
+    expect(t.calls[0]).toEqual({ key: "automation.settings", input: { workspaceId: "ws-1" } });
+  });
+
+  // The panel follows the active workspace, so one workspace's settings and
+  // prompt draft must not be shown, or saved, in another.
+  it("does not carry one workspace's settings or prompt draft into another", async () => {
+    const t = makeHost({
+      "automation.settings": () => ({ ...SETTINGS }),
+      "automation.settings_set": (input) => ({ ...SETTINGS, ...input.body }),
+    });
+    const Panel = createAutomationSettings(t.host);
+    const render = (workspaceId: string) => {
+      t.begin();
+      return Panel({ workspaceId }) as Node;
+    };
+    render("ws-1");
+    await t.settle();
+    find(render("ws-1"), (n) => n.type === "Textarea").props.onChange({ target: { value: "Draft for ws-1" } });
+    expect(find(render("ws-1"), (n) => n.type === "Textarea").props.value).toBe("Draft for ws-1");
+
+    expect(byTestId(render("ws-2"), "forgejo-automation-settings")).toBeNull();
+    await t.settle();
+    expect(t.calls.at(-1)).toEqual({ key: "automation.settings", input: { workspaceId: "ws-2" } });
+    expect(find(render("ws-2"), (n) => n.type === "Textarea").props.value).toBe(SETTINGS.default_template);
+
+    // Coming back reloads the settings and keeps the draft.
+    render("ws-1");
+    await t.settle();
+    expect(find(render("ws-1"), (n) => n.type === "Textarea").props.value).toBe("Draft for ws-1");
+  });
+
+  it("does not hold one workspace's save against another", async () => {
+    let release = () => {};
+    const t = makeHost({
+      "automation.settings": () => ({ ...SETTINGS }),
+      "automation.settings_set": (input) =>
+        input.workspaceId === "ws-1"
+          ? new Promise((resolve) => (release = () => resolve({ ...SETTINGS, ...input.body })))
+          : { ...SETTINGS, ...input.body },
+    });
+    const Panel = createAutomationSettings(t.host);
+    const render = (workspaceId: string) => {
+      t.begin();
+      return Panel({ workspaceId }) as Node;
+    };
+    render("ws-1");
+    await t.settle();
+    find(render("ws-1"), (n) => n.type === "Select").props.onValueChange("official");
+    await t.settle();
+    render("ws-2");
+    await t.settle();
+
+    find(render("ws-2"), (n) => n.type === "Select").props.onValueChange("none");
+    await t.settle();
+    expect(t.calls.at(-1)).toEqual({
+      key: "automation.settings_set",
+      input: { workspaceId: "ws-2", body: { trust: "none" } },
+    });
+    release();
+    await t.settle();
+  });
+
   it("keeps the edited prompt when saving it fails", async () => {
     const t = settings();
     t.render();

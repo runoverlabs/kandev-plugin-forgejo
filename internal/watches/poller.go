@@ -2,44 +2,12 @@ package watches
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/kandev/kandev/pkg/pluginsdk"
+	"kandev-plugin-forgejo/internal/kandev"
 )
-
-// Issue is the provider-neutral view of one tracker issue. The adapter maps a
-// Forgejo issue onto this; nothing below this line knows what a Forgejo issue
-// looks like.
-type Issue struct {
-	Number    int64
-	Title     string
-	Body      string
-	State     string
-	URL       string
-	Labels    []string
-	Author    string
-	UpdatedAt string
-}
-
-// IssueQuery is one watch's filter, as the adapter receives it.
-type IssueQuery struct {
-	State  string
-	Labels []string
-	Query  string
-	// Since bounds results to issues updated at or after this instant. The
-	// poller passes the previous successful poll time so a steady-state tick
-	// transfers almost nothing.
-	Since time.Time
-}
-
-// IssueSource is the provider port. internal/forgejo implements it.
-type IssueSource interface {
-	ListIssues(ctx context.Context, repo RepoRef, query IssueQuery) ([]Issue, error)
-}
 
 // WorkspaceGate reports whether this integration is switched on for a
 // workspace. A watch in a workspace where the operator turned the integration
@@ -52,22 +20,6 @@ type WorkspaceGate func(ctx context.Context, workspaceID string) (bool, error)
 // honour the shortest one with reasonable granularity.
 const defaultTick = 30 * time.Second
 
-// maxTitleRunes bounds a generated task title. A tracker allows far longer
-// titles than a board column can show.
-const maxTitleRunes = 160
-
-// maxBodyRunes bounds how much of an issue body is copied into the task
-// description. The full issue is one click away through the link, and an
-// agent's first read of a task should not be forty screens of bug report.
-const maxBodyRunes = 6000
-
-// maxTaskPages bounds the inflight scan. A workspace with more live tasks than
-// this is past the point where a watch's budget is the interesting constraint.
-const maxTaskPages = 20
-
-// taskPageSize is the page size for the inflight scan.
-const taskPageSize = 200
-
 // Poller runs due watches on an interval.
 //
 // One goroutine serves every workspace: the work is IO-bound on the Forgejo
@@ -75,7 +27,7 @@ const taskPageSize = 200
 // rate-limit pressure without finishing sooner.
 type Poller struct {
 	store   *Store
-	hosts   HostProvider
+	hosts   kandev.Provider
 	issues  IssueSource
 	reviews ReviewSource
 	gate    WorkspaceGate
@@ -89,7 +41,7 @@ type Poller struct {
 }
 
 // NewPoller wires a poller. gate and logf may be nil.
-func NewPoller(store *Store, hosts HostProvider, issues IssueSource, gate WorkspaceGate) *Poller {
+func NewPoller(store *Store, hosts kandev.Provider, issues IssueSource, gate WorkspaceGate) *Poller {
 	return &Poller{
 		store:  store,
 		hosts:  hosts,
@@ -158,7 +110,7 @@ func (p *Poller) Tick(ctx context.Context) {
 		// The broker dial has not finished. The next tick will find it.
 		return
 	}
-	workspaces, err := WorkspaceIDs(ctx, host)
+	workspaces, err := kandev.WorkspaceIDs(ctx, host)
 	if err != nil {
 		p.logf("watches: list workspaces: %v", err)
 		return
@@ -199,32 +151,6 @@ func (p *Poller) tickWorkspace(ctx context.Context, workspaceID string) {
 			p.logf("watches: run %s: %v", watch.ID, err)
 		}
 	}
-}
-
-// maxWorkspacePages bounds the workspace walk, in case a host's cursor never
-// ends.
-const maxWorkspacePages = 50
-
-// WorkspaceIDs enumerates every workspace the host serves, page by page.
-func WorkspaceIDs(ctx context.Context, host pluginsdk.Host) ([]string, error) {
-	var ids []string
-	cursor := ""
-	for range maxWorkspacePages {
-		workspaces, pageInfo, err := host.Workspaces().List(ctx, pluginsdk.Page{Limit: taskPageSize, Cursor: cursor})
-		if err != nil {
-			return nil, err
-		}
-		for _, workspace := range workspaces {
-			if id := strings.TrimSpace(workspace.ID); id != "" {
-				ids = append(ids, id)
-			}
-		}
-		if pageInfo == nil || !pageInfo.HasMore || pageInfo.NextCursor == "" || pageInfo.NextCursor == cursor {
-			break
-		}
-		cursor = pageInfo.NextCursor
-	}
-	return ids, nil
 }
 
 // Result reports what one watch run did. It is returned to the panel's manual
@@ -315,238 +241,4 @@ func (p *Poller) RunWatch(ctx context.Context, watch Watch) (Result, error) {
 		return result, mark
 	}
 	return result, nil
-}
-
-// pollIssues files a task per new issue and returns the failures it met.
-func (p *Poller) pollIssues(ctx context.Context, host pluginsdk.Host, watch Watch, result *Result) []string {
-	since := watchSince(watch)
-	inflight := result.Inflight
-	var failures []string
-	for _, repo := range watch.Repos {
-		if ctx.Err() != nil {
-			return failures
-		}
-		issues, err := p.issues.ListIssues(ctx, repo, IssueQuery{
-			State:  watch.State,
-			Labels: watch.Labels,
-			Query:  watch.Query,
-			Since:  since,
-		})
-		if err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %s", repo.FullName(), err))
-			continue
-		}
-		for _, issue := range issues {
-			result.Matched++
-			if _, seen, err := p.store.Seen(ctx, watch, repo, issue.Number); err != nil {
-				failures = append(failures, fmt.Sprintf("%s#%d: %s", repo.FullName(), issue.Number, err))
-				continue
-			} else if seen {
-				result.Duplicates++
-				continue
-			}
-			if inflight+result.Created >= watch.MaxInflightTasks {
-				result.Throttled++
-				continue
-			}
-			taskID, err := p.createTask(ctx, host, watch, repo, issue)
-			if err != nil {
-				failures = append(failures, fmt.Sprintf("%s#%d: %s", repo.FullName(), issue.Number, err))
-				continue
-			}
-			if err := p.store.Record(ctx, watch, repo, issue.Number, issue.URL, taskID); err != nil {
-				// The task exists but the ledger does not know it. Say so
-				// loudly: the next poll will create a second card, and an
-				// operator who sees this can reconcile deliberately.
-				failures = append(failures, fmt.Sprintf(
-					"%s#%d: task %s was created but could not be recorded; it may be created again: %s",
-					repo.FullName(), issue.Number, taskID, err))
-			}
-			result.Created++
-		}
-	}
-	return failures
-}
-
-// watchSince is the incremental bound for a poll.
-//
-// A watch that has polled before asks only for issues updated since then. That
-// is safe for discovery as well as for changes: a newly created issue has an
-// update time at or after its creation, and an issue that only starts matching
-// because a label was added has its update time bumped by that edit.
-//
-// The bound is rewound by one interval. Clock skew between this process and
-// the Forgejo instance is real, and re-reading a small overlap costs one
-// already-deduplicated comparison, while missing an issue costs a card that
-// never appears.
-func watchSince(watch Watch) time.Time {
-	last, err := time.Parse(time.RFC3339, watch.LastPolledAt)
-	if err != nil {
-		return time.Time{}
-	}
-	return last.Add(-watch.PollInterval()).UTC()
-}
-
-// inflight counts this watch's tasks that are still open.
-//
-// It reads the ledger, then one page-walk of the workspace's live tasks, and
-// intersects them — rather than a Get per recorded task, which would be one
-// RPC per issue this watch has ever handled. A task kandev has completed or
-// archived no longer counts against the budget, which is what makes the budget
-// a throttle rather than a lifetime cap.
-func (p *Poller) inflight(ctx context.Context, host pluginsdk.Host, watch Watch) (int, error) {
-	records, err := p.store.Records(ctx, watch)
-	if err != nil {
-		return 0, err
-	}
-	if len(records) == 0 {
-		return 0, nil
-	}
-	owned := make(map[string]struct{}, len(records))
-	for _, record := range records {
-		owned[record.TaskID] = struct{}{}
-	}
-
-	count := 0
-	cursor := ""
-	for page := 0; page < maxTaskPages; page++ {
-		tasks, info, err := host.Tasks().List(ctx, pluginsdk.TaskFilter{
-			WorkspaceIDs: []string{watch.WorkspaceID},
-		}, pluginsdk.Page{Limit: taskPageSize, Cursor: cursor})
-		if err != nil {
-			return 0, fmt.Errorf("watches: list tasks: %w", err)
-		}
-		for _, task := range tasks {
-			if _, mine := owned[task.ID]; !mine {
-				continue
-			}
-			// CompletedAt and ArchivedAt are the two fields that mean "no
-			// longer occupying the board". Task state vocabulary is richer
-			// than this plugin needs to know about.
-			//
-			// A review watch also counts the state: it ends a task by marking it
-			// COMPLETED when it may not archive, and that sets no completed_at,
-			// so the budget would otherwise never free. Issue watches keep
-			// reading the timestamps alone, as they always have.
-			if task.CompletedAt == nil && task.ArchivedAt == nil && !(watch.IsReview() && taskDone(task)) {
-				count++
-			}
-		}
-		if info == nil || !info.HasMore || strings.TrimSpace(info.NextCursor) == "" {
-			break
-		}
-		cursor = info.NextCursor
-	}
-	return count, nil
-}
-
-// createTask turns one issue into one kandev task.
-func (p *Poller) createTask(ctx context.Context, host pluginsdk.Host, watch Watch, repo RepoRef, issue Issue) (string, error) {
-	stepID := watch.WorkflowStepID
-	input := pluginsdk.CreateTaskInput{
-		WorkspaceID:    watch.WorkspaceID,
-		WorkflowID:     watch.WorkflowID,
-		WorkflowStepID: &stepID,
-		Title:          taskTitle(issue),
-		Description:    taskDescription(repo, issue),
-		StartAgent:     watch.StartAgent,
-		// Metadata is the machine-readable half of the same provenance the
-		// description carries in prose. kandev stamps source="plugin:<id>"
-		// itself, so this says which issue, not which plugin.
-		Metadata: map[string]any{
-			"forgejo_repo":         repo.FullName(),
-			"forgejo_issue_number": issue.Number,
-			"forgejo_issue_url":    issue.URL,
-			"forgejo_watch_id":     watch.ID,
-		},
-	}
-	if watch.RepositoryID != "" {
-		attached := pluginsdk.PluginTaskRepository{RepositoryID: watch.RepositoryID}
-		if watch.BaseBranch != "" {
-			base := watch.BaseBranch
-			attached.BaseBranch = &base
-		}
-		input.Repositories = []pluginsdk.PluginTaskRepository{attached}
-	}
-	if launch := taskLaunch(watch); launch != nil {
-		input.Launch = launch
-	}
-
-	created, err := host.Tasks().Create(ctx, input)
-	if err != nil {
-		return "", fmt.Errorf("create task: %w", err)
-	}
-	if created == nil || strings.TrimSpace(created.ID) == "" {
-		return "", errors.New("create task: the host returned no task")
-	}
-	return created.ID, nil
-}
-
-// taskLaunch renders the watch's launch settings, or nil when the operator set
-// none. A nil Launch leaves kandev's own defaults in charge, which is the
-// right behaviour for a watch that only files cards.
-func taskLaunch(watch Watch) *pluginsdk.PluginTaskLaunchOptions {
-	if watch.AgentProfileID == "" && watch.ExecutorProfileID == "" && watch.Prompt == "" {
-		return nil
-	}
-	launch := &pluginsdk.PluginTaskLaunchOptions{}
-	if watch.AgentProfileID != "" {
-		id := watch.AgentProfileID
-		launch.AgentProfileID = &id
-	}
-	if watch.ExecutorProfileID != "" {
-		id := watch.ExecutorProfileID
-		launch.ExecutorProfileID = &id
-	}
-	if watch.Prompt != "" {
-		prompt := watch.Prompt
-		launch.Prompt = &prompt
-	}
-	return launch
-}
-
-// taskTitle renders the board card's title: the issue number first, so two
-// issues that share a title are still distinguishable in a column.
-func taskTitle(issue Issue) string {
-	title := strings.TrimSpace(issue.Title)
-	if title == "" {
-		title = "Untitled issue"
-	}
-	return truncateRunes(fmt.Sprintf("#%d %s", issue.Number, title), maxTitleRunes)
-}
-
-// taskDescription renders the task body: provenance first, then the issue's
-// own text. An agent reading this task needs to know where the work came from
-// before it reads what the work is.
-func taskDescription(repo RepoRef, issue Issue) string {
-	var builder strings.Builder
-	fmt.Fprintf(&builder, "Forgejo issue [%s#%d](%s)", repo.FullName(), issue.Number, issue.URL)
-	if author := strings.TrimSpace(issue.Author); author != "" {
-		fmt.Fprintf(&builder, " opened by %s", author)
-	}
-	builder.WriteString("\n")
-	if len(issue.Labels) > 0 {
-		fmt.Fprintf(&builder, "\nLabels: %s\n", strings.Join(issue.Labels, ", "))
-	}
-	body := strings.TrimSpace(issue.Body)
-	if body == "" {
-		builder.WriteString("\n_The issue has no description._\n")
-		return builder.String()
-	}
-	builder.WriteString("\n---\n\n")
-	builder.WriteString(truncateRunes(body, maxBodyRunes))
-	return builder.String()
-}
-
-// truncateRunes cuts on a rune boundary so a multi-byte character is never
-// split, and marks that it cut.
-func truncateRunes(value string, limit int) string {
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value
-	}
-	if limit <= 1 {
-		return string(runes[:limit])
-	}
-	return strings.TrimRight(string(runes[:limit-1]), " \t\n") + "…"
 }

@@ -5,9 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
+
+	"kandev-plugin-forgejo/internal/kandev"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )
@@ -30,9 +31,6 @@ type StateHost interface {
 	ListState(ctx context.Context, scope, scopeID string) ([]pluginsdk.StateEntry, error)
 }
 
-// ErrNoHost means the plugin has not finished connecting to Kandev.
-var ErrNoHost = errors.New("prautomation: kandev host is not available yet")
-
 // Store persists records and settings in Kandev's Host state. Each pull
 // request is its own entry, so concurrent writers never share a value.
 type Store struct {
@@ -46,11 +44,11 @@ func NewStore(hosts func() StateHost) *Store {
 
 func (s *Store) host() (StateHost, error) {
 	if s.hosts == nil {
-		return nil, ErrNoHost
+		return nil, kandev.ErrNoHost
 	}
 	host := s.hosts()
 	if host == nil {
-		return nil, ErrNoHost
+		return nil, kandev.ErrNoHost
 	}
 	return host, nil
 }

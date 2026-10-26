@@ -284,10 +284,15 @@ func TestDescribeConfigured(t *testing.T) {
 	t.Run("ci on forgejo 15", func(t *testing.T) {
 		t.Parallel()
 		instance := newFakeInstance(t, "15.0.10+gitea-1.22.0", true)
-		runtime, _ := automationRuntime(t, map[string]any{"base_url": instance.server.URL, "api_token": automationToken})
-		response, err := describe(t, runtime, automations.ConditionCIResult, settings)
-		require.NoError(t, err)
-		require.True(t, response.Available, response.Reason)
+		runtime, host := automationRuntime(t, map[string]any{"base_url": instance.server.URL, "api_token": automationToken})
+		for range 2 {
+			response, err := describe(t, runtime, automations.ConditionCIResult, settings)
+			require.NoError(t, err)
+			require.True(t, response.Available, response.Reason)
+		}
+		// The host calls Describe twice per delivery, inside one budget; the
+		// config is read once for the process, not per check.
+		require.Equal(t, int64(1), host.configReads.Load())
 	})
 	// The host's delivery worker cancels a receipt on available=false and
 	// retries on an error, so a transient failure must be an error.
@@ -456,7 +461,7 @@ func TestVerifyAutomationWebhook(t *testing.T) {
 		t.Parallel()
 		runtime, _ := automationRuntime(t, config)
 		cfg := settings(automations.ConditionPush, nil)
-		otherRepo := []byte(strings.Replace(string(pushBody), repository, "someone/else", -1))
+		otherRepo := []byte(strings.ReplaceAll(string(pushBody), repository, "someone/else"))
 		for name, req := range map[string]*pluginsdk.AutomationWebhookRequest{
 			"empty secret": func() *pluginsdk.AutomationWebhookRequest {
 				r := request(automations.ConditionPush, pushBody, pushHeaders, cfg)
@@ -489,7 +494,7 @@ func TestVerifyAutomationWebhook(t *testing.T) {
 	t.Run("signed but not for this condition is ignored", func(t *testing.T) {
 		t.Parallel()
 		runtime, _ := automationRuntime(t, config)
-		otherRepo := []byte(strings.Replace(string(pushBody), repository, "someone/else", -1))
+		otherRepo := []byte(strings.ReplaceAll(string(pushBody), repository, "someone/else"))
 		headers := resign(otherRepo, fixtureSecret)
 		headers["x-forgejo-event"] = "push"
 		prBody, prHeaders, _ := fixture(t, "forgejo-15", "pr_opened")

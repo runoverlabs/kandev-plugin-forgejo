@@ -8,6 +8,12 @@ import (
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )
 
+// archiveOperation is the capability context's name for the exact archive
+// command, and the one this pass needs the operator to have granted.
+const archiveOperation = "ArchiveTaskExact"
+
+const archiveFailedNote = "The host could not archive a task, so it was completed instead."
+
 // The exact archive command exists in the SDK from Kandev 0.97.0. The minimum
 // supported SDK predates it and builds archive_min.go instead (tag kandev_min),
 // where cleanup can only complete a task. A binary built here still runs against

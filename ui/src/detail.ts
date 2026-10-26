@@ -119,6 +119,11 @@ export function toChangeRequestDetail(review: ReviewSummary): ChangeRequestDetai
   if (draft) {
     detail.draft = true;
   }
+  addReviewStatus(detail, status);
+  return detail;
+}
+
+function addReviewStatus(detail: ChangeRequestDetailModel, status: ReviewSummary["taskStatus"]): void {
   if (status?.review) {
     // The host upper-cases review states when it looks up their labels.
     detail.reviewState = status.review.state.toUpperCase();
@@ -129,5 +134,4 @@ export function toChangeRequestDetail(review: ReviewSummary): ChangeRequestDetai
   if (status?.updatedAt !== undefined) {
     detail.lastSyncedAt = new Date(status.updatedAt).toISOString();
   }
-  return detail;
 }

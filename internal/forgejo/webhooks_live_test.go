@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"kandev-plugin-forgejo/internal/automations"
+	"kandev-plugin-forgejo/internal/forgejo/rest"
 
 	"github.com/stretchr/testify/require"
 )
@@ -54,10 +55,12 @@ func TestLiveWebhookDeliveries(t *testing.T) {
 	receiver := newWebhookReceiver(t)
 	repo := fmt.Sprintf("webhooks-%d", time.Now().UnixNano())
 	owner := user.Login
-	require.NoError(t, client.post(ctx, "/user/repos", map[string]any{
+	require.NoError(t, client.Do(ctx, http.MethodPost, "/user/repos", nil, map[string]any{
 		"name": repo, "auto_init": true, "default_branch": "main",
 	}, nil))
-	t.Cleanup(func() { _ = client.delete(context.Background(), "/repos/"+owner+"/"+repo, nil) })
+	t.Cleanup(func() {
+		_ = client.Do(context.Background(), http.MethodDelete, "/repos/"+owner+"/"+repo, nil, nil, nil)
+	})
 	base := "/repos/" + owner + "/" + repo
 
 	reviewer := liveOptionalClient(t, "KANDEV_FORGEJO_REVIEWER_TOKEN")
@@ -68,12 +71,12 @@ func TestLiveWebhookDeliveries(t *testing.T) {
 	var label struct {
 		ID int64 `json:"id"`
 	}
-	require.NoError(t, client.post(ctx, base+"/labels", map[string]any{"name": "bug", "color": "#ee0701"}, &label))
+	require.NoError(t, client.Do(ctx, http.MethodPost, base+"/labels", nil, map[string]any{"name": "bug", "color": "#ee0701"}, &label))
 	hookType := "gitea"
-	if flavor == FlavorForgejo {
+	if flavor == rest.FlavorForgejo {
 		hookType = "forgejo"
 	}
-	require.NoError(t, client.post(ctx, base+"/hooks", map[string]any{
+	require.NoError(t, client.Do(ctx, http.MethodPost, base+"/hooks", nil, map[string]any{
 		"type":   hookType,
 		"active": true,
 		"events": []string{"push", "pull_request", "issue_comment", "action_run_success", "action_run_failure"},
@@ -89,7 +92,7 @@ func TestLiveWebhookDeliveries(t *testing.T) {
 		if newBranch != "" {
 			body["new_branch"] = newBranch
 		}
-		require.NoError(t, client.post(ctx, base+"/contents/"+file, body, nil))
+		require.NoError(t, client.Do(ctx, http.MethodPost, base+"/contents/"+file, nil, body, nil))
 		time.Sleep(500 * time.Millisecond)
 	}
 
@@ -104,48 +107,48 @@ func TestLiveWebhookDeliveries(t *testing.T) {
 		putFile("main", "", "README-2.md", "push to main")
 	}
 	putFile("main", "feature/x", "x.txt", "feature commit")
-	var pull PullRequest
-	require.NoError(t, client.post(ctx, base+"/pulls", map[string]any{
+	var pull rest.PullRequest
+	require.NoError(t, client.Do(ctx, http.MethodPost, base+"/pulls", nil, map[string]any{
 		"head": "feature/x", "base": "main", "title": "Add x", "body": "webhook capture",
 	}, &pull))
 	time.Sleep(500 * time.Millisecond)
 	number := strconv.FormatInt(pull.Number, 10)
-	require.NoError(t, client.post(ctx, base+"/issues/"+number+"/labels", map[string]any{"labels": []int64{label.ID}}, nil))
+	require.NoError(t, client.Do(ctx, http.MethodPost, base+"/issues/"+number+"/labels", nil, map[string]any{"labels": []int64{label.ID}}, nil))
 	if reviewer != nil {
 		reviewerUser, err := reviewer.CurrentUser(ctx)
 		require.NoError(t, err)
-		require.NoError(t, client.put(ctx, base+"/collaborators/"+reviewerUser.Login, map[string]any{"permission": "write"}, nil))
-		require.NoError(t, client.post(ctx, base+"/pulls/"+number+"/requested_reviewers",
+		require.NoError(t, client.Do(ctx, http.MethodPut, base+"/collaborators/"+reviewerUser.Login, nil, map[string]any{"permission": "write"}, nil))
+		require.NoError(t, client.Do(ctx, http.MethodPost, base+"/pulls/"+number+"/requested_reviewers", nil,
 			map[string]any{"reviewers": []string{reviewerUser.Login}}, nil))
 	}
-	require.NoError(t, client.post(ctx, base+"/issues/"+number+"/comments", map[string]any{"body": "a comment"}, nil))
+	require.NoError(t, client.Do(ctx, http.MethodPost, base+"/issues/"+number+"/comments", nil, map[string]any{"body": "a comment"}, nil))
 	putFile("feature/x", "", "y.txt", "sync commit")
 	time.Sleep(2 * time.Second)
 	mergeEventually(t, client, base+"/pulls/"+number+"/merge")
 
 	putFile("main", "fail", "z.txt", "draft change")
-	var draft PullRequest
-	require.NoError(t, client.post(ctx, base+"/pulls", map[string]any{
+	var draft rest.PullRequest
+	require.NoError(t, client.Do(ctx, http.MethodPost, base+"/pulls", nil, map[string]any{
 		"head": "fail", "base": "main", "title": "WIP: draft change",
 	}, &draft))
 	time.Sleep(500 * time.Millisecond)
 	draftPath := base + "/pulls/" + strconv.FormatInt(draft.Number, 10)
-	require.NoError(t, client.patch(ctx, draftPath, map[string]any{"state": "closed"}, nil))
+	require.NoError(t, client.Do(ctx, http.MethodPatch, draftPath, nil, map[string]any{"state": "closed"}, nil))
 	time.Sleep(500 * time.Millisecond)
-	require.NoError(t, client.patch(ctx, draftPath, map[string]any{"state": "open"}, nil))
-	require.NoError(t, client.post(ctx, base+"/tags", map[string]any{"tag_name": "v1", "target": "main"}, nil))
+	require.NoError(t, client.Do(ctx, http.MethodPatch, draftPath, nil, map[string]any{"state": "open"}, nil))
+	require.NoError(t, client.Do(ctx, http.MethodPost, base+"/tags", nil, map[string]any{"tag_name": "v1", "target": "main"}, nil))
 
 	if reviewer != nil {
 		reviewerUser, _ := reviewer.CurrentUser(ctx)
-		require.NoError(t, reviewer.post(ctx, base+"/forks", map[string]any{}, nil))
+		require.NoError(t, reviewer.Do(ctx, http.MethodPost, base+"/forks", nil, map[string]any{}, nil))
 		forkBase := "/repos/" + reviewerUser.Login + "/" + repo
-		t.Cleanup(func() { _ = reviewer.delete(context.Background(), forkBase, nil) })
+		t.Cleanup(func() { _ = reviewer.Do(context.Background(), http.MethodDelete, forkBase, nil, nil, nil) })
 		time.Sleep(2 * time.Second)
-		require.NoError(t, reviewer.post(ctx, forkBase+"/contents/f.txt", map[string]any{
+		require.NoError(t, reviewer.Do(ctx, http.MethodPost, forkBase+"/contents/f.txt", nil, map[string]any{
 			"content": base64.StdEncoding.EncodeToString([]byte("fork")), "message": "fork change",
 			"new_branch": "fork-feature",
 		}, nil))
-		require.NoError(t, reviewer.post(ctx, base+"/pulls", map[string]any{
+		require.NoError(t, reviewer.Do(ctx, http.MethodPost, base+"/pulls", nil, map[string]any{
 			"head": reviewerUser.Login + ":fork-feature", "base": "main", "title": "From a fork",
 		}, nil))
 	}
@@ -266,25 +269,23 @@ func requireScenario(t *testing.T, name string, event automations.Event, reposit
 	}
 }
 
-func liveOptionalClient(t *testing.T, envVar string) *Client {
+func liveOptionalClient(t *testing.T, envVar string) *liveAccount {
 	t.Helper()
 	token := strings.TrimSpace(os.Getenv(envVar))
 	if token == "" {
 		return nil
 	}
 	baseURL, _, _, _ := liveConfig(t)
-	client, err := NewClient(baseURL, token, &http.Client{Timeout: 30 * time.Second})
-	require.NoError(t, err)
-	return client
+	return newLiveAccount(t, baseURL, token)
 }
 
 // mergeEventually merges, retrying while the instance is still computing
 // mergeability (Gitea answers 405 for a moment after a push).
-func mergeEventually(t *testing.T, client *Client, path string) {
+func mergeEventually(t *testing.T, client *liveAccount, path string) {
 	t.Helper()
 	var err error
 	for range 20 {
-		if err = client.post(context.Background(), path, map[string]any{"Do": "merge"}, nil); err == nil {
+		if err = client.Do(context.Background(), http.MethodPost, path, nil, map[string]any{"Do": "merge"}, nil); err == nil {
 			return
 		}
 		time.Sleep(500 * time.Millisecond)

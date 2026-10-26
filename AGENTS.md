@@ -44,8 +44,9 @@ type signatures. Several important behaviours are only visible there — see
 ```sh
 npm install                # once, after cloning
 make claude-md             # restores the local-only CLAUDE.md pointer
-make lint                  # gofmt, go vet, tsc
-make test                  # Go tests + UI tests (builds the bundle first)
+make lint                  # gofmt, vet, tsc, golangci-lint, ESLint, dependency-cruiser
+make test                  # Go tests (layer rules included) + UI tests (builds the bundle first)
+make metrics               # the most complex functions, without failing
 make security              # gitleaks, govulncheck, npm audit
 make verify-package-host   # host-platform tarball + checksums
 make package               # all five platforms, for a release
@@ -61,25 +62,36 @@ for running them against a disposable container.
 
 ## Architecture rule
 
-Neutral packages declare ports and own decisions; the provider package
-implements them and owns every Forgejo detail.
+Ports and adapters, by feature, in five layers; an import only points down.
+[docs/architecture.md](docs/architecture.md) has the layer table, the
+thresholds, and the practices to follow. `internal/archtest` fails the tests on
+an import that crosses a layer, and on a new package missing from its table.
 
-| Package | Owns |
-| --- | --- |
-| `internal/sourcecontrol/` | The source-control recipe: ports, no Forgejo |
-| `internal/watches/` | Issue and review watch model, dedup ledger, poll loop, fork placement, cleanup: ports, no Forgejo |
-| `internal/automations/` | Automation condition settings, the neutral webhook event, the filters, the `{{data.*}}` payload: no Forgejo |
-| `internal/prautomation/` | Pull request automation: switches, settings, the per pull request record, feedback and trust, auto-fix rounds, merge gates, lifecycle prompts, the loop: ports, no Forgejo |
-| `internal/forgejo/` | Every URL, pagination token, auth detail, error mapping, webhook header and payload shape |
-| `internal/plugin/` | Wires adapters to the SDK, owns actions and agent tools |
-| `ui/src/` | The browser half |
+| Layer | Package | Owns |
+| --- | --- | --- |
+| foundation | `internal/scm/` | `RepoRef`, the error kinds and refusal reasons, CI states: standard library only |
+| foundation | `internal/kandev/` | The late-bound host, the plugin config, the workspace walk, JSON action responses |
+| feature | `internal/sourcecontrol/` | The source-control recipe and the task association store: ports, no Forgejo |
+| feature | `internal/watches/` | Issue and review watch model, dedup ledger, poll loop, fork placement, cleanup: ports, no Forgejo |
+| feature | `internal/automations/` | Automation condition settings, the neutral webhook event, the filters, the `{{data.*}}` payload: no Forgejo |
+| feature | `internal/prautomation/` | Pull request automation: switches, settings, the per pull request record, feedback and trust, auto-fix rounds, merge gates, lifecycle prompts, the loop: ports, no Forgejo |
+| adapter | `internal/forgejo/rest/` | The REST v1 wire client: every URL, pagination token, auth detail, wire type and write classification. Knows nothing of Kandev |
+| adapter | `internal/forgejo/` | The port implementations: provider quirks, webhook header and payload shape, mapping wire types onto the features' |
+| transport | `internal/plugin/` | One handler type per RPC surface, each holding only the ports it uses; `wire.go` is the only file that names an adapter |
+| — | `ui/src/` | The browser half: components over pure models, checked by dependency-cruiser |
 
 **Nothing above the adapter forms a Forgejo URL. Nothing in the adapter decides
 what a watch means.** If you find yourself importing `internal/forgejo` into a
-neutral package, the design is wrong — add a port instead.
+neutral package or into `internal/plugin` outside `wire.go`, the design is
+wrong — add a port instead.
 
 This is what makes the poller testable against a scripted `IssueSource` with no
-HTTP, and the REST client testable against `httptest` with no Kandev host.
+HTTP, and the REST client testable against `resttest` with no Kandev host.
+
+**The lint gate is a ceiling, not a target.** `.golangci.yml` and
+`eslint.config.mjs` cap complexity, length and nesting. When a change hits a
+limit, split the function into named steps; do not raise the limit or add a
+`nolint` without a reason on the line.
 
 ## The manifest is a contract
 
@@ -231,6 +243,10 @@ Verified in the sibling checkout; each cost real debugging time.
 - Kandev's CI auto-fix, auto-merge and pull request prompts are GitHub-only in
   the host through v0.98.0 (the outcome tool accepts `github` and `gitlab`); the
   plugin runs its own (`internal/prautomation`).
+- **Saving the plugin config restarts the plugin process**
+  (`restartForConfigChange`), so the config cannot change under a running
+  process. `kandev.Config` reads it once per process; a test that changes the
+  config models the restart with a fresh `Connection` or `Runtime`.
 - `SetHost` is the only lifecycle hook, called once from a background goroutine
   after the broker dial. It is where background work starts.
 

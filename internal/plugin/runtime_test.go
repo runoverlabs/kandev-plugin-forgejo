@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"kandev-plugin-forgejo/internal/forgejo"
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -26,13 +26,18 @@ type configHost struct {
 	mu        sync.Mutex
 	state     map[string]map[string]any
 	failState bool
+	// configReads counts GetConfig calls.
+	configReads atomic.Int64
 }
 
 func newConfigHost(config map[string]any) *configHost {
 	return &configHost{config: config, state: map[string]map[string]any{}}
 }
 
-func (h *configHost) GetConfig(context.Context) (map[string]any, error) { return h.config, nil }
+func (h *configHost) GetConfig(context.Context) (map[string]any, error) {
+	h.configReads.Add(1)
+	return h.config, nil
+}
 func (h *configHost) stateKey(scope, scopeID, key string) string {
 	return scope + "/" + scopeID + "/" + key
 }
@@ -338,8 +343,13 @@ func TestConnectionCacheIsScopedToTheConfiguredInstance(t *testing.T) {
 	require.Equal(t, true, connectionAction(t, runtime, ActionConnectionGet, "workspace-1")["connected"])
 	require.Equal(t, int64(1), firstProbes.Load())
 
+	// Saving the config restarts the plugin; host state survives the restart.
+	runtime.Stop()
 	host.config = map[string]any{"base_url": second.URL, "api_token": "t"}
-	body := connectionAction(t, runtime, ActionConnectionGet, "workspace-1")
+	restarted := NewRuntime()
+	restarted.SetHost(host)
+	t.Cleanup(restarted.Stop)
+	body := connectionAction(t, restarted, ActionConnectionGet, "workspace-1")
 	require.Equal(t, second.URL, body["instance_url"])
 	require.Nil(t, body["cached"], "a cache entry for the old instance must not be reused")
 	require.Equal(t, int64(1), secondProbes.Load())
@@ -536,8 +546,8 @@ func TestSetEnabledValidatesInput(t *testing.T) {
 
 func TestSafeMessageDoesNotCallWriteForbiddenABadToken(t *testing.T) {
 	t.Parallel()
-	forbidden := safeMessage(&forgejo.WriteError{Status: 403, Reason: forgejo.ReasonForbidden})
+	forbidden := safeMessage(&scm.WriteError{Status: 403, Reason: scm.ReasonForbidden})
 	require.NotContains(t, forbidden, "rejected the access token")
 	require.Contains(t, forbidden, "permission")
-	require.Contains(t, safeMessage(&forgejo.WriteError{Status: 409, Reason: forgejo.ReasonConflict}), "conflicts")
+	require.Contains(t, safeMessage(&scm.WriteError{Status: 409, Reason: scm.ReasonConflict}), "conflicts")
 }

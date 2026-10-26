@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"kandev-plugin-forgejo/internal/kandev"
+	"kandev-plugin-forgejo/internal/scm"
+
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"github.com/stretchr/testify/require"
 )
@@ -34,7 +37,7 @@ func issue(number int64, title string) Issue {
 func TestWorkspaceIDsWalksEveryPage(t *testing.T) {
 	host := newFakeHost("a", "b", "c", "d", "e")
 	host.workspacePage = 2
-	ids, err := WorkspaceIDs(context.Background(), host)
+	ids, err := kandev.WorkspaceIDs(context.Background(), host)
 	require.NoError(t, err)
 	require.Equal(t, []string{"a", "b", "c", "d", "e"}, ids)
 }
@@ -392,7 +395,7 @@ func TestRunWatchRefusesWhenTheBudgetIsUnreadable(t *testing.T) {
 	saved, err := store.Put(context.Background(), sampleWatch("ws-1", "acme/app"))
 	require.NoError(t, err)
 	// Seed one record so the inflight scan actually runs, then break the list.
-	require.NoError(t, store.Record(context.Background(), saved, RepoRef{Owner: "acme", Name: "app"}, 9, "u", "task-9"))
+	require.NoError(t, store.Record(context.Background(), saved, scm.RepoRef{Owner: "acme", Name: "app"}, 9, "u", "task-9"))
 	host.listErr = errBoom
 
 	_, err = poller.RunWatch(context.Background(), saved)
@@ -407,14 +410,14 @@ func TestTaskTitleAndDescriptionAreBounded(t *testing.T) {
 	require.LessOrEqual(t, len([]rune(title)), maxTitleRunes)
 	require.True(t, strings.HasPrefix(title, "#7 "))
 
-	body := taskDescription(RepoRef{Owner: "acme", Name: "app"}, Issue{
+	body := taskDescription(scm.RepoRef{Owner: "acme", Name: "app"}, Issue{
 		Number: 7, URL: "https://git.example/i/7", Body: strings.Repeat("b", maxBodyRunes*2),
 	})
 	require.Less(t, len([]rune(body)), maxBodyRunes+400)
 	require.Contains(t, body, "acme/app#7")
 
 	// An issue with no body still produces a usable card.
-	empty := taskDescription(RepoRef{Owner: "acme", Name: "app"}, Issue{Number: 8, URL: "https://git.example/i/8"})
+	empty := taskDescription(scm.RepoRef{Owner: "acme", Name: "app"}, Issue{Number: 8, URL: "https://git.example/i/8"})
 	require.Contains(t, empty, "no description")
 }
 

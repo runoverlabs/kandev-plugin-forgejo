@@ -71,27 +71,6 @@ function reviewState(state: string | undefined): string {
  */
 export function toDetailModel(details: DetailsResponse): ChangeRequestDetailModel {
   const draft = details.state === "draft";
-  const reviews: ChangeRequestDetailReview[] = (details.reviews ?? []).map((review, index) => ({
-    id: String(review.id ?? index),
-    author: person(review.author),
-    state: reviewState(review.state),
-    ...(review.body ? { body: review.body } : {}),
-    ...(review.submitted_at ? { createdAt: review.submitted_at } : {}),
-  }));
-  const checks: ChangeRequestDetailCheck[] = (details.checks ?? []).map((check, index) => ({
-    id: check.id ?? String(index),
-    name: check.label ?? "check",
-    state: check.state ?? "neutral",
-    ...(check.detail ? { output: check.detail } : {}),
-    ...(check.url ? { url: check.url } : {}),
-  }));
-  const comments: ChangeRequestDetailComment[] = (details.comments ?? []).map((comment, index) => ({
-    id: String(comment.id ?? index),
-    author: person(comment.author),
-    body: comment.body ?? "",
-    ...(comment.created_at ? { createdAt: comment.created_at } : {}),
-  }));
-
   const model: ChangeRequestDetailModel = {
     providerId: details.provider_id ?? "forgejo",
     reviewKey: details.review_key ?? "",
@@ -100,21 +79,63 @@ export function toDetailModel(details: DetailsResponse): ChangeRequestDetailMode
     url: details.url ?? "",
     state: draft ? "open" : (details.state ?? "open"),
     author: person(details.author),
-    sourceBranch: details.source_branch ?? "",
-    targetBranch: details.target_branch ?? "",
-    additions: details.additions ?? 0,
-    deletions: details.deletions ?? 0,
-    reviews,
+    ...branchesAndLines(details),
+    reviews: detailReviews(details),
     requestedReviewers: (details.requested_reviewers ?? []).map((name) => person(name)),
-    checks,
-    comments,
+    checks: detailChecks(details),
+    comments: detailComments(details),
   };
-  if (draft) model.draft = true;
+  addReportedFields(model, details);
+  return model;
+}
+
+/** Fields the host treats as absent rather than empty, set only when known. */
+function addReportedFields(model: ChangeRequestDetailModel, details: DetailsResponse): void {
+  if (details.state === "draft") model.draft = true;
   if (details.description) model.description = details.description;
   if (details.created_at) model.createdAt = details.created_at;
   const decision = reviewDecision(details);
   if (decision) model.reviewState = decision;
-  return model;
+}
+
+function branchesAndLines(
+  details: DetailsResponse,
+): Pick<ChangeRequestDetailModel, "sourceBranch" | "targetBranch" | "additions" | "deletions"> {
+  return {
+    sourceBranch: details.source_branch ?? "",
+    targetBranch: details.target_branch ?? "",
+    additions: details.additions ?? 0,
+    deletions: details.deletions ?? 0,
+  };
+}
+
+function detailReviews(details: DetailsResponse): ChangeRequestDetailReview[] {
+  return (details.reviews ?? []).map((review, index) => ({
+    id: String(review.id ?? index),
+    author: person(review.author),
+    state: reviewState(review.state),
+    ...(review.body ? { body: review.body } : {}),
+    ...(review.submitted_at ? { createdAt: review.submitted_at } : {}),
+  }));
+}
+
+function detailChecks(details: DetailsResponse): ChangeRequestDetailCheck[] {
+  return (details.checks ?? []).map((check, index) => ({
+    id: check.id ?? String(index),
+    name: check.label ?? "check",
+    state: check.state ?? "neutral",
+    ...(check.detail ? { output: check.detail } : {}),
+    ...(check.url ? { url: check.url } : {}),
+  }));
+}
+
+function detailComments(details: DetailsResponse): ChangeRequestDetailComment[] {
+  return (details.comments ?? []).map((comment, index) => ({
+    id: String(comment.id ?? index),
+    author: person(comment.author),
+    body: comment.body ?? "",
+    ...(comment.created_at ? { createdAt: comment.created_at } : {}),
+  }));
 }
 
 /** The overall review state the host's header shows, derived from blockers. */
@@ -206,4 +227,42 @@ export function failureMessage(cause: unknown): string {
   if (cause instanceof Error && cause.message.trim()) return cause.message.trim();
   if (typeof cause === "string" && cause.trim()) return cause.trim();
   return "The request failed.";
+}
+
+export type ReviewEvent = "approve" | "request_changes" | "comment";
+
+export const EVENT_LABELS: Record<ReviewEvent, string> = {
+  approve: "Approve",
+  request_changes: "Request changes",
+  comment: "Comment",
+};
+
+export type InlineDraft = { path: string; line: string; body: string };
+
+export type InlineComment = { path: string; line: number; body: string };
+
+export type ReviewRequest = {
+  event: ReviewEvent;
+  body: string;
+  comments: InlineComment[];
+};
+
+/** The finished review request, or the reason the draft cannot be sent. */
+export function reviewRequest(
+  event: ReviewEvent,
+  body: string,
+  inline: InlineDraft[],
+): { request: ReviewRequest } | { problem: string } {
+  const comments: InlineComment[] = [];
+  for (const draft of inline) {
+    const line = Number.parseInt(draft.line, 10);
+    if (!draft.path.trim() || !draft.body.trim() || !Number.isInteger(line) || line <= 0) {
+      return { problem: "Each inline comment needs a file path, a line number and some text." };
+    }
+    comments.push({ path: draft.path.trim(), line, body: draft.body.trim() });
+  }
+  if (event !== "approve" && !body.trim() && comments.length === 0) {
+    return { problem: "Write something, or choose Approve." };
+  }
+  return { request: { event, body: body.trim(), comments } };
 }

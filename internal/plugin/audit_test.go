@@ -70,9 +70,9 @@ func TestAuditTrailIsBoundedAndScopedToTheWorkspace(t *testing.T) {
 	fixture := newAgentFixture(t)
 	ctx := context.Background()
 	for i := 0; i < auditKeep+30; i++ {
-		fixture.runtime.audit(ctx, auditRecord{Action: "change_requests.comment", Actor: "u", Workspace: "workspace-1", Number: int64(i), Outcome: "ok"})
+		fixture.runtime.audit.Record(ctx, auditRecord{Action: "change_requests.comment", Actor: "u", Workspace: "workspace-1", Number: int64(i), Outcome: "ok"})
 	}
-	fixture.runtime.audit(ctx, auditRecord{Action: "change_requests.merge", Actor: "u", Workspace: "workspace-2", Number: 1, Outcome: "ok"})
+	fixture.runtime.audit.Record(ctx, auditRecord{Action: "change_requests.merge", Actor: "u", Workspace: "workspace-2", Number: 1, Outcome: "ok"})
 
 	stored, err := fixture.host.ListState(ctx, "workspace", "workspace-1")
 	require.NoError(t, err)

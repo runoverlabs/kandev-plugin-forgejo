@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"testing"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
+	"kandev-plugin-forgejo/internal/sourcecontrol"
+
 	"github.com/kandev/kandev/pkg/pluginsdk"
 	"github.com/stretchr/testify/require"
 )
@@ -13,13 +16,13 @@ func TestPullRequestState(t *testing.T) {
 	t.Parallel()
 	// A merged pull request reports state "closed" on both hosts, so the
 	// merged flag has to win.
-	require.Equal(t, "merged", pullRequestState(PullRequest{State: "closed", Merged: true}))
-	require.Equal(t, "closed", pullRequestState(PullRequest{State: "closed"}))
-	require.Equal(t, "draft", pullRequestState(PullRequest{State: "open", Draft: true}))
-	require.Equal(t, "draft", pullRequestState(PullRequest{State: "open", Title: "WIP: later"}))
-	require.Equal(t, "open", pullRequestState(PullRequest{State: "open", Title: "Ready"}))
+	require.Equal(t, "merged", pullRequestState(rest.PullRequest{State: "closed", Merged: true}))
+	require.Equal(t, "closed", pullRequestState(rest.PullRequest{State: "closed"}))
+	require.Equal(t, "draft", pullRequestState(rest.PullRequest{State: "open", Draft: true}))
+	require.Equal(t, "draft", pullRequestState(rest.PullRequest{State: "open", Title: "WIP: later"}))
+	require.Equal(t, "open", pullRequestState(rest.PullRequest{State: "open", Title: "Ready"}))
 	// A merged draft is still merged.
-	require.Equal(t, "merged", pullRequestState(PullRequest{State: "closed", Merged: true, Draft: true}))
+	require.Equal(t, "merged", pullRequestState(rest.PullRequest{State: "closed", Merged: true, Draft: true}))
 }
 
 func TestPipelineState(t *testing.T) {
@@ -35,7 +38,7 @@ func TestPipelineState(t *testing.T) {
 // The per-entry field is `status`; only the combined roll-up uses `state`.
 func TestNormalizeChecksReadsStatusField(t *testing.T) {
 	t.Parallel()
-	checks := normalizeChecks([]CommitStatus{
+	checks := normalizeChecks([]rest.CommitStatus{
 		{ID: 5, Status: "success", Context: "ci/build", Description: "ok", TargetURL: "https://ci/5"},
 		{ID: 0, Status: "failure", Context: ""},
 	})
@@ -53,24 +56,24 @@ func TestSummarizeReviews(t *testing.T) {
 	t.Run("no decisive reviews", func(t *testing.T) {
 		t.Parallel()
 		require.Nil(t, summarizeReviews(nil))
-		require.Nil(t, summarizeReviews([]Review{{State: "COMMENT", User: User{Login: "a"}}}))
-		require.Nil(t, summarizeReviews([]Review{{State: "PENDING", User: User{Login: "a"}}}))
+		require.Nil(t, summarizeReviews([]rest.Review{{State: "COMMENT", User: rest.User{Login: "a"}}}))
+		require.Nil(t, summarizeReviews([]rest.Review{{State: "PENDING", User: rest.User{Login: "a"}}}))
 	})
 
 	t.Run("ignores stale and dismissed", func(t *testing.T) {
 		t.Parallel()
-		require.Nil(t, summarizeReviews([]Review{
-			{State: "APPROVED", Stale: true, User: User{Login: "a"}},
-			{State: "APPROVED", Dismissed: true, User: User{Login: "b"}},
+		require.Nil(t, summarizeReviews([]rest.Review{
+			{State: "APPROVED", Stale: true, User: rest.User{Login: "a"}},
+			{State: "APPROVED", Dismissed: true, User: rest.User{Login: "b"}},
 		}))
 	})
 
 	t.Run("counts one decision per reviewer", func(t *testing.T) {
 		t.Parallel()
-		summary := summarizeReviews([]Review{
-			{State: "APPROVED", User: User{Login: "a"}},
-			{State: "APPROVED", User: User{Login: "a"}},
-			{State: "APPROVED", User: User{Login: "b"}},
+		summary := summarizeReviews([]rest.Review{
+			{State: "APPROVED", User: rest.User{Login: "a"}},
+			{State: "APPROVED", User: rest.User{Login: "a"}},
+			{State: "APPROVED", User: rest.User{Login: "b"}},
 		})
 		require.NotNil(t, summary)
 		require.Equal(t, "approved", summary.State)
@@ -79,9 +82,9 @@ func TestSummarizeReviews(t *testing.T) {
 
 	t.Run("changes requested wins over approvals", func(t *testing.T) {
 		t.Parallel()
-		summary := summarizeReviews([]Review{
-			{State: "APPROVED", User: User{Login: "a"}},
-			{State: "REQUEST_CHANGES", User: User{Login: "b"}},
+		summary := summarizeReviews([]rest.Review{
+			{State: "APPROVED", User: rest.User{Login: "a"}},
+			{State: "REQUEST_CHANGES", User: rest.User{Login: "b"}},
 		})
 		require.NotNil(t, summary)
 		require.Equal(t, "changes_requested", summary.State)
@@ -101,26 +104,26 @@ func TestParseTimestampMillis(t *testing.T) {
 func TestReviewKeyMatchesAcrossTaskAndWorkspaceRefresh(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repositories/7", http.StatusOK, repoPayload(7, "acme", "widgets"))
-	api.handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42", http.StatusOK, map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repositories/7", http.StatusOK, repoPayload(7, "acme", "widgets"))
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42", http.StatusOK, map[string]any{
 		"number": 42, "title": "Add widgets", "state": "open", "html_url": "https://forge/pulls/42",
 		"head": map[string]any{"sha": "abc", "ref": "feature"}, "updated_at": "2025-08-12T12:40:00Z",
 		"review_comments": 3,
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/acme/widgets/commits/abc/status", http.StatusOK, map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/widgets/commits/abc/status", http.StatusOK, map[string]any{
 		"state": "success", "statuses": []map[string]any{{"id": 1, "status": "success", "context": "ci/build"}},
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42/reviews", http.StatusOK, []map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42/reviews", http.StatusOK, []map[string]any{
 		{"id": 1, "state": "APPROVED", "user": map[string]any{"login": "reviewer"}},
 	})
 
 	connection, host := newTestConnection(t, api, "token")
 	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "workspace-1"}
 	repositories := NewRepositories(connection, func() pluginsdk.Host { return host }, "forgejo")
-	associations := NewAssociations(func() pluginsdk.Host { return host })
+	associations := sourcecontrol.NewAssociations(func() pluginsdk.Host { return host })
 	reviews := NewReviews(connection, repositories, associations, "forgejo")
 
-	require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.url(), "7", 42)))
+	require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.URL(), "7", 42)))
 
 	forTask, err := reviews.ForTask(context.Background(), "workspace-1", "task-1")
 	require.NoError(t, err)
@@ -144,17 +147,17 @@ func TestReviewKeyMatchesAcrossTaskAndWorkspaceRefresh(t *testing.T) {
 func TestForTaskToleratesMissingStatusAndReviews(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repositories/7", http.StatusOK, repoPayload(7, "acme", "widgets"))
-	api.handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42", http.StatusOK, map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repositories/7", http.StatusOK, repoPayload(7, "acme", "widgets"))
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42", http.StatusOK, map[string]any{
 		"number": 42, "title": "t", "state": "open", "head": map[string]any{"sha": "abc"},
 	})
 	// status + reviews endpoints intentionally unregistered -> 404
 	connection, host := newTestConnection(t, api, "token")
 	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "workspace-1"}
 	repositories := NewRepositories(connection, func() pluginsdk.Host { return host }, "forgejo")
-	associations := NewAssociations(func() pluginsdk.Host { return host })
+	associations := sourcecontrol.NewAssociations(func() pluginsdk.Host { return host })
 	reviews := NewReviews(connection, repositories, associations, "forgejo")
-	require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.url(), "7", 42)))
+	require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.URL(), "7", 42)))
 
 	forTask, err := reviews.ForTask(context.Background(), "workspace-1", "task-1")
 	require.NoError(t, err)
@@ -168,14 +171,14 @@ func TestForTaskToleratesMissingStatusAndReviews(t *testing.T) {
 func TestForTaskSkipsDeletedPullRequests(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repositories/7", http.StatusOK, repoPayload(7, "acme", "widgets"))
-	api.handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42", http.StatusNotFound, nil)
+	api.Handle(http.MethodGet, "/api/v1/repositories/7", http.StatusOK, repoPayload(7, "acme", "widgets"))
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42", http.StatusNotFound, nil)
 	connection, host := newTestConnection(t, api, "token")
 	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "workspace-1"}
 	repositories := NewRepositories(connection, func() pluginsdk.Host { return host }, "forgejo")
-	associations := NewAssociations(func() pluginsdk.Host { return host })
+	associations := sourcecontrol.NewAssociations(func() pluginsdk.Host { return host })
 	reviews := NewReviews(connection, repositories, associations, "forgejo")
-	require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.url(), "7", 42)))
+	require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.URL(), "7", 42)))
 
 	forTask, err := reviews.ForTask(context.Background(), "workspace-1", "task-1")
 	require.NoError(t, err)
@@ -189,7 +192,7 @@ func TestForTaskIgnoresOtherConnectionScopes(t *testing.T) {
 	connection, host := newTestConnection(t, api, "token")
 	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "workspace-1"}
 	repositories := NewRepositories(connection, func() pluginsdk.Host { return host }, "forgejo")
-	associations := NewAssociations(func() pluginsdk.Host { return host })
+	associations := sourcecontrol.NewAssociations(func() pluginsdk.Host { return host })
 	reviews := NewReviews(connection, repositories, associations, "forgejo")
 	require.NoError(t, associations.Link(context.Background(), "task-1", identity("https://other.example.com", "7", 42)))
 
@@ -205,12 +208,12 @@ func TestAssociationsDoesNotCallProvider(t *testing.T) {
 	connection, host := newTestConnection(t, api, "token")
 	host.tasks["task-1"] = &pluginsdk.Task{ID: "task-1", WorkspaceID: "workspace-1"}
 	repositories := NewRepositories(connection, func() pluginsdk.Host { return host }, "forgejo")
-	associations := NewAssociations(func() pluginsdk.Host { return host })
+	associations := sourcecontrol.NewAssociations(func() pluginsdk.Host { return host })
 	reviews := NewReviews(connection, repositories, associations, "forgejo")
-	require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.url(), "7", 42)))
+	require.NoError(t, associations.Link(context.Background(), "task-1", identity(api.URL(), "7", 42)))
 
 	result, err := reviews.Associations(context.Background(), "workspace-1")
 	require.NoError(t, err)
 	require.Len(t, result, 1)
-	require.Empty(t, api.requests, "association refresh must be served from stored state alone")
+	require.Empty(t, api.Requests(), "association refresh must be served from stored state alone")
 }

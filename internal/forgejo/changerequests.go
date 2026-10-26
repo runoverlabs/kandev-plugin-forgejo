@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
 
@@ -44,7 +46,7 @@ func (c *ChangeRequests) ResolveReference(ctx context.Context, _ string, referen
 	}
 	pull, err := client.PullRequest(ctx, owner, name, number)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, scm.ErrNotFound) {
 			return sourcecontrol.ChangeRequest{}, errors.New("forgejo: pull request was not found on the configured instance")
 		}
 		return sourcecontrol.ChangeRequest{}, err
@@ -101,7 +103,7 @@ func (c *ChangeRequests) Create(ctx context.Context, repository sourcecontrol.Re
 		title = "WIP: " + title
 	}
 
-	created, err := client.CreatePullRequest(ctx, repository.OwnerOrProject, repository.Name, CreatePullRequestInput{
+	created, err := client.CreatePullRequest(ctx, repository.OwnerOrProject, repository.Name, rest.CreatePullRequestInput{
 		Head:  head,
 		Base:  base,
 		Title: title,
@@ -175,8 +177,8 @@ func ParsePullRequestReference(scope, reference string) (string, string, int64, 
 		return "", "", 0, false
 	}
 	if match := ownerRepoNumberPattern.FindStringSubmatch(trimmed); match != nil {
-		number, err := strconv.ParseInt(match[3], 10, 64)
-		if err != nil || number <= 0 {
+		number, ok := pullNumber(match[3])
+		if !ok {
 			return "", "", 0, false
 		}
 		return match[1], strings.TrimSuffix(match[2], ".git"), number, true
@@ -184,20 +186,13 @@ func ParsePullRequestReference(scope, reference string) (string, string, int64, 
 	if !strings.Contains(trimmed, "://") {
 		return "", "", 0, false
 	}
-	parsed, err := url.Parse(trimmed)
-	if err != nil || parsed.Host == "" {
+	return parsePullRequestURL(scope, trimmed)
+}
+
+func parsePullRequestURL(scope, rawURL string) (string, string, int64, bool) {
+	path, ok := instancePath(scope, rawURL)
+	if !ok {
 		return "", "", 0, false
-	}
-	scopeURL, err := url.Parse(scope)
-	if err != nil || !strings.EqualFold(parsed.Hostname(), scopeURL.Hostname()) {
-		return "", "", 0, false
-	}
-	path := strings.Trim(parsed.Path, "/")
-	if base := strings.Trim(scopeURL.Path, "/"); base != "" {
-		if !strings.HasPrefix(path, base+"/") {
-			return "", "", 0, false
-		}
-		path = strings.TrimPrefix(path, base+"/")
 	}
 	segments := strings.Split(path, "/")
 	// Both web ("/owner/repo/pulls/1") and API ("/owner/repo/pulls/1") shapes
@@ -205,8 +200,8 @@ func ParsePullRequestReference(scope, reference string) (string, string, int64, 
 	if len(segments) < 4 || segments[2] != "pulls" {
 		return "", "", 0, false
 	}
-	number, err := strconv.ParseInt(segments[3], 10, 64)
-	if err != nil || number <= 0 {
+	number, ok := pullNumber(segments[3])
+	if !ok {
 		return "", "", 0, false
 	}
 	owner := strings.TrimSpace(segments[0])
@@ -215,6 +210,11 @@ func ParsePullRequestReference(scope, reference string) (string, string, int64, 
 		return "", "", 0, false
 	}
 	return owner, name, number, true
+}
+
+func pullNumber(value string) (int64, bool) {
+	number, err := strconv.ParseInt(value, 10, 64)
+	return number, err == nil && number > 0
 }
 
 // PullRequestURL builds the canonical web URL for a pull request. It is a

@@ -261,7 +261,7 @@ func TestAutomationSettingsRoundTripAndValidate(t *testing.T) {
 		"default.on_merged=false,default.on_closed=false,trust=official,template=custom", entries[0]["outcome"],
 		"turning on unattended merges is on the trail, the prompt's text is not")
 
-	response, err = fixture.runtime.HandleAction(ctx, pluginRequest(ActionAutomationSettingsSet, "workspace-1", `{"template":""}`))
+	_, err = fixture.runtime.HandleAction(ctx, pluginRequest(ActionAutomationSettingsSet, "workspace-1", `{"template":""}`))
 	require.NoError(t, err)
 	require.Equal(t, "template=default", auditEntries(t, fixture, "workspace-1")[0]["outcome"])
 
@@ -387,7 +387,7 @@ func TestHostMessagingErrorMapping(t *testing.T) {
 func TestAutomationMergerClassifiesRefusals(t *testing.T) {
 	fixture, _ := automationFixture(t)
 	ctx := context.Background()
-	merger := automationMerger{runtime: fixture.runtime}
+	merger := automationMerger{source: fixture.runtime.automationActions.automationSource, audit: fixture.runtime.audit}
 	ref := prautomation.PullRef{TaskID: "task-1", RepositoryID: "77", Number: 12}
 
 	var body map[string]any

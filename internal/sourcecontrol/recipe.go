@@ -1,6 +1,6 @@
 // Package sourcecontrol is a provider-neutral recipe. It contains only the
 // Kandev boundary: a real plugin supplies provider-specific implementations of
-// the narrow interfaces below and delegates its optional SDK methods here.
+// the narrow interfaces in ports.go and delegates its optional SDK methods here.
 package sourcecontrol
 
 import (
@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"kandev-plugin-forgejo/internal/kandev"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )
@@ -25,138 +27,6 @@ const (
 	ActionChangeRequestsUnlink      = "change_requests.unlink"
 	ActionChangeRequestAssociations = "change_requests.associations"
 )
-
-// Repository holds credential-free provider identity and display/routing data.
-// RepositoryID must be the provider's immutable identifier; Name is display only.
-type Repository struct {
-	ProviderID      string `json:"provider_id"`
-	ProviderHost    string `json:"provider_host"`
-	ConnectionScope string `json:"provider_scope"`
-	RepositoryID    string `json:"repository_id"`
-	OwnerOrProject  string `json:"owner_or_project"`
-	Name            string `json:"name"`
-	CloneURL        string `json:"clone_url"`
-	DefaultBranch   string `json:"default_branch,omitempty"`
-}
-
-type RepositoryIdentity struct {
-	ConnectionScope string `json:"connection_scope"`
-	RepositoryID    string `json:"repository_id"`
-}
-
-type Branch struct {
-	Name      string `json:"name"`
-	Commit    string `json:"commit,omitempty"`
-	IsDefault bool   `json:"is_default,omitempty"`
-}
-
-// ChangeRequestIdentity is the complete immutable association key.
-type ChangeRequestIdentity struct {
-	ConnectionScope string `json:"connection_scope"`
-	RepositoryID    string `json:"repository_id"`
-	Number          int64  `json:"number"`
-}
-
-type ChangeRequest struct {
-	Identity ChangeRequestIdentity `json:"identity"`
-	Title    string                `json:"title,omitempty"`
-	URL      string                `json:"url"`
-}
-
-type CreateChangeRequestInput struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Destination string `json:"destination"`
-	Draft       bool   `json:"draft"`
-}
-
-type ReviewTaskStatusCheck struct {
-	ID     string `json:"id"`
-	Label  string `json:"label"`
-	State  string `json:"state"`
-	Detail string `json:"detail,omitempty"`
-	URL    string `json:"url,omitempty"`
-}
-
-type ReviewTaskReview struct {
-	State     string `json:"state"`
-	Approved  int    `json:"approved"`
-	Required  int    `json:"required,omitempty"`
-	Requested int    `json:"requested,omitempty"`
-}
-
-type ReviewTaskStatus struct {
-	Number             int64                   `json:"number"`
-	State              string                  `json:"state"`
-	PipelineState      string                  `json:"pipeline_state"`
-	Checks             []ReviewTaskStatusCheck `json:"checks"`
-	Review             *ReviewTaskReview       `json:"review,omitempty"`
-	UnresolvedComments int                     `json:"unresolved_comments,omitempty"`
-	UpdatedAt          int64                   `json:"updated_at,omitempty"` // Unix milliseconds.
-}
-
-type ReviewSummary struct {
-	ProviderID          string            `json:"provider_id"`
-	ReviewKey           string            `json:"review_key"`
-	Title               string            `json:"title"`
-	URL                 string            `json:"url"`
-	ConnectionScope     string            `json:"connection_scope"`
-	RepositoryID        string            `json:"repository_id"`
-	ChangeRequestNumber int64             `json:"change_request_number"`
-	State               string            `json:"state"`
-	TaskStatus          *ReviewTaskStatus `json:"task_status,omitempty"`
-}
-
-type ReviewAssociation struct {
-	ProviderID          string `json:"provider_id"`
-	TaskID              string `json:"task_id"`
-	ReviewKey           string `json:"review_key"`
-	ConnectionScope     string `json:"connection_scope"`
-	RepositoryID        string `json:"repository_id"`
-	ChangeRequestNumber int64  `json:"change_request_number"`
-}
-
-type RepositoryCursor struct {
-	Remote            string
-	AfterRepositoryID string
-}
-
-type RepositoryPage struct {
-	Repositories []Repository
-	Next         RepositoryCursor
-}
-
-type RepositoryLister interface {
-	ConnectionScope(context.Context, string) (string, error)
-	List(context.Context, string, string, RepositoryCursor, int) (RepositoryPage, error)
-}
-
-type RepositoryDetails interface {
-	Inspect(context.Context, string, string) (*Repository, error)
-	Resolve(context.Context, string, RepositoryIdentity) (Repository, error)
-	ListBranches(context.Context, string, Repository) ([]Branch, error)
-}
-
-// AttachedRepositoryResolver must resolve through Host Tasks/Repositories APIs.
-// Browser descriptors are never authority for create operations.
-type AttachedRepositoryResolver interface {
-	ResolveAttached(context.Context, pluginsdk.VerifiedActionContext) (Repository, error)
-}
-
-type ChangeRequestService interface {
-	ResolveReference(context.Context, string, string) (ChangeRequest, error)
-	Create(context.Context, Repository, string, CreateChangeRequestInput) (ChangeRequest, error)
-}
-
-type AssociationStore interface {
-	Link(context.Context, string, ChangeRequestIdentity) error
-	Unlink(context.Context, string, ChangeRequestIdentity) error
-}
-
-type ReviewReader interface {
-	ForTask(context.Context, string, string) ([]ReviewSummary, error)
-	Associations(context.Context, string) ([]ReviewAssociation, error)
-}
 
 // Extension implements optional plugin SDK surfaces. Embed or delegate to it
 // from the concrete value passed to pluginsdk.Serve.
@@ -225,7 +95,7 @@ func (e *Extension) getAssociations(ctx context.Context, request *pluginsdk.Plug
 		}
 		associations[i].ProviderID = e.ProviderID
 	}
-	return jsonResponse(map[string]any{"associations": associations})
+	return kandev.JSON(map[string]any{"associations": associations})
 }
 
 func (e *Extension) getReviews(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -247,7 +117,7 @@ func (e *Extension) getReviews(ctx context.Context, request *pluginsdk.PluginAct
 		}
 		reviews[i].ProviderID = e.ProviderID
 	}
-	return jsonResponse(map[string]any{"reviews": reviews})
+	return kandev.JSON(map[string]any{"reviews": reviews})
 }
 
 func (e *Extension) listBranches(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -283,7 +153,7 @@ func (e *Extension) listBranches(ctx context.Context, request *pluginsdk.PluginA
 	if err != nil {
 		return nil, fmt.Errorf("source-control recipe: list branches: %w", err)
 	}
-	return jsonResponse(map[string]any{"branches": branches})
+	return kandev.JSON(map[string]any{"branches": branches})
 }
 
 func (e *Extension) inspectRepository(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -305,13 +175,13 @@ func (e *Extension) inspectRepository(ctx context.Context, request *pluginsdk.Pl
 		return nil, fmt.Errorf("source-control recipe: inspect repository URL: %w", err)
 	}
 	if repository == nil {
-		return jsonResponse(map[string]any{"repository": nil})
+		return kandev.JSON(map[string]any{"repository": nil})
 	}
 	bound := *repository
 	bound.ProviderID = e.ProviderID
 	// The host's inspection contract names the immutable identifier
 	// provider_repository_id; repository_id stays for the plugin UI.
-	return jsonResponse(map[string]any{"repository": struct {
+	return kandev.JSON(map[string]any{"repository": struct {
 		Repository
 		ProviderRepositoryID string `json:"provider_repository_id"`
 	}{bound, bound.RepositoryID}})
@@ -330,7 +200,7 @@ func (e *Extension) unlinkChangeRequest(ctx context.Context, request *pluginsdk.
 		Number          int64  `json:"number"`
 	}
 	if err := json.Unmarshal(request.Body, &input); err != nil {
-		return invalidBody("the unlink body must carry connection_scope, repository_id and number")
+		return kandev.Refuse(http.StatusUnprocessableEntity, "the unlink body must carry connection_scope, repository_id and number")
 	}
 	identity := ChangeRequestIdentity{
 		ConnectionScope: strings.TrimSpace(input.ConnectionScope),
@@ -343,7 +213,7 @@ func (e *Extension) unlinkChangeRequest(ctx context.Context, request *pluginsdk.
 	if err := e.Associations.Unlink(ctx, request.Context.TaskID, identity); err != nil {
 		return nil, fmt.Errorf("source-control recipe: unlink task association: %w", err)
 	}
-	return jsonResponse(map[string]any{"unlinked": true})
+	return kandev.JSON(map[string]any{"unlinked": true})
 }
 
 func (e *Extension) linkChangeRequest(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
@@ -357,11 +227,11 @@ func (e *Extension) linkChangeRequest(ctx context.Context, request *pluginsdk.Pl
 		Reference string `json:"reference"`
 	}
 	if err := json.Unmarshal(request.Body, &input); err != nil {
-		return invalidBody("the link body must be {\"reference\": \"<url or owner/repo#number>\"}")
+		return kandev.Refuse(http.StatusUnprocessableEntity, "the link body must be {\"reference\": \"<url or owner/repo#number>\"}")
 	}
 	input.Reference = strings.TrimSpace(input.Reference)
 	if input.Reference == "" {
-		return invalidBody("a change-request reference is required")
+		return kandev.Refuse(http.StatusUnprocessableEntity, "a change-request reference is required")
 	}
 	change, err := e.ChangeRequests.ResolveReference(ctx, request.Context.WorkspaceID, input.Reference)
 	if err != nil {
@@ -373,7 +243,7 @@ func (e *Extension) linkChangeRequest(ctx context.Context, request *pluginsdk.Pl
 	if err := e.Associations.Link(ctx, request.Context.TaskID, change.Identity); err != nil {
 		return nil, fmt.Errorf("source-control recipe: link task association: %w", err)
 	}
-	return jsonResponse(map[string]any{"linked": true, "change_request": change})
+	return kandev.JSON(map[string]any{"linked": true, "change_request": change})
 }
 
 func validateChangeRequestIdentity(identity ChangeRequestIdentity) error {
@@ -437,7 +307,7 @@ func (e *Extension) listRepositories(ctx context.Context, request *pluginsdk.Plu
 		}
 		result["next_cursor"] = cursor
 	}
-	return jsonResponse(result)
+	return kandev.JSON(result)
 }
 
 type repositoryCursorEnvelope struct {
@@ -503,34 +373,11 @@ func (e *Extension) createChangeRequest(ctx context.Context, request *pluginsdk.
 	if err := validateChangeRequestIdentity(created.Identity); err != nil {
 		result["linked"] = false
 		result["association_error"] = "task association could not be saved"
-		return jsonResponse(result)
+		return kandev.JSON(result)
 	}
 	if err := e.Associations.Link(ctx, action.TaskID, created.Identity); err != nil {
 		result["linked"] = false
 		result["association_error"] = "task association could not be saved"
 	}
-	return jsonResponse(result)
-}
-
-// invalidBody answers a malformed request with a 422 and its reason. The host
-// replaces a Go error with "plugin action unavailable", which would leave a
-// caller guessing which field was wrong.
-func invalidBody(message string) (*pluginsdk.PluginActionResponse, error) {
-	response, err := jsonResponse(map[string]string{"error": message})
-	if err != nil {
-		return nil, err
-	}
-	response.Status = http.StatusUnprocessableEntity
-	return response, nil
-}
-
-func jsonResponse(value any) (*pluginsdk.PluginActionResponse, error) {
-	body, err := json.Marshal(value)
-	if err != nil {
-		return nil, fmt.Errorf("source-control recipe: encode action response: %w", err)
-	}
-	return &pluginsdk.PluginActionResponse{
-		Body:    body,
-		Headers: map[string]string{"Content-Type": "application/json"},
-	}, nil
+	return kandev.JSON(result)
 }

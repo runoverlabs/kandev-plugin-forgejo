@@ -7,17 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"kandev-plugin-forgejo/internal/forgejo/rest"
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 )
-
-// ErrNotLinked means the requested pull request is not among those linked to
-// the task. It is the authorization failure for every pull request action: a
-// number is only ever honoured when the task already owns it.
-var ErrNotLinked = errors.New("forgejo: pull request is not linked to this task")
-
-// ErrAmbiguous means the task links several pull requests and the caller named
-// none of them.
-var ErrAmbiguous = errors.New("forgejo: task links more than one pull request")
 
 // Bounds that keep one details response far below the host's 1 MiB cap.
 const (
@@ -35,7 +28,7 @@ const (
 type PullActions struct {
 	connection   *Connection
 	repositories *Repositories
-	associations *Associations
+	associations *sourcecontrol.Associations
 	providerID   string
 	// now is the clock; tests replace it.
 	now func() time.Time
@@ -44,13 +37,13 @@ type PullActions struct {
 var _ sourcecontrol.ChangeRequestDetailReader = (*PullActions)(nil)
 
 // NewPullActions returns the pull request action adapter.
-func NewPullActions(connection *Connection, repositories *Repositories, associations *Associations, providerID string) *PullActions {
+func NewPullActions(connection *Connection, repositories *Repositories, associations *sourcecontrol.Associations, providerID string) *PullActions {
 	return &PullActions{connection: connection, repositories: repositories, associations: associations, providerID: providerID, now: time.Now}
 }
 
 // linked is a pull request resolved from the task's own associations.
 type linked struct {
-	client     *Client
+	client     *rest.Client
 	repository sourcecontrol.Repository
 	identity   sourcecontrol.ChangeRequestIdentity
 }
@@ -60,7 +53,7 @@ type linked struct {
 // nothing the caller sends can redirect the call to another repository.
 func (a *PullActions) resolveLinked(ctx context.Context, workspaceID, taskID string, number int64) (linked, error) {
 	if strings.TrimSpace(workspaceID) == "" || strings.TrimSpace(taskID) == "" {
-		return linked{}, ErrNotLinked
+		return linked{}, scm.ErrNotLinked
 	}
 	client, err := a.connection.Client(ctx)
 	if err != nil {
@@ -81,9 +74,9 @@ func (a *PullActions) resolveLinked(ctx context.Context, workspaceID, taskID str
 	}
 	switch {
 	case len(matches) == 0:
-		return linked{}, ErrNotLinked
+		return linked{}, scm.ErrNotLinked
 	case len(matches) > 1:
-		return linked{}, ErrAmbiguous
+		return linked{}, scm.ErrAmbiguous
 	}
 	repository, err := a.repositories.Resolve(ctx, "", sourcecontrol.RepositoryIdentity{
 		ConnectionScope: matches[0].ConnectionScope,
@@ -103,15 +96,51 @@ func (a *PullActions) Details(ctx context.Context, workspaceID, taskID string, n
 	if err != nil {
 		return sourcecontrol.ChangeRequestDetails{}, err
 	}
-	client, owner, name := target.client, target.repository.OwnerOrProject, target.repository.Name
+	read := detailReads{client: target.client, owner: target.repository.OwnerOrProject, name: target.repository.Name, number: target.identity.Number}
 
-	pull, err := client.PullRequest(ctx, owner, name, target.identity.Number)
+	pull, err := read.client.PullRequest(ctx, read.owner, read.name, read.number)
 	if err != nil {
 		return sourcecontrol.ChangeRequestDetails{}, err
 	}
+	details := a.pullDetails(read, target.identity, pull)
+	if me, err := read.client.CurrentUser(ctx); err == nil {
+		details.Actor = me.Login
+	}
+
+	mergeable := a.settledMergeable(pull)
+	merge := sourcecontrol.MergeStatus{Styles: []string{}, Blockers: []string{}, Mergeable: mergeable}
+	if err := read.mergeSettings(ctx, target.identity.RepositoryID, &merge); err != nil {
+		return sourcecontrol.ChangeRequestDetails{}, err
+	}
+	statusCheckRequired, err := read.protection(ctx, pull.Base.Ref, &merge)
+	if err != nil {
+		return sourcecontrol.ChangeRequestDetails{}, err
+	}
+	if err := read.checks(ctx, pull.Head.Sha, &details); err != nil {
+		return sourcecontrol.ChangeRequestDetails{}, err
+	}
+	summary, err := read.reviews(ctx, &details)
+	if err != nil {
+		return sourcecontrol.ChangeRequestDetails{}, err
+	}
+	if summary != nil {
+		merge.Approvals = summary.Approved
+	}
+	if err := read.comments(ctx, &details); err != nil {
+		return sourcecontrol.ChangeRequestDetails{}, err
+	}
+
+	merge.Blockers = mergeBlockers(details.State, mergeable, details.PipelineState, statusCheckRequired, summary, merge.RequiredApprovals)
+	details.Merge = merge
+	return details, nil
+}
+
+// pullDetails maps the pull request itself, with every list empty rather than
+// nil.
+func (a *PullActions) pullDetails(read detailReads, identity sourcecontrol.ChangeRequestIdentity, pull rest.PullRequest) sourcecontrol.ChangeRequestDetails {
 	details := sourcecontrol.ChangeRequestDetails{
 		ProviderID:         a.providerID,
-		ReviewKey:          identityReviewKey(target.identity),
+		ReviewKey:          identityReviewKey(identity),
 		Number:             pull.Number,
 		Title:              strings.TrimSpace(pull.Title),
 		URL:                strings.TrimSpace(pull.HTMLURL),
@@ -133,69 +162,95 @@ func (a *PullActions) Details(ctx context.Context, workspaceID, taskID string, n
 		Truncated:          []string{},
 	}
 	if details.URL == "" {
-		details.URL = PullRequestURL(client.Scope(), owner, name, pull.Number)
+		details.URL = PullRequestURL(read.client.Scope(), read.owner, read.name, pull.Number)
 	}
 	for _, requested := range pull.Requested {
 		if login := strings.TrimSpace(requested.Login); login != "" {
 			details.RequestedReviewers = append(details.RequestedReviewers, login)
 		}
 	}
-	if me, err := client.CurrentUser(ctx); err == nil {
-		details.Actor = me.Login
-	}
+	return details
+}
 
-	mergeable := a.settledMergeable(pull)
-	merge := sourcecontrol.MergeStatus{Styles: []string{}, Blockers: []string{}, Mergeable: mergeable}
-	if id, err := parseRepositoryID(target.identity.RepositoryID); err == nil {
-		if repo, err := client.RepoByID(ctx, id); err == nil {
-			merge.Styles = nonNil(repo.MergeStyles())
-			merge.DefaultStyle = repo.DefaultMergeStyle
-			merge.DeleteBranchDefault = repo.DefaultDeleteBranch
-		} else if !softFailure(err) {
-			return sourcecontrol.ChangeRequestDetails{}, err
-		}
-	}
+// detailReads are the reads behind the details of one pull request. Each
+// leaves its part as it was on a soft failure.
+type detailReads struct {
+	client *rest.Client
+	owner  string
+	name   string
+	number int64
+}
 
-	var statusCheckRequired bool
-	if base := strings.TrimSpace(pull.Base.Ref); base != "" {
-		branch, err := client.BranchDetail(ctx, owner, name, base)
-		switch {
-		case err == nil:
-			merge.ProtectionVisible = true
-			required := int(branch.RequiredApprovals)
-			merge.RequiredApprovals = &required
-			merge.CanMerge = userCanMerge(branch)
-			statusCheckRequired = branch.EnableStatusCheck
-		case !softFailure(err):
-			return sourcecontrol.ChangeRequestDetails{}, err
-		}
+func (r detailReads) mergeSettings(ctx context.Context, repositoryID string, merge *sourcecontrol.MergeStatus) error {
+	id, err := parseRepositoryID(repositoryID)
+	if err != nil {
+		return nil
 	}
-
-	if sha := strings.TrimSpace(pull.Head.Sha); sha != "" {
-		combined, err := client.CombinedStatus(ctx, owner, name, sha)
-		switch {
-		case err == nil:
-			details.PipelineState = pipelineState(combined.State)
-			details.Checks = normalizeChecks(combined.Statuses)
-		case !softFailure(err):
-			return sourcecontrol.ChangeRequestDetails{}, err
-		}
-	}
-
-	var summary *sourcecontrol.ReviewTaskReview
-	reviews, err := client.Reviews(ctx, owner, name, target.identity.Number)
+	repo, err := r.client.RepoByID(ctx, id)
 	switch {
 	case err == nil:
-		summary = summarizeReviews(reviews)
-		details.Reviews = detailReviews(reviews, &details.Truncated)
+		merge.Styles = nonNil(repo.MergeStyles())
+		merge.DefaultStyle = repo.DefaultMergeStyle
+		merge.DeleteBranchDefault = repo.DefaultDeleteBranch
 	case !softFailure(err):
-		return sourcecontrol.ChangeRequestDetails{}, err
+		return err
 	}
-	if summary != nil {
-		merge.Approvals = summary.Approved
-	}
+	return nil
+}
 
-	comments, more, err := client.IssueComments(ctx, owner, name, target.identity.Number, maxDetailComments)
+// protection reads the base branch's protection and reports whether it
+// requires status checks.
+func (r detailReads) protection(ctx context.Context, base string, merge *sourcecontrol.MergeStatus) (bool, error) {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return false, nil
+	}
+	branch, err := r.client.BranchDetail(ctx, r.owner, r.name, base)
+	switch {
+	case err == nil:
+		merge.ProtectionVisible = true
+		required := int(branch.RequiredApprovals)
+		merge.RequiredApprovals = &required
+		merge.CanMerge = userCanMerge(branch)
+		return branch.EnableStatusCheck, nil
+	case !softFailure(err):
+		return false, err
+	}
+	return false, nil
+}
+
+func (r detailReads) checks(ctx context.Context, sha string, details *sourcecontrol.ChangeRequestDetails) error {
+	sha = strings.TrimSpace(sha)
+	if sha == "" {
+		return nil
+	}
+	combined, err := r.client.CombinedStatus(ctx, r.owner, r.name, sha)
+	switch {
+	case err == nil:
+		details.PipelineState = pipelineState(combined.State)
+		details.Checks = normalizeChecks(combined.Statuses)
+	case !softFailure(err):
+		return err
+	}
+	return nil
+}
+
+// reviews reads the reviews and returns their summary, nil when they could not
+// be read.
+func (r detailReads) reviews(ctx context.Context, details *sourcecontrol.ChangeRequestDetails) (*sourcecontrol.ReviewTaskReview, error) {
+	reviews, err := r.client.Reviews(ctx, r.owner, r.name, r.number)
+	switch {
+	case err == nil:
+		details.Reviews = detailReviews(reviews, &details.Truncated)
+		return summarizeReviews(reviews), nil
+	case !softFailure(err):
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (r detailReads) comments(ctx context.Context, details *sourcecontrol.ChangeRequestDetails) error {
+	comments, more, err := r.client.IssueComments(ctx, r.owner, r.name, r.number, maxDetailComments)
 	switch {
 	case err == nil:
 		for _, comment := range comments {
@@ -210,12 +265,9 @@ func (a *PullActions) Details(ctx context.Context, workspaceID, taskID string, n
 			details.Truncated = append(details.Truncated, truncatedComments)
 		}
 	case !softFailure(err):
-		return sourcecontrol.ChangeRequestDetails{}, err
+		return err
 	}
-
-	merge.Blockers = mergeBlockers(details.State, mergeable, details.PipelineState, statusCheckRequired, summary, merge.RequiredApprovals)
-	details.Merge = merge
-	return details, nil
+	return nil
 }
 
 // mergeableSettle is how long after a pull request last changed a "not
@@ -228,7 +280,7 @@ const mergeableSettle = 30 * time.Second
 // when it says false but the pull request changed too recently to believe it.
 // A true answer is always passed through: a stale true is caught by the head SHA
 // precondition on merge, whereas a stale false would wrongly block the user.
-func (a *PullActions) settledMergeable(pull PullRequest) *bool {
+func (a *PullActions) settledMergeable(pull rest.PullRequest) *bool {
 	return settleMergeable(pull, a.now())
 }
 
@@ -236,7 +288,7 @@ func (a *PullActions) settledMergeable(pull PullRequest) *bool {
 // absent on instances that do not report it, and a plain bool cannot say so,
 // so presence is inferred from the branch being protected or the field being
 // true: false on an unprotected branch is indistinguishable from "unreported".
-func userCanMerge(branch Branch) *bool {
+func userCanMerge(branch rest.Branch) *bool {
 	if branch.UserCanMerge || branch.Protected {
 		value := branch.UserCanMerge
 		return &value
@@ -278,7 +330,7 @@ func mergeBlockers(state string, mergeable *bool, pipeline string, checksRequire
 	return blockers
 }
 
-func detailReviews(reviews []Review, truncated *[]string) []sourcecontrol.DetailReview {
+func detailReviews(reviews []rest.Review, truncated *[]string) []sourcecontrol.DetailReview {
 	if len(reviews) > maxDetailReviews {
 		*truncated = append(*truncated, truncatedReviews)
 		reviews = reviews[len(reviews)-maxDetailReviews:]
@@ -300,7 +352,7 @@ func detailReviews(reviews []Review, truncated *[]string) []sourcecontrol.Detail
 // softFailure reports an error that means "this token cannot see that", which
 // leaves a part of the response empty instead of failing the whole read.
 func softFailure(err error) bool {
-	return errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnauthorized)
+	return errors.Is(err, scm.ErrNotFound) || errors.Is(err, scm.ErrUnauthorized)
 }
 
 func nonNil(values []string) []string {

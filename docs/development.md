@@ -42,8 +42,9 @@ minimum tag too before raising `min_kandev_version`.
 ```sh
 npm install
 make claude-md     # local-only CLAUDE.md pointing at AGENTS.md (gitignored)
-make lint          # gofmt, go vet, tsc
-make test          # Go unit tests + UI tests (builds the bundle first)
+make lint          # gofmt, go vet, tsc, golangci-lint (both SDK tags), ESLint, dependency-cruiser
+make test          # Go unit tests (layer rules included) + UI tests (builds the bundle first)
+make metrics       # the most complex functions, without failing
 make verify-package-host   # host-platform tarball + checksum verification
 make package       # all five platforms, for a release
 ```
@@ -229,15 +230,22 @@ user; `TestLivePullRequestActions`, `TestLiveReviewerFlow` and
 
 ## Layout
 
+The packages are layered, and an import only points down. The layer table and
+the rules that enforce it are in [architecture.md](architecture.md).
+
 | Path | Contents |
 | --- | --- |
 | `manifest.yaml` | The declarative host contract: actions, provider ownership, reference source, capabilities, automation conditions, config schema. |
-| `internal/sourcecontrol/` | The provider-neutral source-control recipe — the Kandev boundary. Adapted from `kandev-plugin-template`. |
-| `internal/forgejo/` | Concrete Forgejo/Gitea adapters: REST client, repositories, pull requests, reviews, references, associations, the Actions/CI resolution chain, webhook signature checking and decoding (`webhooks.go`, with captured deliveries in `testdata/webhooks/`), and the pull request automation source (`probserve.go`). |
-| `internal/automations/` | The provider-neutral half of the automation conditions: the condition keys and settings, the event model, the filters, and the normalized `{{data.*}}` payload. |
-| `internal/prautomation/` | The provider-neutral half of pull request automation: switches and workspace settings, the per pull request record and attempt ledger, feedback collection by trust level, the auto-fix, auto-merge and lifecycle decisions, prompt rendering, and the loop. Reaches Forgejo through the `Observer`, `Links` and `Merger` ports and Kandev through `Messenger`. |
+| `internal/scm/` | The shared vocabulary: `RepoRef`, the error kinds and write-refusal reasons every layer maps, the CI states. Standard library only. |
+| `internal/kandev/` | Reaching Kandev: the late-bound host provider, the workspace walk, JSON action responses. `kandevtest/` is an in-memory host for tests. |
+| `internal/sourcecontrol/` | The provider-neutral source-control recipe — the Kandev boundary, adapted from `kandev-plugin-template`: the model (`model.go`), the ports it consumes (`ports.go`), the connection and pull request types the transport reports (`connection.go`, `pullrequests.go`), the task association store, and the recipe's action handler (`recipe.go`). |
 | `internal/watches/` | The provider-neutral watch half: the watch model (issue and review kinds), the dedup ledger, the poll loop, review placement and fork rules, and cleanup. Reaches Forgejo only through the `IssueSource` and `ReviewSource` ports. |
-| `internal/plugin/` | Wires the adapters into the extension, owns the connection, watch and pull request automation actions, serves the agent tools, receives bus events (`OnEvent`), and implements the automation adapter (`DescribeAutomationCondition`, `VerifyAutomationWebhook`). |
+| `internal/automations/` | The provider-neutral half of the automation conditions: the condition keys and settings, the event model, the filters, and the normalized `{{data.*}}` payload. The ports describing a condition needs are the transport's, declared in `internal/plugin/conditions.go`. |
+| `internal/prautomation/` | The provider-neutral half of pull request automation: switches and workspace settings, the per pull request record and attempt ledger, feedback collection by trust level, the auto-fix, auto-merge and lifecycle decisions, prompt rendering, and the loop, one file per concern. Reaches Forgejo through the `Observer`, `Links` and `Merger` ports and Kandev through `Messenger`. |
+| `internal/forgejo/rest/` | The REST v1 wire client: requests, authentication, paging, the wire types, the Actions/CI resolution chain, and classifying a refused write. Knows nothing about Kandev. `resttest/` is a scripted instance for tests. |
+| `internal/forgejo/` | The port implementations: repositories, pull requests, reviews, references, git credentials, the issue and review sources, webhook signature checking and decoding (`webhooks.go`, with captured deliveries in `testdata/webhooks/`), the automation condition instance (`conditions.go`), and the pull request automation source (`automationsource.go`). |
+| `internal/plugin/` | The transport: one handler type per surface (connection, pull request, watch and automation actions, the agent tools, the automation adapter), each holding only the ports it uses and declaring the ones no feature consumes; `Runtime` routes the RPCs, and `wire.go` builds the graph. |
+| `internal/archtest/` | The layer rules as a test. |
 | `ui/src/` | The browser half: the recipe registration plus the Forgejo icon, reference parsing, detail adapter, review panel, connection panel, the watch panels, and the pull request automation section and settings (`automation.ts`). |
 | `server/` | The `pluginsdk.Serve` entry point Kandev spawns. |
 
@@ -269,7 +277,9 @@ its own loop and reaches the agent through the message API.
 `internal/sourcecontrol`, `internal/watches`, `internal/automations` and
 `internal/prautomation` declare narrow interfaces and
 own the decisions; `internal/forgejo` implements them and owns every URL,
-pagination token, authentication detail and error mapping.
+pagination token, authentication detail and error mapping, with the wire calls
+themselves in `internal/forgejo/rest`. The transport in `internal/plugin` holds
+only those interfaces: `wire.go` is the one file there that names an adapter.
 
 Nothing above the adapter forms a Forgejo URL, and nothing in the adapter
 decides what a watch means or when a pull request counts as ready. That is what

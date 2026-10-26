@@ -8,7 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"kandev-plugin-forgejo/internal/forgejo"
+	"kandev-plugin-forgejo/internal/kandev"
+	"kandev-plugin-forgejo/internal/prautomation"
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -34,15 +36,47 @@ const (
 	ciLogMaxLines   = 2000
 )
 
-// prListPages and prListLimit bound the search for a pull request by head
-// branch. Neither Gitea nor older Forgejo can filter by head server-side, so
-// the newest pages are scanned and anything older is treated as absent.
-const (
-	prListPages = 3
-	prListLimit = 50
-)
+// agentTools serve the MCP tools this plugin gives task agents. Each call
+// carries a task, not a VerifiedActionContext, so the tools resolve the
+// repository and the linked pull requests themselves.
+type agentTools struct {
+	hosts          kandev.Provider
+	switches       workspaceSwitches
+	audit          *auditTrail
+	connection     instanceInfo
+	repositories   sourcecontrol.AttachedRepositoryResolver
+	changeRequests sourcecontrol.ChangeRequestService
+	associations   taskLinks
+	pulls          pullRequestReader
+	ci             ciReader
+	pullActions    linkedPullRequests
+	automation     outcomeRecorder
+}
 
-var _ pluginsdk.AgentToolPlugin = (*Runtime)(nil)
+// pullRequestReader reads and readies pull requests in a resolved repository.
+type pullRequestReader interface {
+	PullRequest(ctx context.Context, repository sourcecontrol.Repository, number int64) (sourcecontrol.PullRequestSummary, error)
+	// OpenPullRequestForHead finds the open pull request whose head is branch,
+	// or nil when there is none.
+	OpenPullRequestForHead(ctx context.Context, repository sourcecontrol.Repository, branch string) (*sourcecontrol.PullRequestSummary, error)
+	// MarkReady clears pull's work-in-progress marker and reports whether
+	// anything changed. A pull request that is already ready is returned as is.
+	MarkReady(ctx context.Context, repository sourcecontrol.Repository, pull sourcecontrol.PullRequestSummary) (sourcecontrol.PullRequestSummary, bool, error)
+}
+
+// ciReader reports CI for a ref of a resolved repository.
+type ciReader interface {
+	CIStatus(ctx context.Context, repository sourcecontrol.Repository, ref string) (scm.CIStatus, error)
+	// JobLogTail returns at most maxBytes from the end of a job's log, and
+	// whether anything before it was cut.
+	JobLogTail(ctx context.Context, repository sourcecontrol.Repository, jobID int64, maxBytes int) (string, bool, error)
+}
+
+// outcomeRecorder records the agent's report on the auto-fix attempt in
+// flight; the pull request automation engine is the one implementation.
+type outcomeRecorder interface {
+	Outcome(ctx context.Context, workspaceID, taskID, sessionID, repository, outcome, summary string) (prautomation.Record, error)
+}
 
 // InvokeAgentTool serves the MCP tools this plugin exposes to task agents.
 //
@@ -51,11 +85,11 @@ var _ pluginsdk.AgentToolPlugin = (*Runtime)(nil)
 // because an agent can read those and adapt. A Go error is reserved for faults
 // the agent cannot do anything about. Text is never empty: the host rejects a
 // result without it.
-func (r *Runtime) InvokeAgentTool(ctx context.Context, request *pluginsdk.AgentToolRequest) (*pluginsdk.AgentToolResult, error) {
+func (h *agentTools) InvokeAgentTool(ctx context.Context, request *pluginsdk.AgentToolRequest) (*pluginsdk.AgentToolResult, error) {
 	if request == nil {
 		return nil, errors.New("kandev-plugin-forgejo: agent tool request is required")
 	}
-	enabled, err := r.integrationEnabled(ctx, request.Context.WorkspaceID)
+	enabled, err := h.switches.Enabled(ctx, request.Context.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -64,9 +98,9 @@ func (r *Runtime) InvokeAgentTool(ctx context.Context, request *pluginsdk.AgentT
 	}
 	switch request.Name {
 	case ToolCI:
-		return r.toolCI(ctx, request)
+		return h.toolCI(ctx, request)
 	case ToolPR:
-		return r.toolPR(ctx, request)
+		return h.toolPR(ctx, request)
 	default:
 		return nil, fmt.Errorf("kandev-plugin-forgejo: unknown agent tool %q", request.Name)
 	}
@@ -80,7 +114,7 @@ func (r *Runtime) InvokeAgentTool(ctx context.Context, request *pluginsdk.AgentT
 // answered it in two round trips while costing a permanent slice of every
 // agent's prompt. Logs stay opt-in through `logs`, so the cheap read stays
 // cheap.
-func (r *Runtime) toolCI(ctx context.Context, request *pluginsdk.AgentToolRequest) (*pluginsdk.AgentToolResult, error) {
+func (h *agentTools) toolCI(ctx context.Context, request *pluginsdk.AgentToolRequest) (*pluginsdk.AgentToolResult, error) {
 	ref := argString(request.Arguments, "ref")
 	if ref == "" {
 		return toolError("ref is required: pass a branch name or commit SHA."), nil
@@ -94,12 +128,12 @@ func (r *Runtime) toolCI(ctx context.Context, request *pluginsdk.AgentToolReques
 			lines = int(requested)
 		}
 	}
-	repository, client, failure := r.agentRepository(ctx, request)
+	repository, failure := h.agentRepository(ctx, request)
 	if failure != nil {
 		return failure, nil
 	}
 
-	status, err := client.CIStatusFor(ctx, repository.OwnerOrProject, repository.Name, ref)
+	status, err := h.ci.CIStatus(ctx, repository, ref)
 	if err != nil {
 		return toolError(safeMessage(err)), nil
 	}
@@ -107,11 +141,11 @@ func (r *Runtime) toolCI(ctx context.Context, request *pluginsdk.AgentToolReques
 	fullName := repository.OwnerOrProject + "/" + repository.Name
 	var text strings.Builder
 	fmt.Fprintf(&text, "%s %s@%s", status.State, fullName, ref)
-	if status.Source == forgejo.CISourceNone {
+	if status.Source == scm.CISourceNone {
 		text.WriteString(" (no CI reported for this ref)")
 	}
 	for _, job := range status.Jobs {
-		if job.Status == forgejo.CIStateSuccess {
+		if job.Status == scm.CIStateSuccess {
 			continue
 		}
 		fmt.Fprintf(&text, "\n  %s %s", job.Status, job.Name)
@@ -125,7 +159,7 @@ func (r *Runtime) toolCI(ctx context.Context, request *pluginsdk.AgentToolReques
 
 	entries := jobsToAny(status.Jobs)
 	if lines > 0 {
-		appendFailedJobLogs(ctx, client, repository, status, lines, &text, entries)
+		appendFailedJobLogs(ctx, h.ci, repository, status, lines, &text, entries)
 	}
 
 	return &pluginsdk.AgentToolResult{
@@ -151,12 +185,12 @@ func (r *Runtime) toolCI(ctx context.Context, request *pluginsdk.AgentToolReques
 // ceiling, so carrying the same bytes twice would halve the budget for no
 // gain. The structured entries record that a log was attached and whether it
 // was cut.
-func appendFailedJobLogs(ctx context.Context, client *forgejo.Client, repository sourcecontrol.Repository,
-	status forgejo.CIStatus, lines int, text *strings.Builder, entries []any) {
+func appendFailedJobLogs(ctx context.Context, ci ciReader, repository sourcecontrol.Repository,
+	status scm.CIStatus, lines int, text *strings.Builder, entries []any) {
 	budget := ciLogTotalBytes
 	fetched := 0
 	for i, job := range status.Jobs {
-		if job.Status != forgejo.CIStateFailure || job.ID <= 0 {
+		if job.Status != scm.CIStateFailure || job.ID <= 0 {
 			continue
 		}
 		if fetched >= ciLogMaxJobs || budget <= 0 {
@@ -169,7 +203,7 @@ func appendFailedJobLogs(ctx context.Context, client *forgejo.Client, repository
 			size = budget
 		}
 		fmt.Fprintf(text, "\n\n--- %s (job %d) ---", job.Name, job.ID)
-		log, truncated, err := client.JobLogTail(ctx, repository.OwnerOrProject, repository.Name, job.ID, size)
+		log, truncated, err := ci.JobLogTail(ctx, repository, job.ID, size)
 		if err != nil {
 			// A release that lists jobs but serves no logs, an expired log and
 			// an unknown id are indistinguishable here and mean the same thing
@@ -196,25 +230,25 @@ func appendFailedJobLogs(ctx context.Context, client *forgejo.Client, repository
 }
 
 // toolPR reads, opens, or readies the pull request for a task.
-func (r *Runtime) toolPR(ctx context.Context, request *pluginsdk.AgentToolRequest) (*pluginsdk.AgentToolResult, error) {
+func (h *agentTools) toolPR(ctx context.Context, request *pluginsdk.AgentToolRequest) (*pluginsdk.AgentToolResult, error) {
 	op := strings.ToLower(argString(request.Arguments, "op"))
 	if op == "outcome" {
 		// Bound to the auto-fix attempt in flight, not to a repository.
-		return r.prOutcome(ctx, request)
+		return h.prOutcome(ctx, request)
 	}
-	repository, client, failure := r.agentRepository(ctx, request)
+	repository, failure := h.agentRepository(ctx, request)
 	if failure != nil {
 		return failure, nil
 	}
 	switch op {
 	case "get":
-		return r.prGet(ctx, request, client, repository)
+		return h.prGet(ctx, request, repository)
 	case "open":
-		return r.prOpen(ctx, request, client, repository)
+		return h.prOpen(ctx, request, repository)
 	case "ready":
-		return r.prReady(ctx, request, client, repository)
+		return h.prReady(ctx, request, repository)
 	case "merge", "review", "request_review", "update", "comment":
-		return r.prWrite(ctx, request, op)
+		return h.prWrite(ctx, request, op)
 	default:
 		return toolError("op must be get, open, ready, merge, review, request_review, update, comment, or outcome."), nil
 	}
@@ -222,21 +256,10 @@ func (r *Runtime) toolPR(ctx context.Context, request *pluginsdk.AgentToolReques
 
 // prGet returns the pull requests already linked to this task, falling back to
 // a head-branch search when nothing is linked yet.
-func (r *Runtime) prGet(ctx context.Context, request *pluginsdk.AgentToolRequest, client *forgejo.Client, repository sourcecontrol.Repository) (*pluginsdk.AgentToolResult, error) {
-	pulls, err := r.taskPullRequests(ctx, request.Context.TaskID, request.Context.WorkspaceID, client, repository)
+func (h *agentTools) prGet(ctx context.Context, request *pluginsdk.AgentToolRequest, repository sourcecontrol.Repository) (*pluginsdk.AgentToolResult, error) {
+	pulls, err := h.linkedOrHead(ctx, request, repository)
 	if err != nil {
 		return toolError(safeMessage(err)), nil
-	}
-	if len(pulls) == 0 {
-		if head := argString(request.Arguments, "head"); head != "" {
-			found, err := findPullRequestByHead(ctx, client, repository, head)
-			if err != nil {
-				return toolError(safeMessage(err)), nil
-			}
-			if found != nil {
-				pulls = []forgejo.PullRequest{*found}
-			}
-		}
 	}
 	if len(pulls) == 0 {
 		return &pluginsdk.AgentToolResult{
@@ -253,7 +276,7 @@ func (r *Runtime) prGet(ctx context.Context, request *pluginsdk.AgentToolRequest
 // request for the same head is returned as-is. Kandev never retries an agent
 // tool call, precisely because it cannot know whether the side effect already
 // happened — so this tool makes "already happened" the same answer as "done".
-func (r *Runtime) prOpen(ctx context.Context, request *pluginsdk.AgentToolRequest, client *forgejo.Client, repository sourcecontrol.Repository) (*pluginsdk.AgentToolResult, error) {
+func (h *agentTools) prOpen(ctx context.Context, request *pluginsdk.AgentToolRequest, repository sourcecontrol.Repository) (*pluginsdk.AgentToolResult, error) {
 	head := argString(request.Arguments, "head")
 	if head == "" {
 		return toolError("head is required for op=open: pass the branch holding the changes."), nil
@@ -263,14 +286,14 @@ func (r *Runtime) prOpen(ctx context.Context, request *pluginsdk.AgentToolReques
 		return toolError("title is required for op=open."), nil
 	}
 
-	if existing, err := findPullRequestByHead(ctx, client, repository, head); err != nil {
+	if existing, err := h.pulls.OpenPullRequestForHead(ctx, repository, head); err != nil {
 		return toolError(safeMessage(err)), nil
 	} else if existing != nil {
-		r.linkPullRequest(ctx, request.Context.TaskID, repository, existing.Number)
-		return pullResult([]forgejo.PullRequest{*existing}, repository, "already open")
+		h.linkPullRequest(ctx, request.Context.TaskID, repository, existing.Number)
+		return pullResult([]sourcecontrol.PullRequestSummary{*existing}, repository, "already open")
 	}
 
-	created, err := r.changeRequests.Create(ctx, repository, head, sourcecontrol.CreateChangeRequestInput{
+	created, err := h.changeRequests.Create(ctx, repository, head, sourcecontrol.CreateChangeRequestInput{
 		Title:       title,
 		Description: argString(request.Arguments, "body"),
 		Destination: argString(request.Arguments, "base"),
@@ -279,15 +302,15 @@ func (r *Runtime) prOpen(ctx context.Context, request *pluginsdk.AgentToolReques
 	if err != nil {
 		// The create may still have landed — a duplicate-head rejection means
 		// exactly that. Look before reporting a failure the agent would retry.
-		if existing, lookupErr := findPullRequestByHead(ctx, client, repository, head); lookupErr == nil && existing != nil {
-			r.linkPullRequest(ctx, request.Context.TaskID, repository, existing.Number)
-			return pullResult([]forgejo.PullRequest{*existing}, repository, "already open")
+		if existing, lookupErr := h.pulls.OpenPullRequestForHead(ctx, repository, head); lookupErr == nil && existing != nil {
+			h.linkPullRequest(ctx, request.Context.TaskID, repository, existing.Number)
+			return pullResult([]sourcecontrol.PullRequestSummary{*existing}, repository, "already open")
 		}
 		return toolError(safeMessage(err)), nil
 	}
-	r.linkPullRequest(ctx, request.Context.TaskID, repository, created.Identity.Number)
+	h.linkPullRequest(ctx, request.Context.TaskID, repository, created.Identity.Number)
 
-	pull, err := client.PullRequest(ctx, repository.OwnerOrProject, repository.Name, created.Identity.Number)
+	pull, err := h.pulls.PullRequest(ctx, repository, created.Identity.Number)
 	if err != nil {
 		// The pull request exists; only the read-back failed.
 		return &pluginsdk.AgentToolResult{
@@ -297,27 +320,15 @@ func (r *Runtime) prOpen(ctx context.Context, request *pluginsdk.AgentToolReques
 			},
 		}, nil
 	}
-	return pullResult([]forgejo.PullRequest{pull}, repository, "opened")
+	return pullResult([]sourcecontrol.PullRequestSummary{pull}, repository, "opened")
 }
 
-// prReady clears the work-in-progress title marker. Forgejo and Gitea have no
-// draft flag in REST v1, so a draft is a "WIP:" title prefix and readying one
-// is a title edit. Readying an already-ready pull request is a no-op success.
-func (r *Runtime) prReady(ctx context.Context, request *pluginsdk.AgentToolRequest, client *forgejo.Client, repository sourcecontrol.Repository) (*pluginsdk.AgentToolResult, error) {
-	pulls, err := r.taskPullRequests(ctx, request.Context.TaskID, request.Context.WorkspaceID, client, repository)
+// prReady clears the work-in-progress marker. Readying an already-ready pull
+// request is a no-op success.
+func (h *agentTools) prReady(ctx context.Context, request *pluginsdk.AgentToolRequest, repository sourcecontrol.Repository) (*pluginsdk.AgentToolResult, error) {
+	pulls, err := h.linkedOrHead(ctx, request, repository)
 	if err != nil {
 		return toolError(safeMessage(err)), nil
-	}
-	if len(pulls) == 0 {
-		if head := argString(request.Arguments, "head"); head != "" {
-			found, err := findPullRequestByHead(ctx, client, repository, head)
-			if err != nil {
-				return toolError(safeMessage(err)), nil
-			}
-			if found != nil {
-				pulls = []forgejo.PullRequest{*found}
-			}
-		}
 	}
 	if len(pulls) == 0 {
 		return toolError("No pull request is linked to this task. Open one first, or pass head."), nil
@@ -327,28 +338,44 @@ func (r *Runtime) prReady(ctx context.Context, request *pluginsdk.AgentToolReque
 	}
 
 	pull := pulls[0]
-	stripped, changed := forgejo.StripWorkInProgressPrefix(pull.Title)
-	if !changed {
-		return pullResult([]forgejo.PullRequest{pull}, repository, "already ready")
-	}
-	updated, err := client.EditPullRequest(ctx, repository.OwnerOrProject, repository.Name, pull.Number,
-		forgejo.EditPullRequestInput{Title: stripped})
+	updated, changed, err := h.pulls.MarkReady(ctx, repository, pull)
 	if err != nil {
 		return toolError(safeMessage(err)), nil
 	}
-	return pullResult([]forgejo.PullRequest{updated}, repository, "ready")
+	if !changed {
+		return pullResult([]sourcecontrol.PullRequestSummary{pull}, repository, "already ready")
+	}
+	return pullResult([]sourcecontrol.PullRequestSummary{updated}, repository, "ready")
+}
+
+// linkedOrHead is the task's linked pull requests or, when none is linked yet,
+// the open one for the `head` argument.
+func (h *agentTools) linkedOrHead(ctx context.Context, request *pluginsdk.AgentToolRequest, repository sourcecontrol.Repository) ([]sourcecontrol.PullRequestSummary, error) {
+	pulls, err := h.taskPullRequests(ctx, request.Context.TaskID, request.Context.WorkspaceID, repository)
+	if err != nil || len(pulls) > 0 {
+		return pulls, err
+	}
+	head := argString(request.Arguments, "head")
+	if head == "" {
+		return nil, nil
+	}
+	found, err := h.pulls.OpenPullRequestForHead(ctx, repository, head)
+	if err != nil || found == nil {
+		return nil, err
+	}
+	return []sourcecontrol.PullRequestSummary{*found}, nil
 }
 
 // taskPullRequests resolves the pull requests this plugin has associated with
 // a task, in the repository the tool is acting on.
-func (r *Runtime) taskPullRequests(ctx context.Context, taskID, workspaceID string, client *forgejo.Client, repository sourcecontrol.Repository) ([]forgejo.PullRequest, error) {
+func (h *agentTools) taskPullRequests(ctx context.Context, taskID, workspaceID string, repository sourcecontrol.Repository) ([]sourcecontrol.PullRequestSummary, error) {
 	if strings.TrimSpace(taskID) == "" {
 		return nil, nil
 	}
 	if strings.TrimSpace(workspaceID) == "" {
-		host := r.Host()
+		host := h.hosts()
 		if host == nil {
-			return nil, forgejo.ErrNotConfigured
+			return nil, scm.ErrNotConfigured
 		}
 		task, err := host.Tasks().Get(ctx, taskID)
 		if err != nil || task == nil {
@@ -356,20 +383,20 @@ func (r *Runtime) taskPullRequests(ctx context.Context, taskID, workspaceID stri
 		}
 		workspaceID = task.WorkspaceID
 	}
-	identities, err := r.associations.ListForTask(ctx, workspaceID, taskID)
+	identities, err := h.associations.ListForTask(ctx, workspaceID, taskID)
 	if err != nil {
 		return nil, err
 	}
-	pulls := make([]forgejo.PullRequest, 0, len(identities))
+	pulls := make([]sourcecontrol.PullRequestSummary, 0, len(identities))
 	for _, identity := range identities {
-		if identity.ConnectionScope != client.Scope() || identity.RepositoryID != repository.RepositoryID {
+		if identity.ConnectionScope != repository.ConnectionScope || identity.RepositoryID != repository.RepositoryID {
 			continue
 		}
-		pull, err := client.PullRequest(ctx, repository.OwnerOrProject, repository.Name, identity.Number)
+		pull, err := h.pulls.PullRequest(ctx, repository, identity.Number)
+		if errors.Is(err, scm.ErrNotFound) {
+			continue
+		}
 		if err != nil {
-			if errors.Is(err, forgejo.ErrNotFound) {
-				continue
-			}
 			return nil, err
 		}
 		pulls = append(pulls, pull)
@@ -381,87 +408,68 @@ func (r *Runtime) taskPullRequests(ctx context.Context, taskID, workspaceID stri
 // linkPullRequest records the task association so Kandev's own review sidebar
 // sees a pull request an agent opened, exactly as if it had been opened from
 // the UI. A failure here does not fail the tool: the pull request exists.
-func (r *Runtime) linkPullRequest(ctx context.Context, taskID string, repository sourcecontrol.Repository, number int64) {
+func (h *agentTools) linkPullRequest(ctx context.Context, taskID string, repository sourcecontrol.Repository, number int64) {
 	if strings.TrimSpace(taskID) == "" || number <= 0 {
 		return
 	}
-	_ = r.associations.Link(ctx, taskID, sourcecontrol.ChangeRequestIdentity{
+	_ = h.associations.Link(ctx, taskID, sourcecontrol.ChangeRequestIdentity{
 		ConnectionScope: repository.ConnectionScope,
 		RepositoryID:    repository.RepositoryID,
 		Number:          number,
 	})
 }
 
-// findPullRequestByHead looks for an open pull request whose head is branch.
-// Only current Forgejo can filter by head server-side, so the newest pages are
-// scanned and compared locally.
-func findPullRequestByHead(ctx context.Context, client *forgejo.Client, repository sourcecontrol.Repository, branch string) (*forgejo.PullRequest, error) {
-	wanted := strings.TrimPrefix(strings.TrimSpace(branch), "refs/heads/")
-	if wanted == "" {
-		return nil, nil
+// agentRepository resolves the repository an agent tool acts on. It returns a
+// ready IsError result rather than an error whenever the agent could fix the
+// situation itself.
+func (h *agentTools) agentRepository(ctx context.Context, request *pluginsdk.AgentToolRequest) (sourcecontrol.Repository, *pluginsdk.AgentToolResult) {
+	if _, err := h.connection.Info(ctx); err != nil {
+		return sourcecontrol.Repository{}, toolError(safeMessage(err))
 	}
-	for page := 1; page <= prListPages; page++ {
-		pulls, err := client.ListPullRequests(ctx, repository.OwnerOrProject, repository.Name, "open", page, prListLimit)
-		if err != nil {
-			if errors.Is(err, forgejo.ErrNotFound) {
-				return nil, nil
-			}
-			return nil, err
-		}
-		for i := range pulls {
-			if strings.EqualFold(strings.TrimSpace(pulls[i].Head.Ref), wanted) {
-				return &pulls[i], nil
-			}
-		}
-		if len(pulls) < prListLimit {
-			break
-		}
-	}
-	return nil, nil
-}
-
-// agentRepository resolves the Forgejo repository an agent tool acts on, and
-// the client for its instance. It returns a ready IsError result rather than
-// an error whenever the agent could fix the situation itself.
-func (r *Runtime) agentRepository(ctx context.Context, request *pluginsdk.AgentToolRequest) (sourcecontrol.Repository, *forgejo.Client, *pluginsdk.AgentToolResult) {
-	client, err := r.connection.Client(ctx)
-	if err != nil {
-		return sourcecontrol.Repository{}, nil, toolError(safeMessage(err))
-	}
-	repository, err := r.resolveTaskRepository(ctx, request.Context.TaskID, request.Context.WorkspaceID,
+	repository, err := h.resolveTaskRepository(ctx, request.Context.TaskID, request.Context.WorkspaceID,
 		argString(request.Arguments, "repo"))
 	if err != nil {
-		return sourcecontrol.Repository{}, nil, toolError(err.Error())
+		return sourcecontrol.Repository{}, toolError(err.Error())
 	}
-	return repository, client, nil
+	return repository, nil
 }
+
+// toolRefusal is a sentence an agent can act on, returned as the tool's
+// IsError text.
+type toolRefusal string
+
+func (r toolRefusal) Error() string { return string(r) }
 
 // resolveTaskRepository finds the task's Forgejo repository. A task with
 // several is not guessed at: the caller names one with `repo`.
-func (r *Runtime) resolveTaskRepository(ctx context.Context, taskID, workspaceID, hint string) (sourcecontrol.Repository, error) {
+func (h *agentTools) resolveTaskRepository(ctx context.Context, taskID, workspaceID, hint string) (sourcecontrol.Repository, error) {
 	if strings.TrimSpace(taskID) == "" {
-		return sourcecontrol.Repository{}, errors.New("This tool runs on a task session and none was supplied.")
+		return sourcecontrol.Repository{}, toolRefusal("This tool runs on a task session and none was supplied.")
 	}
-	host := r.Host()
+	host := h.hosts()
 	if host == nil {
-		return sourcecontrol.Repository{}, errors.New("The Forgejo plugin is not connected to Kandev right now.")
+		return sourcecontrol.Repository{}, toolRefusal("The Forgejo plugin is not connected to Kandev right now.")
 	}
 	task, err := host.Tasks().Get(ctx, taskID)
 	if err != nil {
-		return sourcecontrol.Repository{}, errors.New("Could not read this task from Kandev.")
+		return sourcecontrol.Repository{}, toolRefusal("Could not read this task from Kandev.")
 	}
 	if task == nil || len(task.Repositories) == 0 {
-		return sourcecontrol.Repository{}, errors.New("This task has no repository attached.")
+		return sourcecontrol.Repository{}, toolRefusal("This task has no repository attached.")
 	}
 	if strings.TrimSpace(workspaceID) == "" {
 		workspaceID = task.WorkspaceID
 	}
+	return pickRepository(h.attachedRepositories(ctx, workspaceID, taskID, task.Repositories), hint)
+}
 
-	candidates := make([]sourcecontrol.Repository, 0, len(task.Repositories))
-	for _, attached := range task.Repositories {
+// attachedRepositories resolves the task's repositories on this connection.
+func (h *agentTools) attachedRepositories(ctx context.Context, workspaceID, taskID string, attachedRepositories []pluginsdk.TaskRepository) []sourcecontrol.Repository {
+	candidates := make([]sourcecontrol.Repository, 0, len(attachedRepositories))
+	for _, attached := range attachedRepositories {
 		// A task may mix providers. ResolveAttached rejects anything that is
 		// not this connection's, which is the filter rather than an error.
-		resolved, err := r.repositories.ResolveAttached(ctx, pluginsdk.VerifiedActionContext{
+		resolved, err := h.repositories.ResolveAttached(ctx, pluginsdk.VerifiedActionContext{
 			WorkspaceID:  workspaceID,
 			TaskID:       taskID,
 			RepositoryID: attached.RepositoryID,
@@ -471,10 +479,15 @@ func (r *Runtime) resolveTaskRepository(ctx context.Context, taskID, workspaceID
 		}
 		candidates = append(candidates, resolved)
 	}
-	if len(candidates) == 0 {
-		return sourcecontrol.Repository{}, errors.New("This task has no Forgejo repository attached.")
-	}
+	return candidates
+}
 
+// pickRepository chooses among the task's repositories: the one hint names,
+// or the only one.
+func pickRepository(candidates []sourcecontrol.Repository, hint string) (sourcecontrol.Repository, error) {
+	if len(candidates) == 0 {
+		return sourcecontrol.Repository{}, toolRefusal("This task has no Forgejo repository attached.")
+	}
 	if trimmed := strings.TrimSpace(hint); trimmed != "" {
 		for _, candidate := range candidates {
 			full := candidate.OwnerOrProject + "/" + candidate.Name
@@ -482,12 +495,12 @@ func (r *Runtime) resolveTaskRepository(ctx context.Context, taskID, workspaceID
 				return candidate, nil
 			}
 		}
-		return sourcecontrol.Repository{}, fmt.Errorf("No Forgejo repository named %q on this task. Attached: %s.",
-			trimmed, strings.Join(repositoryNames(candidates), ", "))
+		return sourcecontrol.Repository{}, toolRefusal(fmt.Sprintf("No Forgejo repository named %q on this task. Attached: %s.",
+			trimmed, strings.Join(repositoryNames(candidates), ", ")))
 	}
 	if len(candidates) > 1 {
-		return sourcecontrol.Repository{}, fmt.Errorf("This task has several Forgejo repositories; pass repo. Attached: %s.",
-			strings.Join(repositoryNames(candidates), ", "))
+		return sourcecontrol.Repository{}, toolRefusal(fmt.Sprintf("This task has several Forgejo repositories; pass repo. Attached: %s.",
+			strings.Join(repositoryNames(candidates), ", ")))
 	}
 	return candidates[0], nil
 }
@@ -503,17 +516,16 @@ func repositoryNames(repositories []sourcecontrol.Repository) []string {
 
 // pullResult renders pull requests into the one-line-per-entry text an agent
 // reads plus the structured form it can act on.
-func pullResult(pulls []forgejo.PullRequest, repository sourcecontrol.Repository, note string) (*pluginsdk.AgentToolResult, error) {
+func pullResult(pulls []sourcecontrol.PullRequestSummary, repository sourcecontrol.Repository, note string) (*pluginsdk.AgentToolResult, error) {
 	entries := make([]any, 0, len(pulls))
 	var text strings.Builder
 	for i, pull := range pulls {
 		if i > 0 {
 			text.WriteString("\n")
 		}
-		state := pullState(pull)
-		fmt.Fprintf(&text, "#%d %s %s", pull.Number, state, pull.HTMLURL)
+		fmt.Fprintf(&text, "#%d %s %s", pull.Number, pull.State, pull.URL)
 		// The head commit is what merge and review pin themselves to.
-		if sha := strings.TrimSpace(pull.Head.Sha); sha != "" {
+		if sha := strings.TrimSpace(pull.HeadSHA); sha != "" {
 			fmt.Fprintf(&text, " sha=%s", sha)
 		}
 		if i == 0 && note != "" {
@@ -522,13 +534,13 @@ func pullResult(pulls []forgejo.PullRequest, repository sourcecontrol.Repository
 		fmt.Fprintf(&text, "\n  %s", strings.TrimSpace(pull.Title))
 		entries = append(entries, map[string]any{
 			"number": pull.Number,
-			"state":  state,
-			"url":    pull.HTMLURL,
+			"state":  pull.State,
+			"url":    pull.URL,
 			"title":  strings.TrimSpace(pull.Title),
-			"head":   pull.Head.Ref,
-			"base":   pull.Base.Ref,
-			"draft":  forgejo.IsWorkInProgressTitle(pull.Title),
-			"sha":    pull.Head.Sha,
+			"head":   pull.Head,
+			"base":   pull.Base,
+			"draft":  pull.Draft,
+			"sha":    pull.HeadSHA,
 		})
 	}
 	content := map[string]any{"pulls": entries, "repo": repository.OwnerOrProject + "/" + repository.Name}
@@ -538,19 +550,7 @@ func pullResult(pulls []forgejo.PullRequest, repository sourcecontrol.Repository
 	return &pluginsdk.AgentToolResult{Text: text.String(), StructuredContent: content}, nil
 }
 
-// pullState reports merged separately from closed, which the REST state field
-// does not.
-func pullState(pull forgejo.PullRequest) string {
-	if pull.Merged {
-		return "merged"
-	}
-	if state := strings.TrimSpace(pull.State); state != "" {
-		return state
-	}
-	return "unknown"
-}
-
-func jobsToAny(jobs []forgejo.CIJob) []any {
+func jobsToAny(jobs []scm.CIJob) []any {
 	entries := make([]any, 0, len(jobs))
 	for _, job := range jobs {
 		entry := map[string]any{"name": job.Name, "status": job.Status}

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 
+	"kandev-plugin-forgejo/internal/kandev"
+	"kandev-plugin-forgejo/internal/scm"
 	"kandev-plugin-forgejo/internal/watches"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
@@ -112,29 +114,37 @@ func (r *repoInput) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// watchActions serve the watches.* actions over the store and the poller.
+type watchActions struct {
+	hosts       kandev.Provider
+	watchStore  *watches.Store
+	watchPoller *watches.Poller
+	switches    workspaceSwitches
+}
+
 // handleWatchAction routes the watch actions, turning an operator-actionable
 // failure into a response with its own status.
-func (r *Runtime) handleWatchAction(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
-	response, err := r.routeWatchAction(ctx, request)
+func (h *watchActions) handleWatchAction(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
+	response, err := h.routeWatchAction(ctx, request)
 	var refusal watchRefusal
 	var invalid watches.ValidationError
 	switch {
 	case err == nil:
 		return response, nil
 	case errors.As(err, &refusal):
-		return domainResponse(refusal.status, refusal.Error())
+		return kandev.Refuse(refusal.status, refusal.Error())
 	case errors.As(err, &invalid):
-		return domainResponse(http.StatusUnprocessableEntity, invalid.Error())
+		return kandev.Refuse(http.StatusUnprocessableEntity, invalid.Error())
 	case errors.Is(err, watches.ErrNotFound):
-		return domainResponse(http.StatusNotFound, "kandev-plugin-forgejo: no such watch in this workspace")
+		return kandev.Refuse(http.StatusNotFound, "kandev-plugin-forgejo: no such watch in this workspace")
 	case errors.Is(err, watches.ErrCleanupOff):
-		return domainResponse(http.StatusConflict, "kandev-plugin-forgejo: cleanup is off for this watch")
+		return kandev.Refuse(http.StatusConflict, "kandev-plugin-forgejo: cleanup is off for this watch")
 	default:
 		return nil, err
 	}
 }
 
-func (r *Runtime) routeWatchAction(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
+func (h *watchActions) routeWatchAction(ctx context.Context, request *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
 	workspaceID := strings.TrimSpace(request.Context.WorkspaceID)
 	if workspaceID == "" {
 		return nil, errors.New("kandev-plugin-forgejo: watches require a verified workspace")
@@ -145,37 +155,37 @@ func (r *Runtime) routeWatchAction(ctx context.Context, request *pluginsdk.Plugi
 			// Say which field, not the whole decoder error: it can echo input.
 			var typeErr *json.UnmarshalTypeError
 			if errors.As(err, &typeErr) && typeErr.Field != "" {
-				return domainResponse(http.StatusUnprocessableEntity,
+				return kandev.Refuse(http.StatusUnprocessableEntity,
 					"kandev-plugin-forgejo: the field "+typeErr.Field+" has the wrong type")
 			}
-			return domainResponse(http.StatusUnprocessableEntity, "kandev-plugin-forgejo: the request body is not valid JSON")
+			return kandev.Refuse(http.StatusUnprocessableEntity, "kandev-plugin-forgejo: the request body is not valid JSON")
 		}
 	}
 
 	switch request.ActionKey {
 	case ActionWatchesList:
-		return r.listWatches(ctx, workspaceID, body.Kind)
+		return h.listWatches(ctx, workspaceID, body.Kind)
 	case ActionWatchesOptions:
-		return r.watchOptions(ctx, workspaceID)
+		return h.watchOptions(ctx, workspaceID)
 	case ActionWatchesCreate:
-		return r.createWatch(ctx, workspaceID, body)
+		return h.createWatch(ctx, workspaceID, body)
 	case ActionWatchesUpdate:
-		return r.updateWatch(ctx, workspaceID, body)
+		return h.updateWatch(ctx, workspaceID, body)
 	case ActionWatchesDelete:
-		return r.deleteWatch(ctx, workspaceID, body)
+		return h.deleteWatch(ctx, workspaceID, body)
 	case ActionWatchesRun:
-		return r.runWatch(ctx, workspaceID, body)
+		return h.runWatch(ctx, workspaceID, body)
 	case ActionWatchesReset:
-		return r.resetWatch(ctx, workspaceID, body)
+		return h.resetWatch(ctx, workspaceID, body)
 	case ActionWatchesCleanup:
-		return r.cleanupWatch(ctx, workspaceID, body)
+		return h.cleanupWatch(ctx, workspaceID, body)
 	default:
 		return nil, fmt.Errorf("kandev-plugin-forgejo: unknown watch action %q", request.ActionKey)
 	}
 }
 
-func (r *Runtime) listWatches(ctx context.Context, workspaceID string, kind watches.Kind) (*pluginsdk.PluginActionResponse, error) {
-	all, err := r.watchStore.List(ctx, workspaceID)
+func (h *watchActions) listWatches(ctx context.Context, workspaceID string, kind watches.Kind) (*pluginsdk.PluginActionResponse, error) {
+	all, err := h.watchStore.List(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -187,15 +197,15 @@ func (r *Runtime) listWatches(ctx context.Context, workspaceID string, kind watc
 			found = append(found, watch)
 		}
 	}
-	return jsonResponse(map[string]any{"watches": found})
+	return kandev.JSON(map[string]any{"watches": found})
 }
 
-func (r *Runtime) createWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
+func (h *watchActions) createWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
 	watch, err := watchFromRequest(workspaceID, watches.Watch{Enabled: true}, body)
 	if err != nil {
 		return nil, err
 	}
-	if err := r.checkForkStep(ctx, watch); err != nil {
+	if err := h.checkForkStep(ctx, watch); err != nil {
 		return nil, err
 	}
 	id, err := watches.NewID()
@@ -203,15 +213,15 @@ func (r *Runtime) createWatch(ctx context.Context, workspaceID string, body watc
 		return nil, err
 	}
 	watch.ID = id
-	saved, err := r.watchStore.Put(ctx, watch)
+	saved, err := h.watchStore.Put(ctx, watch)
 	if err != nil {
 		return nil, err
 	}
-	return jsonResponse(map[string]any{"watch": saved})
+	return kandev.JSON(map[string]any{"watch": saved})
 }
 
-func (r *Runtime) updateWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
-	existing, err := r.requireWatch(ctx, workspaceID, body.ID)
+func (h *watchActions) updateWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
+	existing, err := h.requireWatch(ctx, workspaceID, body.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -219,34 +229,34 @@ func (r *Runtime) updateWatch(ctx context.Context, workspaceID string, body watc
 	if err != nil {
 		return nil, err
 	}
-	if err := r.checkForkStep(ctx, watch); err != nil {
+	if err := h.checkForkStep(ctx, watch); err != nil {
 		return nil, err
 	}
-	saved, err := r.watchStore.Put(ctx, watch)
+	saved, err := h.watchStore.Put(ctx, watch)
 	if err != nil {
 		return nil, err
 	}
-	return jsonResponse(map[string]any{"watch": saved})
+	return kandev.JSON(map[string]any{"watch": saved})
 }
 
-func (r *Runtime) deleteWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
-	if _, err := r.requireWatch(ctx, workspaceID, body.ID); err != nil {
+func (h *watchActions) deleteWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
+	if _, err := h.requireWatch(ctx, workspaceID, body.ID); err != nil {
 		return nil, err
 	}
-	if err := r.watchStore.Delete(ctx, workspaceID, body.ID); err != nil {
+	if err := h.watchStore.Delete(ctx, workspaceID, body.ID); err != nil {
 		return nil, err
 	}
-	return jsonResponse(map[string]any{"deleted": body.ID})
+	return kandev.JSON(map[string]any{"deleted": body.ID})
 }
 
-func (r *Runtime) runWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
-	watch, err := r.requireWatch(ctx, workspaceID, body.ID)
+func (h *watchActions) runWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
+	watch, err := h.requireWatch(ctx, workspaceID, body.ID)
 	if err != nil {
 		return nil, err
 	}
 	// A manual run ignores the interval but not the enable switches: running a
 	// disabled watch by hand would contradict both toggles at once.
-	enabled, err := r.integrationEnabled(ctx, workspaceID)
+	enabled, err := h.switches.Enabled(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -256,62 +266,62 @@ func (r *Runtime) runWatch(ctx context.Context, workspaceID string, body watchRe
 	if !watch.Enabled {
 		return nil, refuse(http.StatusConflict, "this watch is paused")
 	}
-	result, err := r.watchPoller.RunWatch(ctx, watch)
+	result, err := h.watchPoller.RunWatch(ctx, watch)
 	if err != nil {
 		return nil, err
 	}
 	// The watch is re-read so the response carries the poll timestamps and
 	// error the run just wrote.
-	refreshed, err := r.watchStore.Get(ctx, workspaceID, watch.ID)
+	refreshed, err := h.watchStore.Get(ctx, workspaceID, watch.ID)
 	if err != nil {
 		return nil, err
 	}
-	return jsonResponse(map[string]any{"result": result, "watch": refreshed})
+	return kandev.JSON(map[string]any{"result": result, "watch": refreshed})
 }
 
-func (r *Runtime) resetWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
-	watch, err := r.requireWatch(ctx, workspaceID, body.ID)
+func (h *watchActions) resetWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
+	watch, err := h.requireWatch(ctx, workspaceID, body.ID)
 	if err != nil {
 		return nil, err
 	}
-	forgotten, err := r.watchStore.Forget(ctx, watch)
+	forgotten, err := h.watchStore.Forget(ctx, watch)
 	if err != nil {
 		return nil, err
 	}
-	return jsonResponse(map[string]any{"forgotten": forgotten, "watch_id": watch.ID})
+	return kandev.JSON(map[string]any{"forgotten": forgotten, "watch_id": watch.ID})
 }
 
-func (r *Runtime) cleanupWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
-	watch, err := r.requireWatch(ctx, workspaceID, body.ID)
+func (h *watchActions) cleanupWatch(ctx context.Context, workspaceID string, body watchRequest) (*pluginsdk.PluginActionResponse, error) {
+	watch, err := h.requireWatch(ctx, workspaceID, body.ID)
 	if err != nil {
 		return nil, err
 	}
-	enabled, err := r.integrationEnabled(ctx, workspaceID)
+	enabled, err := h.switches.Enabled(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	if !enabled {
 		return nil, refuse(http.StatusConflict, "the Forgejo integration is turned off for this workspace")
 	}
-	result, err := r.watchPoller.Cleanup(ctx, watch)
+	result, err := h.watchPoller.Cleanup(ctx, watch)
 	if err != nil {
 		return nil, err
 	}
-	refreshed, err := r.watchStore.Get(ctx, workspaceID, watch.ID)
+	refreshed, err := h.watchStore.Get(ctx, workspaceID, watch.ID)
 	if err != nil {
 		return nil, err
 	}
-	return jsonResponse(map[string]any{"result": result, "watch": refreshed})
+	return kandev.JSON(map[string]any{"result": result, "watch": refreshed})
 }
 
 // checkForkStep refuses a fork step that would start an agent on entry. It is
 // the save-time half of the fork protection; the poller checks again on every
 // run, because a step can be edited after the watch is saved.
-func (r *Runtime) checkForkStep(ctx context.Context, watch watches.Watch) error {
+func (h *watchActions) checkForkStep(ctx context.Context, watch watches.Watch) error {
 	if !watch.IsReview() || strings.TrimSpace(watch.ForkWorkflowStepID) == "" {
 		return nil
 	}
-	host := r.Host()
+	host := h.hosts()
 	if host == nil {
 		return errors.New("kandev-plugin-forgejo: host is unavailable")
 	}
@@ -339,8 +349,8 @@ func startsAgent(step pluginsdk.WorkflowStep) bool {
 // watchOptions serves the configuration form's pickers. Without these the
 // operator has no way to name a workflow step or a profile, and a watch has
 // nowhere to put the task it creates.
-func (r *Runtime) watchOptions(ctx context.Context, workspaceID string) (*pluginsdk.PluginActionResponse, error) {
-	host := r.Host()
+func (h *watchActions) watchOptions(ctx context.Context, workspaceID string) (*pluginsdk.PluginActionResponse, error) {
+	host := h.hosts()
 	if host == nil {
 		return nil, errors.New("kandev-plugin-forgejo: host is unavailable")
 	}
@@ -396,7 +406,7 @@ func (r *Runtime) watchOptions(ctx context.Context, workspaceID string) (*plugin
 		}
 	}
 
-	return jsonResponse(map[string]any{
+	return kandev.JSON(map[string]any{
 		"workflows":            rendered,
 		"agent_profiles":       renderedProfiles,
 		"executor_profiles":    renderedExecutors,
@@ -414,11 +424,11 @@ func (r *Runtime) watchOptions(ctx context.Context, workspaceID string) (*plugin
 // through the workspace the caller was verified for is what keeps one
 // workspace's watches — and the filters, repository ids and spawn prompts they
 // carry — out of another's responses.
-func (r *Runtime) requireWatch(ctx context.Context, workspaceID, id string) (watches.Watch, error) {
+func (h *watchActions) requireWatch(ctx context.Context, workspaceID, id string) (watches.Watch, error) {
 	if strings.TrimSpace(id) == "" {
 		return watches.Watch{}, refuse(http.StatusUnprocessableEntity, "a watch id is required")
 	}
-	return r.watchStore.Get(ctx, workspaceID, id)
+	return h.watchStore.Get(ctx, workspaceID, id)
 }
 
 // watchFromRequest folds a request body onto a base watch. Create passes a
@@ -476,7 +486,7 @@ func watchFromRequest(workspaceID string, base watches.Watch, body watchRequest)
 	}
 
 	if body.Repos != nil {
-		repos := make([]watches.RepoRef, 0, len(body.Repos))
+		repos := make([]scm.RepoRef, 0, len(body.Repos))
 		for _, raw := range body.Repos {
 			if strings.TrimSpace(string(raw)) == "" {
 				continue

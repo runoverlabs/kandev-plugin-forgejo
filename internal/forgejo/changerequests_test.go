@@ -49,10 +49,10 @@ func TestParsePullRequestReference(t *testing.T) {
 func TestResolveReferenceVerifiesAgainstInstance(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42", http.StatusOK, map[string]any{
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42", http.StatusOK, map[string]any{
 		"number": 42, "title": "Add widgets", "html_url": "https://forge.example.com/acme/widgets/pulls/42",
 	})
-	api.handle(http.MethodGet, "/api/v1/repos/acme/widgets", http.StatusOK, repoPayload(7, "acme", "widgets"))
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/widgets", http.StatusOK, repoPayload(7, "acme", "widgets"))
 	connection, _ := newTestConnection(t, api, "token")
 	repositories := NewRepositories(connection, func() pluginsdk.Host { return nil }, "forgejo")
 	changeRequests := NewChangeRequests(connection, repositories)
@@ -61,13 +61,13 @@ func TestResolveReferenceVerifiesAgainstInstance(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(42), resolved.Identity.Number)
 	require.Equal(t, "7", resolved.Identity.RepositoryID, "identity uses the immutable repository id, not the path")
-	require.Equal(t, api.url(), resolved.Identity.ConnectionScope)
+	require.Equal(t, api.URL(), resolved.Identity.ConnectionScope)
 }
 
 func TestResolveReferenceRejectsUnknownPullRequest(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42", http.StatusNotFound, nil)
+	api.Handle(http.MethodGet, "/api/v1/repos/acme/widgets/pulls/42", http.StatusNotFound, nil)
 	connection, _ := newTestConnection(t, api, "token")
 	changeRequests := NewChangeRequests(connection, NewRepositories(connection, func() pluginsdk.Host { return nil }, "forgejo"))
 
@@ -82,7 +82,7 @@ func TestCreateUsesVerifiedHeadAndDefaultsDestination(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
 	var captured map[string]any
-	api.handleFunc(http.MethodPost, "/api/v1/repos/acme/widgets/pulls", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc(http.MethodPost, "/api/v1/repos/acme/widgets/pulls", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &captured)
 		w.Header().Set("Content-Type", "application/json")
@@ -111,7 +111,7 @@ func TestCreateMarksDraftWithWorkInProgressPrefix(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
 	var captured map[string]any
-	api.handleFunc(http.MethodPost, "/api/v1/repos/acme/widgets/pulls", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc(http.MethodPost, "/api/v1/repos/acme/widgets/pulls", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &captured)
 		w.Header().Set("Content-Type", "application/json")
@@ -158,7 +158,7 @@ func TestCreateValidatesRequiredInput(t *testing.T) {
 func TestCreateFallsBackToCanonicalURL(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	api.handle(http.MethodPost, "/api/v1/repos/acme/widgets/pulls", http.StatusCreated, map[string]any{"number": 13})
+	api.Handle(http.MethodPost, "/api/v1/repos/acme/widgets/pulls", http.StatusCreated, map[string]any{"number": 13})
 	connection, _ := newTestConnection(t, api, "token")
 	changeRequests := NewChangeRequests(connection, NewRepositories(connection, func() pluginsdk.Host { return nil }, "forgejo"))
 
@@ -166,5 +166,25 @@ func TestCreateFallsBackToCanonicalURL(t *testing.T) {
 		sourcecontrol.Repository{OwnerOrProject: "acme", Name: "widgets", RepositoryID: "7", DefaultBranch: "main"},
 		"head", sourcecontrol.CreateChangeRequestInput{Title: "t"})
 	require.NoError(t, err)
-	require.Equal(t, api.url()+"/acme/widgets/pulls/13", created.URL)
+	require.Equal(t, api.URL()+"/acme/widgets/pulls/13", created.URL)
+}
+
+func TestStripWorkInProgressPrefix(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		title   string
+		want    string
+		changed bool
+	}{
+		{"WIP: add thing", "add thing", true},
+		{"wip: add thing", "add thing", true},
+		{"[WIP] add thing", "add thing", true},
+		{"Draft: add thing", "add thing", true},
+		{"add thing", "add thing", false},
+		{"  WIP: add thing  ", "add thing", true},
+	} {
+		stripped, changed := StripWorkInProgressPrefix(testCase.title)
+		require.Equalf(t, testCase.want, stripped, "title %q", testCase.title)
+		require.Equalf(t, testCase.changed, changed, "title %q", testCase.title)
+	}
 }

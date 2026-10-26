@@ -3,10 +3,11 @@ package forgejo
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
+
+	"kandev-plugin-forgejo/internal/forgejo/rest/resttest"
+	"kandev-plugin-forgejo/internal/sourcecontrol"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
 )
@@ -148,62 +149,19 @@ func (r fakeRepositories) List(_ context.Context, workspaceID string, _ pluginsd
 	return r.host.repos[workspaceID], &pluginsdk.PageInfo{}, nil
 }
 
-// apiServer is a fake Forgejo instance. Handlers are keyed by "METHOD /path".
-type apiServer struct {
-	t        *testing.T
-	server   *httptest.Server
-	mu       sync.Mutex
-	handlers map[string]http.HandlerFunc
-	requests []*http.Request
-	authSeen []string
-}
+// apiServer is the scripted instance most tests run against.
+type apiServer = resttest.Server
 
-func newAPIServer(t *testing.T) *apiServer {
-	t.Helper()
-	api := &apiServer{t: t, handlers: map[string]http.HandlerFunc{}}
-	api.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		api.mu.Lock()
-		handler, ok := api.handlers[r.Method+" "+r.URL.Path]
-		api.requests = append(api.requests, r)
-		api.authSeen = append(api.authSeen, r.Header.Get("Authorization"))
-		api.mu.Unlock()
-		if !ok {
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"message":"not found"}`))
-			return
-		}
-		handler(w, r)
-	}))
-	t.Cleanup(api.server.Close)
-	return api
-}
-
-// handle registers a JSON response for one method/path pair.
-func (a *apiServer) handle(method, path string, status int, body any) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.handlers[method+" "+path] = func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		if body != nil {
-			_ = json.NewEncoder(w).Encode(body)
-		}
-	}
-}
-
-// handleFunc registers a custom handler, e.g. to assert on the request body.
-func (a *apiServer) handleFunc(method, path string, handler http.HandlerFunc) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.handlers[method+" "+path] = handler
-}
-
-func (a *apiServer) url() string { return a.server.URL }
+func newAPIServer(t *testing.T) *apiServer { return resttest.NewServer(t) }
 
 // newTestConnection wires a Connection at the fake instance with a fake Host.
 func newTestConnection(t *testing.T, api *apiServer, token string) (*Connection, *fakeHost) {
 	t.Helper()
-	host := newFakeHost(map[string]any{"base_url": api.url(), "api_token": token})
+	host := newFakeHost(map[string]any{"base_url": api.URL(), "api_token": token})
 	connection := NewConnection(func() pluginsdk.Host { return host })
 	return connection, host
+}
+
+func identity(scope, repositoryID string, number int64) sourcecontrol.ChangeRequestIdentity {
+	return sourcecontrol.ChangeRequestIdentity{ConnectionScope: scope, RepositoryID: repositoryID, Number: number}
 }
