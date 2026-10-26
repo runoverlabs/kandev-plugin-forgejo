@@ -32,8 +32,9 @@ func TestConnectionWithoutHostIsNotConfigured(t *testing.T) {
 	require.ErrorIs(t, err, scm.ErrNotConfigured)
 }
 
-// A rotated token must not be served from the cache.
-func TestConnectionRebuildsClientWhenConfigChanges(t *testing.T) {
+// Kandev restarts the plugin when its config is saved, so a process reads it
+// once.
+func TestConnectionReadsConfigOncePerProcess(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
 	api.Handle(http.MethodGet, "/api/v1/user", http.StatusOK, map[string]any{"login": "kandev"})
@@ -46,17 +47,14 @@ func TestConnectionRebuildsClientWhenConfigChanges(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "token first", api.AuthSeen()[0])
 
+	host.mu.Lock()
+	host.config = map[string]any{"base_url": api.URL(), "api_token": "unread"}
+	host.mu.Unlock()
 	again, err := connection.Client(context.Background())
 	require.NoError(t, err)
-	require.Same(t, client, again, "unchanged config reuses the cached client")
-
-	host.config = map[string]any{"base_url": api.URL(), "api_token": "rotated"}
-	rotated, err := connection.Client(context.Background())
+	_, err = again.CurrentUser(context.Background())
 	require.NoError(t, err)
-	require.NotSame(t, client, rotated)
-	_, err = rotated.CurrentUser(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, "token rotated", api.AuthSeen()[len(api.AuthSeen())-1])
+	require.Equal(t, "token first", api.AuthSeen()[1])
 }
 
 func TestConnectionScopeIsNormalized(t *testing.T) {

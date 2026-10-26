@@ -4,17 +4,14 @@ import (
 	"context"
 	"sort"
 	"time"
-
-	"kandev-plugin-forgejo/internal/kandev"
 )
 
-// Tick runs one pass over every workspace, reading the plugin config once for
-// the pass. Exported so tests drive the loop without waiting on the clock.
+// Tick runs one pass over every workspace. Exported so tests drive the loop
+// without waiting on the clock.
 func (e *Engine) Tick(ctx context.Context) {
 	if e.workspaces == nil {
 		return
 	}
-	ctx = kandev.ShareConfig(ctx)
 	workspaces, err := e.workspaces(ctx)
 	if err != nil {
 		e.logf("prautomation: list workspaces: %v", err)

@@ -70,7 +70,7 @@ an import that crosses a layer, and on a new package missing from its table.
 | Layer | Package | Owns |
 | --- | --- | --- |
 | foundation | `internal/scm/` | `RepoRef`, the error kinds and refusal reasons, CI states: standard library only |
-| foundation | `internal/kandev/` | The late-bound host, the workspace walk, JSON action responses |
+| foundation | `internal/kandev/` | The late-bound host, the plugin config, the workspace walk, JSON action responses |
 | feature | `internal/sourcecontrol/` | The source-control recipe and the task association store: ports, no Forgejo |
 | feature | `internal/watches/` | Issue and review watch model, dedup ledger, poll loop, fork placement, cleanup: ports, no Forgejo |
 | feature | `internal/automations/` | Automation condition settings, the neutral webhook event, the filters, the `{{data.*}}` payload: no Forgejo |
@@ -243,6 +243,10 @@ Verified in the sibling checkout; each cost real debugging time.
 - Kandev's CI auto-fix, auto-merge and pull request prompts are GitHub-only in
   the host through v0.98.0 (the outcome tool accepts `github` and `gitlab`); the
   plugin runs its own (`internal/prautomation`).
+- **Saving the plugin config restarts the plugin process**
+  (`restartForConfigChange`), so the config cannot change under a running
+  process. `kandev.Config` reads it once per process; a test that changes the
+  config models the restart with a fresh `Connection` or `Runtime`.
 - `SetHost` is the only lifecycle hook, called once from a background goroutine
   after the broker dial. It is where background work starts.
 

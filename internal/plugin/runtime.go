@@ -39,9 +39,7 @@ const (
 // Runtime is the plugin value passed to pluginsdk.Serve. It embeds
 // UnimplementedPlugin for no-op defaults, routes each RPC to the handler that
 // owns it, and delegates the recipe's source-control RPCs to the extension.
-// Each handler holds only the ports it uses; wire.go builds them. Every RPC
-// runs under kandev.ShareConfig, so it reads the plugin config once however
-// many adapter calls it makes.
+// Each handler holds only the ports it uses; wire.go builds them.
 type Runtime struct {
 	pluginsdk.UnimplementedPlugin
 	extension      *sourcecontrol.Extension
@@ -110,7 +108,6 @@ func (r *Runtime) HandleAction(ctx context.Context, request *pluginsdk.PluginAct
 	if request == nil {
 		return nil, errors.New("kandev-plugin-forgejo: action request is required")
 	}
-	ctx = kandev.ShareConfig(ctx)
 	switch request.ActionKey {
 	case ActionConnectionGet:
 		return r.connectionActions.connectionStatus(ctx, request.Context.WorkspaceID, false)
@@ -184,27 +181,27 @@ func (r *Runtime) Stop() {
 
 // SearchEntityReferences delegates the composer `#` search.
 func (r *Runtime) SearchEntityReferences(ctx context.Context, request *pluginsdk.SearchEntityReferencesRequest) (*pluginsdk.SearchEntityReferencesResponse, error) {
-	return r.extension.SearchEntityReferences(kandev.ShareConfig(ctx), request)
+	return r.extension.SearchEntityReferences(ctx, request)
 }
 
 // AuthorizeEntityReference delegates live reference authorization.
 func (r *Runtime) AuthorizeEntityReference(ctx context.Context, request *pluginsdk.AuthorizeEntityReferenceRequest) (*pluginsdk.AuthorizeEntityReferenceResponse, error) {
-	return r.extension.AuthorizeEntityReference(kandev.ShareConfig(ctx), request)
+	return r.extension.AuthorizeEntityReference(ctx, request)
 }
 
 // InvokeAgentTool serves the MCP tools this plugin exposes to task agents.
 func (r *Runtime) InvokeAgentTool(ctx context.Context, request *pluginsdk.AgentToolRequest) (*pluginsdk.AgentToolResult, error) {
-	return r.tools.InvokeAgentTool(kandev.ShareConfig(ctx), request)
+	return r.tools.InvokeAgentTool(ctx, request)
 }
 
 // DescribeAutomationCondition reports whether a condition can be used.
 func (r *Runtime) DescribeAutomationCondition(ctx context.Context, request *pluginsdk.AutomationConditionRequest) (*pluginsdk.AutomationConditionResponse, error) {
-	return r.conditions.DescribeAutomationCondition(kandev.ShareConfig(ctx), request)
+	return r.conditions.DescribeAutomationCondition(ctx, request)
 }
 
 // VerifyAutomationWebhook authenticates and classifies one delivery.
 func (r *Runtime) VerifyAutomationWebhook(ctx context.Context, request *pluginsdk.AutomationWebhookRequest) (*pluginsdk.AutomationWebhookResponse, error) {
-	return r.conditions.VerifyAutomationWebhook(kandev.ShareConfig(ctx), request)
+	return r.conditions.VerifyAutomationWebhook(ctx, request)
 }
 
 // errGitCredentialWithheld is returned when this plugin does not own the
@@ -217,7 +214,6 @@ func (r *Runtime) ResolveGitCredential(ctx context.Context, request *pluginsdk.R
 	if request == nil {
 		return nil, errGitCredentialWithheld
 	}
-	ctx = kandev.ShareConfig(ctx)
 	if err := r.gitCredentialAllowed(ctx, request.ProviderID, request.WorkspaceID); err != nil {
 		return nil, err
 	}
@@ -230,7 +226,6 @@ func (r *Runtime) GetGitCredentialBinding(ctx context.Context, request *pluginsd
 	if request == nil {
 		return nil, errGitCredentialWithheld
 	}
-	ctx = kandev.ShareConfig(ctx)
 	if err := r.gitCredentialAllowed(ctx, request.ProviderID, request.WorkspaceID); err != nil {
 		return nil, err
 	}

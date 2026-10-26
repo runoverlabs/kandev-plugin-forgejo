@@ -88,9 +88,9 @@ func (Webhooks) Decode(body []byte, headers map[string]string) (automations.Even
 }
 
 // automationInfoTTL bounds how long the account, version and repository
-// checks behind Describe are reused. The host calls Describe with config twice per accepted delivery;
-// Kandev restarts the plugin when its config changes, so a cached answer never
-// outlives a token or URL change.
+// checks behind Describe are reused. The host calls Describe with config twice
+// per accepted delivery; Kandev restarts the plugin when its config changes,
+// so a cached answer never outlives a token or URL change.
 const automationInfoTTL = time.Minute
 
 // maxRepositoryOptions is how many repositories the editor suggests. The host
@@ -116,11 +116,10 @@ type repositoryOptions struct {
 	at    time.Time
 }
 
-// automationCache is keyed by the resolved client, which Connection rebuilds
-// whenever the URL or token changes.
+// automationCache holds the checks behind Describe for the life of the
+// process, which is also the life of the configured URL and token.
 type automationCache struct {
 	mu           sync.Mutex
-	client       *rest.Client
 	info         *instanceInfo
 	version      *instanceVersion
 	repositories *repositoryOptions
@@ -130,17 +129,10 @@ type automationCache struct {
 	found map[string]time.Time
 }
 
-func (c *automationCache) forClient(client *rest.Client) {
-	if c.client != client {
-		c.client, c.info, c.version, c.repositories, c.found = client, nil, nil, nil, nil
-	}
-}
-
 // instanceInfo returns the account, from cache when fresh.
 func (s *ConditionInstance) instanceInfo(ctx context.Context, client *rest.Client) (instanceInfo, error) {
 	cache := &s.cache
 	cache.mu.Lock()
-	cache.forClient(client)
 	if info := cache.info; info != nil && time.Since(info.at) < automationInfoTTL {
 		cache.mu.Unlock()
 		return *info, nil
@@ -155,7 +147,6 @@ func (s *ConditionInstance) instanceInfo(ctx context.Context, client *rest.Clien
 
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	cache.forClient(client)
 	cache.info = &info
 	return info, nil
 }
@@ -167,7 +158,6 @@ func (s *ConditionInstance) instanceInfo(ctx context.Context, client *rest.Clien
 func (s *ConditionInstance) instanceVersion(ctx context.Context, client *rest.Client) (instanceVersion, error) {
 	cache := &s.cache
 	cache.mu.Lock()
-	cache.forClient(client)
 	if v := cache.version; v != nil && time.Since(v.at) < automationInfoTTL {
 		cache.mu.Unlock()
 		return *v, nil
@@ -191,7 +181,6 @@ func (s *ConditionInstance) instanceVersion(ctx context.Context, client *rest.Cl
 
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	cache.forClient(client)
 	cache.version = &result
 	return result, nil
 }
@@ -202,7 +191,6 @@ func (s *ConditionInstance) repositoryExists(ctx context.Context, client *rest.C
 	key := strings.ToLower(repository)
 	cache := &s.cache
 	cache.mu.Lock()
-	cache.forClient(client)
 	if at, ok := cache.found[key]; ok && time.Since(at) < automationInfoTTL {
 		cache.mu.Unlock()
 		return nil
@@ -216,7 +204,6 @@ func (s *ConditionInstance) repositoryExists(ctx context.Context, client *rest.C
 
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	cache.forClient(client)
 	now := time.Now()
 	for stale, at := range cache.found {
 		if now.Sub(at) >= automationInfoTTL {
@@ -235,7 +222,6 @@ func (s *ConditionInstance) repositoryExists(ctx context.Context, client *rest.C
 func (s *ConditionInstance) repositoryOptions(ctx context.Context, client *rest.Client) []string {
 	cache := &s.cache
 	cache.mu.Lock()
-	cache.forClient(client)
 	if options := cache.repositories; options != nil && time.Since(options.at) < automationInfoTTL {
 		cache.mu.Unlock()
 		return options.names
@@ -255,7 +241,6 @@ func (s *ConditionInstance) repositoryOptions(ctx context.Context, client *rest.
 
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	cache.forClient(client)
 	cache.repositories = &repositoryOptions{names: names, at: time.Now()}
 	return names
 }

@@ -23,7 +23,8 @@ exactly one of five layers. **An import may only point to a lower layer.**
  L0  foundation   internal/scm                 shared vocabulary: RepoRef, error kinds, refusal
                                                reasons, CI states
                   internal/kandev              Kandev host helpers: the late-bound host, the
-                                               workspace walk, action responses
+                                               plugin config, the workspace walk, action
+                                               responses
 ```
 
 Two test-support packages sit beside the code they fake and may only be

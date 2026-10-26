@@ -343,8 +343,13 @@ func TestConnectionCacheIsScopedToTheConfiguredInstance(t *testing.T) {
 	require.Equal(t, true, connectionAction(t, runtime, ActionConnectionGet, "workspace-1")["connected"])
 	require.Equal(t, int64(1), firstProbes.Load())
 
+	// Saving the config restarts the plugin; host state survives the restart.
+	runtime.Stop()
 	host.config = map[string]any{"base_url": second.URL, "api_token": "t"}
-	body := connectionAction(t, runtime, ActionConnectionGet, "workspace-1")
+	restarted := NewRuntime()
+	restarted.SetHost(host)
+	t.Cleanup(restarted.Stop)
+	body := connectionAction(t, restarted, ActionConnectionGet, "workspace-1")
 	require.Equal(t, second.URL, body["instance_url"])
 	require.Nil(t, body["cached"], "a cache entry for the old instance must not be reused")
 	require.Equal(t, int64(1), secondProbes.Load())

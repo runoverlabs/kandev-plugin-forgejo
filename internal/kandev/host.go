@@ -1,6 +1,6 @@
 // Package kandev is how every layer reaches Kandev: the late-bound Host, the
-// workspaces it serves, and the JSON responses an action returns. It knows
-// nothing about Forgejo.
+// plugin config, the workspaces it serves, and the JSON responses an action
+// returns. It knows nothing about Forgejo.
 package kandev
 
 import (

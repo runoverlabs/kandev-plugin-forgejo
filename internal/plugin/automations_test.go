@@ -285,11 +285,13 @@ func TestDescribeConfigured(t *testing.T) {
 		t.Parallel()
 		instance := newFakeInstance(t, "15.0.10+gitea-1.22.0", true)
 		runtime, host := automationRuntime(t, map[string]any{"base_url": instance.server.URL, "api_token": automationToken})
-		response, err := describe(t, runtime, automations.ConditionCIResult, settings)
-		require.NoError(t, err)
-		require.True(t, response.Available, response.Reason)
-		// The scope, account, version and repository checks share one config
-		// read: the host calls Describe twice per delivery, inside one budget.
+		for range 2 {
+			response, err := describe(t, runtime, automations.ConditionCIResult, settings)
+			require.NoError(t, err)
+			require.True(t, response.Available, response.Reason)
+		}
+		// The host calls Describe twice per delivery, inside one budget; the
+		// config is read once for the process, not per check.
 		require.Equal(t, int64(1), host.configReads.Load())
 	})
 	// The host's delivery worker cancels a receipt on available=false and

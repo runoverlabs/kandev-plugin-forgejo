@@ -128,22 +128,19 @@ func TestGitCredentialsBindingIsStableAndOpaque(t *testing.T) {
 	require.Empty(t, api.Requests(), "a binding lookup is non-secret and needs no instance I/O")
 }
 
-// Rotating the token must invalidate an already-issued helper lease.
+// Rotating the token, which restarts the plugin, must invalidate an
+// already-issued helper lease.
 func TestGitCredentialsBindingChangesWhenTokenRotates(t *testing.T) {
 	t.Parallel()
 	api := newAPIServer(t)
-	connection, fake := newTestConnection(t, api, "first-token")
 	host, path, repositoryID := credentialScope(t, api)
-	credentials := NewGitCredentials(connection)
-
-	before, err := credentials.Binding(context.Background(), bindingRequest(host, path, repositoryID))
-	require.NoError(t, err)
-	fake.mu.Lock()
-	fake.config = map[string]any{"base_url": api.URL(), "api_token": "second-token"}
-	fake.mu.Unlock()
-	after, err := credentials.Binding(context.Background(), bindingRequest(host, path, repositoryID))
-	require.NoError(t, err)
-	require.NotEqual(t, before.Binding, after.Binding)
+	binding := func(token string) string {
+		connection, _ := newTestConnection(t, api, token)
+		response, err := NewGitCredentials(connection).Binding(context.Background(), bindingRequest(host, path, repositoryID))
+		require.NoError(t, err)
+		return response.Binding
+	}
+	require.NotEqual(t, binding("first-token"), binding("second-token"))
 }
 
 func TestGitCredentialsBindingDiffersPerScope(t *testing.T) {

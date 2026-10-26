@@ -2,10 +2,10 @@ package forgejo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"kandev-plugin-forgejo/internal/forgejo/rest"
@@ -15,40 +15,32 @@ import (
 )
 
 // Connection turns the plugin's operator config into a ready REST client. The
-// resolved client is cached and rebuilt whenever the operator changes the
-// instance URL or token. Kandev restarts a plugin on config change, so the
-// cache exists to avoid rebuilding the client per call, not to survive
-// rotation. The config itself is read once per RPC (see kandev.ShareConfig).
+// config is fixed for the life of the process (see kandev.Config) and a client
+// holds nothing else, so one is built per call rather than cached.
 type Connection struct {
-	hosts      kandev.Provider
+	config     *kandev.Config
 	httpClient *http.Client
-
-	mu     sync.Mutex
-	client *rest.Client
-	key    string
 }
 
 // NewConnection returns a Connection that resolves config through hosts.
 func NewConnection(hosts kandev.Provider) *Connection {
 	return &Connection{
-		hosts: hosts,
+		config: kandev.NewConfig(hosts),
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 	}
 }
 
-// Client resolves the configured instance client, rebuilding it when the
-// operator config has changed since the last call.
+// Client resolves the configured instance client.
 func (c *Connection) Client(ctx context.Context) (*rest.Client, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	host := c.hosts()
-	if host == nil {
+	config, err := c.config.Get(ctx)
+	if errors.Is(err, kandev.ErrNoHost) {
 		return nil, scm.ErrNotConfigured
 	}
-	config, err := kandev.Config(ctx, host)
 	if err != nil {
 		return nil, fmt.Errorf("forgejo: read plugin config: %w", err)
 	}
@@ -57,21 +49,10 @@ func (c *Connection) Client(ctx context.Context) (*rest.Client, error) {
 	if baseURL == "" || token == "" {
 		return nil, scm.ErrNotConfigured
 	}
-
-	// The cache key includes the token so a rotated credential is never
-	// served from cache. It stays in memory and is never logged.
-	key := baseURL + "\x00" + token
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.client != nil && c.key == key {
-		return c.client, nil
-	}
 	client, err := rest.NewClient(baseURL, token, c.httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", scm.ErrInvalidConfig, err)
 	}
-	c.client, c.key = client, key
 	return client, nil
 }
 
